@@ -98,6 +98,12 @@ impl Repo {
         PathBuf::from(self.ok(&self.main, &["wt", "path", branch]).trim())
     }
 
+    /// Every commit 5w made must itself pass the protocol it enforces.
+    fn lint_history(&self) {
+        let root = self.git(&self.main, &["rev-list", "--max-parents=0", "main"]);
+        self.ok(&self.main, &["lint", &format!("{root}..main")]);
+    }
+
     fn line(&self, id: u64) -> String {
         self.tasks()
             .lines()
@@ -157,6 +163,7 @@ fn full_loop_add_submit_accept_ship() {
     assert!(!wt.exists());
     assert_eq!(r.git(&r.main, &["branch", "--list", "core/thing"]), "");
     assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    r.lint_history();
 }
 
 #[test]
@@ -270,6 +277,7 @@ fn closing_needs_the_flag_that_matches_the_lane() {
     r.ok(&r.main, &["done", "1", "--decided"]);
     assert!(r.line(1).contains("via:decided"));
     r.ok(&r.main, &["open", "1"]);
+    r.lint_history();
     assert!(r.line(1).starts_with("- [ ] #1") && !r.line(1).contains("via:"));
     // Open moves it back out of Done.
     let t = r.tasks();
@@ -624,6 +632,7 @@ fn archive_moves_closed_tasks_and_keeps_every_guarantee() {
     let out = r.ok(&r.main, &["ship", "a/x", "--sync"]);
     assert!(out.contains("authorised by #1"), "{out}");
     r.ok(&r.main, &["doctor"]);
+    r.lint_history();
 }
 
 #[test]
@@ -702,4 +711,128 @@ fn briefs_point_at_sections_and_carry_the_steps() {
         "{b}"
     );
     assert!(b.lines().count() < 15, "{b}");
+}
+
+// --- the protocol, without the tool ---------------------------------------------------
+
+fn hand_edit(r: &Repo, from: &str, to: &str) {
+    let t = r.tasks();
+    assert!(t.contains(from), "{from:?} not in:\n{t}");
+    std::fs::write(r.main.join("TASKS.md"), t.replace(from, to)).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+}
+
+#[test]
+fn lint_passes_a_correct_hand_edit_and_names_each_violation() {
+    let r = Repo::new("lint");
+    r.ok(&r.main, &["add", "agent work"]);
+    r.ok(&r.main, &["add", "a call", "lane:owner"]);
+    r.git(&r.main, &["branch", "a/x"]);
+    let sha = r.git(&r.main, &["rev-parse", "--short=12", "a/x"]);
+
+    // A correct hand submit passes.
+    hand_edit(
+        &r,
+        "- [ ] #1 agent work",
+        &format!("- [~] #1 agent work branch:a/x submitted:{sha}"),
+    );
+    r.ok(&r.main, &["lint"]);
+    r.git(&r.main, &["commit", "-qm", "chore(tasks): submit #1"]);
+
+    let cases: &[(&str, String, &str)] = &[
+        (
+            "- [ ] #2 a call >owner",
+            "- [x] #2 a call >owner via:self".into(),
+            "closes via:decided",
+        ),
+        ("- [ ] #2 a call >owner\n", "".into(), "deleted"),
+        (
+            &format!("- [~] #1 agent work branch:a/x submitted:{sha}"),
+            "- [x] #1 agent work branch:a/x via:review".into(),
+            "without reviewed",
+        ),
+        (
+            &format!("- [~] #1 agent work branch:a/x submitted:{sha}"),
+            "- [ ] #1 agent work branch:a/x".into(),
+            "without rework",
+        ),
+        (
+            "- [ ] #2 a call >owner",
+            "- [ ] #2 a call >owner\n- [ ] #1 reused id".into(),
+            "twice",
+        ),
+        (
+            "- [ ] #2 a call >owner",
+            "- [~] #2 a call >owner".into(),
+            "without branch",
+        ),
+    ];
+    for (from, to, want) in cases {
+        let before = r.tasks();
+        hand_edit(&r, from, to);
+        let out = r.fails(&r.main, &["lint"]);
+        assert!(out.contains(want), "want {want:?} in:\n{out}");
+        std::fs::write(r.main.join("TASKS.md"), before).unwrap();
+        r.git(&r.main, &["add", "TASKS.md"]);
+    }
+
+    // Shape: a queue edit mixed with code, and one made on a branch.
+    hand_edit(&r, "- [ ] #2 a call", "- [ ] #2 a better call");
+    std::fs::write(r.main.join("code.rs"), "x\n").unwrap();
+    r.git(&r.main, &["add", "code.rs"]);
+    assert!(r.fails(&r.main, &["lint"]).contains("its own commit"));
+    r.git(&r.main, &["reset", "-q", "code.rs"]);
+    r.ok(&r.main, &["lint"]);
+    r.git(&r.main, &["reset", "-q", "--hard"]);
+    r.git(&r.main, &["checkout", "-q", "a/x"]);
+    hand_edit(&r, "- [ ] #2 a call", "- [ ] #2 a better call");
+    assert!(
+        r.fails(&r.main, &["lint"])
+            .contains("queue edits go on main")
+    );
+}
+
+#[test]
+fn a_closed_row_is_immutable_but_may_be_reflowed_or_archived() {
+    let r = Repo::new("immutable");
+    r.ok(&r.main, &["add", "One sentence here. And a second sentence that is long enough to push well past the title limit of the queue for sure."]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    hand_edit(&r, "- [x] #1 One", "- [x] #1 Uno");
+    assert!(r.fails(&r.main, &["lint"]).contains("closed row changed"));
+    r.git(&r.main, &["checkout", "--", "."]);
+    r.git(&r.main, &["reset", "-q", "--hard"]);
+    r.ok(&r.main, &["split", "--all"]);
+    r.ok(&r.main, &["archive"]);
+    r.lint_history();
+}
+
+#[test]
+fn the_hook_blocks_a_bad_hand_edit_and_warns_without_the_binary() {
+    let r = Repo::new("hook");
+    r.ok(&r.main, &["hook", "install"]);
+    r.ok(&r.main, &["add", "x"]);
+    hand_edit(&r, "- [ ] #1 x", "- [x] #1 x");
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_5w"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let commit = |path: String| {
+        let mut c = Command::new("git");
+        c.args(["commit", "-qm", "bad"]).current_dir(&r.main);
+        env(&mut c, &r.root);
+        c.env("PATH", path);
+        c.output().unwrap()
+    };
+    let with = commit(format!("{}:/usr/bin:/bin", bin.display()));
+    assert!(!with.status.success());
+    assert!(String::from_utf8_lossy(&with.stderr).contains("closed without via"));
+    let without = commit("/usr/bin:/bin".into());
+    assert!(without.status.success());
+    assert!(String::from_utf8_lossy(&without.stderr).contains("Follow PROTOCOL.md"));
+    // And range lint catches what the missing binary let through.
+    assert!(
+        r.fails(&r.main, &["lint", "HEAD"])
+            .contains("closed without via")
+    );
+    assert!(r.main.join("PROTOCOL.md").exists());
 }

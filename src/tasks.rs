@@ -30,6 +30,10 @@ write (each commits itself to the trunk, and only itself)
   archive                 move closed tasks to the archive file
   split [--all]           shorten over-long titles into title + body
 
+protocol (PROTOCOL.md — the rules, for editing without the tool)
+  lint [--staged | <rev> | <a>..<b>]   check queue edits follow it
+  hook install | uninstall             pre-commit hook running `lint --staged`
+
 branches
   wt <new|add|ls|path|rm|link|install|setup>
   ship [branch] [--sync] [--squash [-m msg]] [--discard-ignored] [--force]

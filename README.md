@@ -115,6 +115,27 @@ is how a `reset --soft main` after main moved once deleted a row from the queue.
 
 `--force` overrides the review gate only, never a safety check.
 
+## Without the tool
+
+[PROTOCOL.md](PROTOCOL.md) is the spec the binary implements, written as instructions: the row format,
+each edit and what it must carry, and the commit rules. `5w init` copies it into the repo, so a
+contributor or agent without `5w` edits `TASKS.md` by hand and gets the same result.
+
+Hand edits are checked, not trusted:
+
+- **`5w lint`** compares the queue before and after — `--staged`, one commit, or a range — and judges
+  every row that changed by its transition: `[ ]→[~]` carries `branch:` and `submitted:`,
+  `[~]→[x]` carries `via:review` and `reviewed:`, a close carries its lane's `via:`, a reject its
+  `rework:`. Closed rows are immutable except to reopen, reflow (`split`) or archive; no row is
+  deleted and no id reused; a queue edit is its own commit on the trunk. Every commit `5w` itself
+  makes passes it — the test suite lints its own history.
+- **`5w hook install`** (also run by `5w wt setup`) adds a pre-commit hook running `5w lint --staged`.
+  Where `5w` is not installed the hook lets the commit through with a warning to follow
+  PROTOCOL.md; `5w lint <range>` catches what that let through, later.
+
+A hook is a convenience, not a gate: `--no-verify` skips it. When adopting 5W on an existing queue,
+lint from the adoption commit onward — earlier rows predate `submitted:` and `reviewed:`.
+
 ## Keeping context small
 
 The queue is read by agents, so every read is priced in tokens.

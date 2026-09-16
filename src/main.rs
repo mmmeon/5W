@@ -1,5 +1,6 @@
 mod config;
 mod git;
+mod lint;
 mod queue;
 mod ship;
 mod store;
@@ -12,6 +13,7 @@ use util::Res;
 
 const TEMPLATE_TASKS: &str = include_str!("../templates/TASKS.md");
 const TEMPLATE_CONFIG: &str = include_str!("../templates/5w.toml");
+const TEMPLATE_PROTOCOL: &str = include_str!("../templates/PROTOCOL.md");
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
@@ -47,7 +49,7 @@ fn dispatch(args: Vec<String>) -> Res<()> {
     }
     // A help flag where an argument belongs is a request for help. Without this
     // `add --help` would have made a task called "--help".
-    if rest.first().is_some_and(|a| a == "-h" || a == "--help") && cmd != "wt" {
+    if rest.first().is_some_and(|a| a == "-h" || a == "--help") && cmd != "wt" && cmd != "lint" {
         println!(
             "{}",
             if cmd == "ship" {
@@ -63,6 +65,8 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         "wt" => wt::run(&repo, rest),
         "ship" => ship::run(&repo, rest),
         "init" => init(&repo),
+        "lint" => lint::run(&repo, rest),
+        "hook" => lint::hook(&repo, rest),
         _ => tasks::run(&repo, &cmd, rest),
     }
 }
@@ -84,6 +88,11 @@ fn init(repo: &Repo) -> Res<()> {
     if !tf.exists() {
         std::fs::write(&tf, TEMPLATE_TASKS).map_err(|e| e.to_string())?;
         created.push(repo.cfg.file.clone());
+    }
+    let proto = p.join("PROTOCOL.md");
+    if !proto.exists() {
+        std::fs::write(&proto, TEMPLATE_PROTOCOL).map_err(|e| e.to_string())?;
+        created.push("PROTOCOL.md".to_string());
     }
     if created.is_empty() {
         println!(

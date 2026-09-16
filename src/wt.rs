@@ -401,6 +401,9 @@ pub fn remove(repo: &Repo, branch: &str, force: bool) -> Res<()> {
 
 fn setup(repo: &Repo) -> Res<()> {
     let p = &repo.primary;
+    if let Err(e) = crate::lint::hook(repo, &["install".to_string()]) {
+        println!("wt: pre-commit hook not installed: {e}");
+    }
     // Keeps a stack consistent even when rebasing by hand.
     git::git(p, &["config", "rebase.updateRefs", "true"])?;
     if git::has_git_town() {
