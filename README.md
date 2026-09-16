@@ -46,6 +46,22 @@ cd your-repo && 5w init       # writes .5w.toml and TASKS.md, commits them
 `[ ]` open · `[~]` submitted · `[x]` closed. Lines inside ```fences are never tasks. Ids are
 permanent. Fields are order-free, and the *last* token of a kind is the field — an earlier`>manual` in the prose stays prose.
 
+### Lanes
+
+A lane says who can execute a task at all. Its name is the project's own word; its **kind** is what
+the work needs, and 5W's behaviour follows the kind:
+
+| Kind | The work needs | Delegable | Closes without review |
+|---|---|---|---|
+| `agent` | nothing but the repository | yes | `done --self` |
+| `restricted` | access an agent may not have: a machine, an account, a secret | yes | `done --self` |
+| `manual` | a person, by hand, outside the repository | no | `done --self` |
+| `decision` | the owner's call | no | `done --decided` |
+
+The defaults are `>agent`, `>restricted`, `>manual` and `>owner`. A project renames freely —
+`[lanes.game]` with `kind = "manual"` is a game-client capture lane. `delegate` refuses a manual or
+decision task; `submit` and `accept` warn on one, since nothing can check who did the work.
+
 ## The loop
 
 ```bash
