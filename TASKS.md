@@ -25,7 +25,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #9 self-update and version --latest: opt-in, the pinned version by default, checksums and signature verified @upkeep !2
 - [ ] #10 Forge events as queue transitions: a change request submits, an approving review accepts, from a CI job @ci !3
 - [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4
-- [ ] #12 Evaluate AXI (axi.md) and TOON (toonformat.dev) for 5w output read by agents @output !2
+- [~] #12 Evaluate AXI (axi.md) and TOON (toonformat.dev) for 5w output read by agents @output !2 branch:output/task-12 submitted:486262689601
   AXI: 10 design principles for agent-ergonomic CLIs — token budget first, minimal fields per list item, aggregates inline, structured errors, help[] next-step hints, combined operations.
   TOON: compact indentation-based encoding of the JSON data model for LLM prompts (~40% fewer tokens than JSON; spec v4.1.1, conformance suite).
   Compare against what 5w already does (compact off a terminal, one-line refusals naming the fix, --json/--ids). Outcome: a written verdict per principle — adopt, already met, or reject with reason — and follow-up tasks for what is adopted. A TOON writer, if any, is hand-written: no dependencies.
