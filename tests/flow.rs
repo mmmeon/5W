@@ -1379,3 +1379,148 @@ fn worktree_paths_are_normalized() {
         path_output
     );
 }
+
+// --- audit: how a repository has used 5W ------------------------------------------------
+
+impl Repo {
+    /// Run 5w with the commit dates set, so durations in the history are known.
+    fn ok_at(&self, when: &str, args: &[&str]) -> String {
+        let mut c = Command::new(bin5w());
+        c.args(args).current_dir(&self.main);
+        env(&mut c, &self.root);
+        c.env("GIT_COMMITTER_DATE", when)
+            .env("GIT_AUTHOR_DATE", when);
+        let o = c.output().unwrap();
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(o.status.success(), "5w {args:?} failed:\n{out}");
+        out
+    }
+}
+
+#[test]
+fn audit_reads_the_queue_history_and_writes_nothing() {
+    let r = Repo::new("audit");
+    let at = |h: u32| format!("2026-01-01T{h:02}:00:00Z");
+    r.ok_at(&at(0), &["add", "parse the header", "area:core", "level:2"]);
+    r.ok_at(
+        &at(0),
+        &["add", "write the docs", "area:docs", "level:1", "needs:#1"],
+    );
+    r.ok(&r.main, &["wt", "new", "core/header"]);
+    let wt = r.wt("core/header");
+    r.commit_in(&wt, "header.rs", "one\n");
+    r.ok_at(&at(1), &["submit", "1", "core/header"]);
+    r.ok_at(&at(2), &["reject", "1", "the parser drops the | case"]);
+    r.commit_in(&wt, "header.rs", "two\n");
+    r.ok_at(&at(3), &["submit", "1"]);
+    r.ok_at(&at(5), &["accept", "1"]);
+    r.ok_at(&at(6), &["done", "2", "--self"]);
+    r.ok_at(&at(7), &["open", "2"]);
+
+    // By hand: a fenced example row, a NUL in a body, #2 closed with no via:,
+    // and a README change in the same commit.
+    let t = r.tasks().replace(
+        "## Open",
+        "```\n- [ ] #1 an example, not a task\n```\n\n## Open",
+    );
+    let line = r.line(2);
+    let t = t.replace(
+        &line,
+        &format!(
+            "{}\n  a body with a \u{0} in it",
+            line.replace("[ ]", "[x]")
+        ),
+    );
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    std::fs::write(r.main.join("README"), "changed\n").unwrap();
+    r.git(&r.main, &["add", "TASKS.md", "README"]);
+    let mut c = Command::new("git");
+    c.args(["commit", "-qm", "docs are done"])
+        .current_dir(&r.main);
+    env(&mut c, &r.root);
+    c.env("GIT_COMMITTER_DATE", at(8))
+        .env("GIT_AUTHOR_DATE", at(8));
+    assert!(c.output().unwrap().status.success());
+
+    r.ok_at(&at(9), &["add", "a third task", "--body", "with a body"]);
+    r.fails(&r.main, &["accept", "3"]);
+    r.ok(&r.main, &["report", "accept refused"]);
+
+    let tip = r.git(&r.main, &["rev-parse", "main"]);
+    let status = r.git(&r.main, &["status", "--porcelain"]);
+    let out = r.ok(&r.main, &["audit"]);
+    let has = |s: &str| assert!(out.contains(s), "want {s:?} in:\n{out}");
+    has("tasks 3 · 1 open · 0 in review · 2 closed (1 via:review, 1 without via:)");
+    has("areas @core 1 · @docs 1 · no area 1");
+    has("review 1 accepted · submit→accept median 2h00m · p90 2h00m · max 2h00m #1");
+    has("rework 1 rejections on 1 tasks · once 1");
+    has("  #1 2026-01-01 the parser drops the | case");
+    has("reopened 1 · #2\n");
+    has("blocked 1 tasks waited on needs · median 5h00m");
+    has("  #2 5h00m on #1\n");
+    has("outside 1 queue commits not made by 5w · 1 lint findings");
+    has("docs are done — a message 5w never writes; also touches README");
+    has("#2: closed without via:");
+    has("`5w accept 3` — #3 was never submitted");
+    has("1 reports, 1 unsent");
+    has("briefs 1 open delegable");
+    assert!(!out.contains("note: replaying"), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("briefs") && l.contains(" #3 ")),
+        "{out}"
+    );
+
+    // Nothing written: not the trunk, not the checkout.
+    assert_eq!(r.git(&r.main, &["rev-parse", "main"]), tip);
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), status);
+
+    let json = r.ok(&r.main, &["audit", "--json"]);
+    for want in [
+        "\"replay_diverged\":false",
+        "\"review\":{\"accepted\":1,\"median_s\":7200",
+        "\"rework\":{\"rejections\":1,\"tasks\":1,\"once\":1",
+        "\"reason\":\"the parser drops the | case\"",
+        "\"reopened\":[{\"id\":2,\"times\":1}]",
+        "\"longest\":[{\"id\":2,\"seconds\":18000,\"needs\":[1],\"still\":false}]",
+        "\"why\":[\"a message 5w never writes\",\"also touches README\"]",
+    ] {
+        assert!(json.contains(want), "want {want:?} in:\n{json}");
+    }
+
+    // A window: after the accept, by commit and by date.
+    let accept = r.git(&r.main, &["log", "--format=%H", "--grep=accept #1", "main"]);
+    for since in [accept.as_str(), "2026-01-01T05:30:00Z"] {
+        let out = r.ok(&r.main, &["audit", "--since", since]);
+        let has = |s: &str| assert!(out.contains(s), "want {s:?} in:\n{out}");
+        has("review 0 accepted");
+        has("rework 0 rejections");
+        has("reopened 1 · #2");
+        has("outside 1 queue commits");
+        has("tasks 2 ·");
+    }
+    assert!(
+        r.fails(&r.main, &["audit", "--since", "yesterday-ish"])
+            .contains("not a commit or a date")
+    );
+}
+
+#[test]
+fn audit_on_a_repository_with_no_history_is_an_empty_report() {
+    let r = Repo::new("audit-empty");
+    let bare = r.root.join("bare");
+    std::fs::create_dir_all(&bare).unwrap();
+    r.git(&bare, &["init", "-q", "-b", "main"]);
+    for dir in [&bare, &r.main] {
+        let out = r.ok(dir, &["audit"]);
+        assert!(out.contains("tasks 0 · 0 open"), "{out}");
+        assert!(out.contains("review 0 accepted"), "{out}");
+        assert!(out.contains("briefs 0 open delegable"), "{out}");
+        assert!(r.ok(dir, &["audit", "--json"]).contains("\"commits\":"));
+    }
+    assert!(r.ok(&bare, &["audit"]).contains("no queue commits"));
+}

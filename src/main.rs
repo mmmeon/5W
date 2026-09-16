@@ -1,3 +1,4 @@
+mod audit;
 mod ci;
 mod config;
 mod git;
@@ -7,6 +8,7 @@ mod report;
 mod ship;
 mod store;
 mod tasks;
+mod tokens;
 mod upkeep;
 mod util;
 mod wt;
@@ -81,6 +83,7 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         && cmd != "lint"
         && cmd != "ci"
         && cmd != "report"
+        && cmd != "audit"
     {
         println!(
             "{}",
@@ -101,6 +104,7 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         "ship" => ship::run(&repo, rest),
         "init" => init(&repo),
         "lint" => lint::run(&repo, rest),
+        "audit" => audit::run(&repo, rest),
         "ci" => ci::run(&repo, rest),
         "hook" => lint::hook(&repo, rest),
         "update-files" => upkeep::update_files(&repo, rest),

@@ -31,7 +31,7 @@ owner/repo.";
 
 const DEFAULT_REPO: &str = "mmmeon/5W";
 
-fn dir() -> Option<PathBuf> {
+pub fn dir() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     let common = git::opt(
         &cwd,
@@ -123,7 +123,7 @@ fn shell_quote(a: &str) -> String {
     }
 }
 
-fn reports(d: &Path) -> Vec<PathBuf> {
+pub fn reports(d: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = fs::read_dir(d.join("reports"))
         .map(|rd| {
             rd.flatten()
@@ -148,7 +148,7 @@ fn pick(d: &Path, n: Option<&String>) -> Res<PathBuf> {
         .ok_or_else(|| format!("no report {n}"))
 }
 
-fn title_of(text: &str) -> String {
+pub fn title_of(text: &str) -> String {
     text.lines()
         .next()
         .unwrap_or("")

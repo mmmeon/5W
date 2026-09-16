@@ -18,6 +18,7 @@ read
   delegate <id>           the brief for whoever does it
   review [--checklist]    submitted work, with drift since submit
   doctor                  check the file
+  audit [--since <rev|date>] [--json]   how this repository has used 5W, from its history
 
 write (each commits itself to the trunk, and only itself)
   add <text> [fields] [--body <text>|-]   over-long text is split into title + body
@@ -99,7 +100,7 @@ fn opts(args: &[String]) -> Res<Opts> {
 }
 
 /// Compact unless a person is looking: stdout a terminal and FIVEW_AGENT unset.
-fn compact_default() -> bool {
+pub fn compact_default() -> bool {
     match std::env::var("FIVEW_AGENT").as_deref() {
         Ok("0") => false,
         Ok(_) => true,
@@ -326,7 +327,7 @@ impl<'a> Q<'a> {
     }
 }
 
-fn js(s: &str) -> String {
+pub fn js(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
         match c {
@@ -718,15 +719,12 @@ fn refs(text: &str) -> Vec<String> {
 fn delegate(repo: &Repo, id: &str) -> Res<()> {
     let q = Q::load(repo)?;
     let t = q.get(parse_id(id)?)?;
-    let cfg = &repo.cfg;
     match t.state {
         State::Done => bail!("#{} is closed", t.id),
         State::Review => bail!("#{} is in review, not waiting on work", t.id),
         State::Open => {}
     }
-    let lane_name = q.lane(t);
-    let lane = cfg.lane(lane_name);
-    if let Some(l) = lane.filter(|l| !l.delegable) {
+    if let Some(l) = repo.cfg.lane(q.lane(t)).filter(|l| !l.delegable) {
         bail!(
             "#{} is >{} ({}): {}",
             t.id,
@@ -740,9 +738,24 @@ fn delegate(repo: &Repo, id: &str) -> Res<()> {
         eprintln!("warning: #{} is blocked by {}", t.id, ids_str(&u));
     }
     let branch = t.branch.clone().unwrap_or_else(|| suggested_branch(t));
-    let setup = if !git::branch_exists(&repo.primary, &branch) {
+    let exists = git::branch_exists(&repo.primary, &branch);
+    let has_wt = exists && git::worktree_of(&repo.primary, &branch)?.is_some();
+    print!("{}", brief(&q, t, exists, has_wt));
+    Ok(())
+}
+
+/// The brief for an open, delegable task. `exists` and `has_wt` say whether its
+/// branch and a worktree for it are already there, which picks the setup step.
+fn brief(q: &Q, t: &Task, exists: bool, has_wt: bool) -> String {
+    use std::fmt::Write;
+    let repo = q.repo;
+    let cfg = &repo.cfg;
+    let lane_name = q.lane(t);
+    let lane = cfg.lane(lane_name);
+    let branch = t.branch.clone().unwrap_or_else(|| suggested_branch(t));
+    let setup = if !exists {
         format!("{} new {branch}", cfg.cmd_wt)
-    } else if git::worktree_of(&repo.primary, &branch)?.is_some() {
+    } else if has_wt {
         format!("# {branch} and its worktree exist — the last attempt is there")
     } else {
         format!("{} add {branch}", cfg.cmd_wt)
@@ -758,64 +771,113 @@ fn delegate(repo: &Repo, id: &str) -> Res<()> {
     let all_text = format!("{} {}", t.text, t.body.join(" "));
     let refs = refs(&all_text);
 
+    let mut out = String::new();
     let level = t.level.map(|l| format!(" !{l}")).unwrap_or_default();
     let area = t
         .area
         .as_ref()
         .map(|a| format!(" @{a}"))
         .unwrap_or_default();
-    println!("#{}{level}{area} >{lane_name}  {}", t.id, t.text);
+    let _ = writeln!(out, "#{}{level}{area} >{lane_name}  {}", t.id, t.text);
     for l in &t.body {
-        println!("  {l}");
+        let _ = writeln!(out, "  {l}");
     }
     if let Some(r) = &t.rework {
-        println!("REWORK (last attempt sent back): {r}");
+        let _ = writeln!(out, "REWORK (last attempt sent back): {r}");
     }
     if let Some(n) = lane.and_then(|l| l.note.as_ref()) {
-        println!("lane: {n}");
+        let _ = writeln!(out, "lane: {n}");
     }
     if !refs.is_empty() {
-        println!(
+        let _ = writeln!(
+            out,
             "refs: {} — read these sections, not whole files",
             refs.join(", ")
         );
     }
     if !docs.is_empty() {
-        println!("docs: {}", docs.join(", "));
+        let _ = writeln!(out, "docs: {}", docs.join(", "));
     }
     if !cfg.conventions.is_empty() {
-        println!("conventions: {}", cfg.conventions.join(", "));
+        let _ = writeln!(out, "conventions: {}", cfg.conventions.join(", "));
     }
-    println!("tier: {}", cfg.tier(t.level));
+    let _ = writeln!(out, "tier: {}", cfg.tier(t.level));
     let footer = cfg.brief_footer.clone().unwrap_or_else(|| {
         "steps:\n  {setup}\n  cd \"$({wt} path {branch})\"\n  work, commit, then: {tasks} submit {id} {branch}\n\
          rules: do not ship or close it. If 5w refuses something, the refusal names the fix;\n\
          a refusal that itself looks wrong: 5w report \"<what happened>\".\n"
             .into()
     });
-    print!(
-        "{}",
-        footer
-            .replace("{setup}", &setup)
-            .replace("{tasks}", &cfg.cmd_tasks)
-            .replace("{ship}", &cfg.cmd_ship)
-            .replace("{wt}", &cfg.cmd_wt)
-            .replace("{id}", &t.id.to_string())
-            .replace("{branch}", &branch)
-    );
-    Ok(())
+    out += &footer
+        .replace("{setup}", &setup)
+        .replace("{tasks}", &cfg.cmd_tasks)
+        .replace("{ship}", &cfg.cmd_ship)
+        .replace("{wt}", &cfg.cmd_wt)
+        .replace("{id}", &t.id.to_string())
+        .replace("{branch}", &branch);
+    out
+}
+
+/// What each open delegable task's brief costs a reader: `(id, bytes, estimated
+/// tokens)`, largest first. For `audit`; one git call for all the branches.
+pub fn brief_costs(repo: &Repo) -> Res<Vec<(u64, usize, usize)>> {
+    let q = Q::load(repo)?;
+    let branches: HashSet<String> = git::git(
+        &repo.primary,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )?
+    .lines()
+    .map(String::from)
+    .collect();
+    let trees: HashSet<String> = git::worktrees(&repo.primary)?
+        .into_iter()
+        .filter_map(|w| w.branch)
+        .collect();
+    let mut v: Vec<(u64, usize, usize)> = q
+        .tasks
+        .iter()
+        .filter(|t| t.state == State::Open && q.delegable(t))
+        .map(|t| {
+            let b = t.branch.clone().unwrap_or_else(|| suggested_branch(t));
+            let text = brief(&q, t, branches.contains(&b), trees.contains(&b));
+            (t.id, text.len(), crate::tokens::estimate(&text))
+        })
+        .collect();
+    v.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
+    Ok(v)
 }
 
 fn doctor(repo: &Repo) -> Res<()> {
+    let d = doctor_findings(repo)?;
+    for p in &d.problems {
+        println!("  {p}");
+    }
+    for n in &d.notes {
+        println!("  note: {n}");
+    }
+    if d.problems.is_empty() {
+        println!("  ok — {} queued, {} archived", d.queued, d.archived);
+        Ok(())
+    } else {
+        bail!("{} problem(s)", d.problems.len())
+    }
+}
+
+pub struct Doctor {
+    pub problems: Vec<String>,
+    pub notes: Vec<String>,
+    pub queued: usize,
+    pub archived: usize,
+}
+
+/// What `doctor` finds in the queue as it is now, without printing it.
+pub fn doctor_findings(repo: &Repo) -> Res<Doctor> {
     let text = repo.load()?;
     let archive = repo.load_archive()?;
     let tasks = queue::parse(&text);
     let archived = queue::parse(&archive);
-    let mut problems = 0;
-    let mut say = |s: String| {
-        println!("  {s}");
-        problems += 1;
-    };
+    let mut problems = Vec::new();
+    let mut say = |s: String| problems.push(s);
     for (id, a, b) in queue::duplicates(&tasks) {
         say(format!("#{id} appears twice: lines {a} and {b}"));
     }
@@ -873,28 +935,27 @@ fn doctor(repo: &Repo) -> Res<()> {
     if queue::unclosed_fence(&text) {
         say("a ``` fence is never closed — every task after it is invisible".into());
     }
+    let mut notes = Vec::new();
     let closed = tasks.iter().filter(|t| t.state == State::Done).count();
     if closed > 0 {
-        println!(
-            "  note: {closed} closed tasks still in {} — `5w archive` moves them out",
+        notes.push(format!(
+            "{closed} closed tasks still in {} — `5w archive` moves them out",
             cfg.file
-        );
+        ));
     }
-    for n in crate::upkeep::notes(repo)? {
-        println!("  note: {n}");
-    }
+    notes.extend(crate::upkeep::notes(repo)?);
     if long > 0 {
-        println!(
-            "  note: {long} open titles over {} chars — `5w split`",
+        notes.push(format!(
+            "{long} open titles over {} chars — `5w split`",
             cfg.title_max
-        );
+        ));
     }
-    if problems == 0 {
-        println!("  ok — {} queued, {} archived", tasks.len(), archived.len());
-        Ok(())
-    } else {
-        bail!("{problems} problem(s)")
-    }
+    Ok(Doctor {
+        problems,
+        notes,
+        queued: tasks.len(),
+        archived: archived.len(),
+    })
 }
 
 // --- writing -------------------------------------------------------------------------------

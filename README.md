@@ -280,6 +280,47 @@ FIVEW_TOKENIZER='uvx -q --with tiktoken python -c "import sys, tiktoken; print(l
   cargo test --release --test bench -- --nocapture
 ```
 
+## Auditing how a repository uses 5W
+
+```
+5w audit [--since <rev|YYYY-MM-DD>] [--json] [--full]
+```
+
+`audit` reports how a repository has used 5W, from what 5W already records: nothing new is logged,
+no transcripts are read, and nothing is written. The queue's history is the record. Every state
+change is a commit on the trunk, so replaying `TASKS.md` and `DONE.md` commit by commit gives each
+task's transitions and their dates. One `git log -p` over the two files, along the trunk's
+first-parent line, rebuilds both files at every commit; rows are compared by id, so an archive is a
+move, and a hand edit counts the same as one `5w` made. Git runs a handful of times, not once per
+commit: on a queue of 815 tasks with 1,705 queue commits, 348 of them by hand, `audit` takes 1.5 s,
+most of it linting those 348.
+
+`--since` narrows every section to what happened after a commit (the commits in `<rev>..<trunk>`)
+or a date (UTC); the state the window starts from is still read from the whole history. A
+repository with no queue history gets the same sections, empty. Compact off a terminal with capped
+lists; `--full` lists more, `--json` everything.
+
+| Section | Shows | Why |
+|---|---|---|
+| `tasks` | tasks by state, closure (`via:`), lane, level and area | where the work is, and whether lanes and levels are used as configured |
+| `review` | submit→accept time per accepted attempt: median, p90, the slowest | how long finished work waits on a reviewer, the bottleneck once the queue grows |
+| `rework` | rejections, how many tasks were sent back once, twice, three or more times, and the reasons | a reason that repeats points at a brief, a convention or a level that is wrong |
+| `reopened` | closed tasks opened again, and how often | work that was closed too early |
+| `blocked` | time open tasks waited on `needs:`, the longest waits and what held them | dependencies that stall delegable work |
+| `outside` | queue commits 5W does not make — a message it never writes, or other files in the same commit — with lint's findings on them | hand edits, each judged against PROTOCOL.md. 5W's own commits pass lint by construction and are not linted again |
+| `doctor` | `5w doctor`'s findings on the queue as it is now | a problem in the file now, beside the history that made it |
+| `failures` | the last failure 5W recorded (`.git/5w/last-failure.md`) and the saved reports, sent or not | refusals and crashes agents met. Only the last failure is kept, so this is a pointer, not a rate |
+| `briefs` | the `delegate` brief of every open delegable task, in bytes and estimated tokens, largest first | a worker's context starts with its brief; the estimator is the benchmark's |
+
+**Cut: branches shipped without a task.** Ship fast-forwards the trunk and deletes the branch, so a
+shipped branch's name survives nowhere 5W records — not in the commits, and in the reflog only
+locally and until it expires. Matching landed commits to `reviewed:` shas instead fails on every
+ship that rebased. A section built on either would be wrong in both directions, so there is none;
+`require_task = true` is the enforcement.
+
+Durations are between commit times (the committer date): a task submitted a day after the work was
+finished is measured from the submit. Blocked time still running is measured to now.
+
 ## Worktrees
 
 ```bash

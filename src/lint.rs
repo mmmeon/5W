@@ -158,6 +158,22 @@ pub fn commits_on(
     Ok(())
 }
 
+/// Judge one queue change given the texts on either side of it — for `audit`,
+/// which has rebuilt them from history and need not ask git again.
+pub fn check_texts(
+    repo: &Repo,
+    old: [String; 2],
+    new: [String; 2],
+    at: &str,
+    out: &mut Vec<String>,
+) {
+    let [queue, archive] = old;
+    let old = Snap { queue, archive };
+    let [queue, archive] = new;
+    let new = Snap { queue, archive };
+    check(&repo.cfg, repo, &old, &new, at, out);
+}
+
 fn show_index(repo: &Repo, name: &str) -> String {
     git::raw(&repo.cwd, &["show", &format!(":{name}")], &[], None)
         .ok()
@@ -211,6 +227,17 @@ fn words(t: &Task) -> Vec<String> {
         .map(|w| w.trim_end_matches('…').to_string())
         .filter(|w| w.chars().any(|c| c.is_alphanumeric()))
         .collect()
+}
+
+/// The same row, byte for byte in every part that is read — the common case,
+/// checked without building `words` and `fields` for every row of a large queue.
+fn identical(o: &Task, n: &Task) -> bool {
+    o.text == n.text
+        && o.body == n.body
+        && (&o.area, o.level, &o.lane, &o.needs, &o.branch)
+            == (&n.area, n.level, &n.lane, &n.needs, &n.branch)
+        && (&o.rework, &o.via, &o.submitted, &o.reviewed)
+            == (&n.rework, &n.via, &n.submitted, &n.reviewed)
 }
 
 /// Every field of a row, as one comparable value.
@@ -291,8 +318,7 @@ fn check(cfg: &Config, repo: &Repo, old: &Snap, new: &Snap, at: &str, out: &mut 
         // it last changed, and re-reporting it on every commit buries the news.
         if let Some(o) = old_all.get(&id)
             && o.state == n.state
-            && words(o) == words(n)
-            && fields(o) == fields(n)
+            && (identical(o, n) || (words(o) == words(n) && fields(o) == fields(n)))
         {
             continue;
         }
