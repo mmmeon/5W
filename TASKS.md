@@ -16,5 +16,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 
 - [ ] #1 Attach SHA256SUMS.asc to v0.1.2: dist/SHA256SUMS.asc is signed, the gh token lacks Contents write @release !1 >restricted
 - [ ] #2 Create the report label on mmmeon/5W so 5w report send can apply it @report !1 >restricted
+- [ ] #3 Release 0.1.3: queue commits and squashes signed when the repository signs @release !1 >restricted
 
 ## Done
