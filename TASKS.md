@@ -31,5 +31,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Compare against what 5w already does (compact off a terminal, one-line refusals naming the fix, --json/--ids). Outcome: a written verdict per principle — adopt, already met, or reject with reason — and follow-up tasks for what is adopted. A TOON writer, if any, is hand-written: no dependencies.
 - [~] #13 Evaluate the Command Line Interface Guidelines (clig.dev) for 5w, alongside the AXI/TOON verdict @output !2 branch:output/task-13 submitted:2eae6317c418
   Source: https://github.com/cli-guidelines/cli-guidelines (published at clig.dev). Extend docs/agent-output.md from #12 (branch output/task-12; stack on it) with a section per guideline area: already met, adopt, or reject with reason — noting where clig (human-first) and AXI (agent-first) conflict and which 5w follows. Proposed follow-ups listed in the file, not queued.
+- [ ] #14 Benchmark the cost of 5w output: bytes, estimated tokens and time per command on generated queues @bench !3
+  Deterministic, no agents, no network, no dependencies. Generate scratch queues of 10, 100 and 1000 tasks (with bodies, needs, archive) and run each read command (ready, next, ls, all, show, delegate, review, doctor, lint) off a terminal, with and without --json, plus common refusals.
+  Record per command: stdout+stderr bytes, estimated tokens (a documented heuristic; an optional external tokenizer command via env for exact counts), wall time.
+  Commit a baseline; a check compares against it with a tolerance and fails on regressions, so output growth is a deliberate choice. Runnable locally and from CI (#4). Numbers back the output follow-ups from #12/#13.
 
 ## Done
