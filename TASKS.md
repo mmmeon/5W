@@ -24,5 +24,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #8 Run the aarch64 release binary on real arm64 hardware @release !1 >manual
 - [ ] #9 self-update and version --latest: opt-in, the pinned version by default, checksums and signature verified @upkeep !2
 - [ ] #10 Forge events as queue transitions: a change request submits, an approving review accepts, from a CI job @ci !3
+- [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4
 
 ## Done
