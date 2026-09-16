@@ -18,5 +18,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #2 Create the report label on mmmeon/5W so 5w report send can apply it @report !1 >restricted
 - [ ] #3 Release 0.1.3: queue commits and squashes signed when the repository signs @release !1 >restricted
 - [ ] #4 CI for 5W itself: cargo fmt, clippy and test on every push and change request, and the 5w ci check @ci !2
+- [ ] #5 Split titles cut at a word boundary end in a misleading …: the rest is in the body, not lost @queue !1
 
 ## Done
