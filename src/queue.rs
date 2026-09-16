@@ -362,7 +362,7 @@ fn repr(kind: Kind, v: &str) -> String {
 
 /// Replace the field of `kind` — the last token of that kind, which is the one
 /// `parse` reads — and append `value` if given. Earlier lookalikes are prose
-/// ("still >game, so…") and stay; the shell version stripped them out of the text.
+/// ("still >manual, so…") and stay; the shell version stripped them out of the text.
 /// The rest of the line keeps its original spacing.
 pub fn set_field(line: &str, kind: Kind, value: Option<&str>) -> String {
     let Some((_, _, rest)) = head(line) else {
@@ -690,7 +690,7 @@ mod tests {
         );
         assert_eq!(rest, "The data is all there and none of it is a guess.");
         assert!(split_title("short", 120).is_none());
-        let line = "- [ ] #5 still >game prose here  @a !2 >agent branch:x/y";
+        let line = "- [ ] #5 still >manual prose here  @a !2 >agent branch:x/y";
         assert_eq!(
             set_text(line, "new"),
             "- [ ] #5 new @a !2 >agent branch:x/y"

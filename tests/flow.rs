@@ -1003,3 +1003,47 @@ fn ci_branch_mode_is_the_ship_check() {
     assert!(!o.status.success());
     assert!(text(o).contains("not the change accepted"));
 }
+
+#[test]
+fn lane_kinds_set_behaviour_whatever_the_lane_is_called() {
+    let r = Repo::new("kinds");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+        .unwrap()
+        .replace(
+            "[lanes.manual]\nkind = \"manual\"",
+            "[lanes.game]\nkind = \"manual\"\nsection = \"## In-game capture\"",
+        );
+    std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "game is a manual lane here"]);
+    r.ok(&r.main, &["add", "capture the menu", "lane:game"]);
+    assert!(
+        r.tasks()
+            .contains("## In-game capture\n\n- [ ] #1 capture the menu >game")
+    );
+    assert!(
+        r.fails(&r.main, &["delegate", "1"])
+            .contains(">game (manual)")
+    );
+    assert!(r.ok(&r.main, &["levels"]).contains(">game (manual) 1"));
+    assert!(
+        r.ok(&r.main, &["show", "1", "--json"])
+            .contains("\"kind\":\"manual\"")
+    );
+    // Submitting a manual row warns: nothing can check who did it.
+    r.git(&r.main, &["branch", "capture/menu"]);
+    let o = r.cli(&r.main, &["submit", "1", "capture/menu"]);
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("only a person, by hand, can have done this")
+    );
+    // A decision lane closes --decided; restricted is delegable.
+    r.ok(&r.main, &["add", "decide", "lane:owner"]);
+    assert!(
+        r.fails(&r.main, &["done", "2", "--self"])
+            .contains("--decided")
+    );
+    r.ok(&r.main, &["add", "deploy", "lane:restricted"]);
+    assert!(
+        r.ok(&r.main, &["delegate", "3"])
+            .contains("needs access an agent may not have")
+    );
+}

@@ -23,21 +23,25 @@ done = "## Done"
 3 = "design judgement — the strongest model"
 4 = "open research — the strongest model, and review the reasoning"
 
-# Who can execute a task at all. `close` is the flag `5w done` requires and the
-# via: it records. Naming any lane here replaces the defaults.
+# Who can execute a task at all. A lane's name is this project's word; its kind
+# is what the work needs, and sets the behaviour:
+#   agent       anything can do it from the repository       delegable, done --self
+#   restricted  needs a machine, an account or a secret      delegable, done --self
+#   manual      a person doing it by hand, outside the repo  not delegable, done --self
+#   decision    a call only the owner makes                  not delegable, done --decided
+# `delegable`, `close`, `note`, `refuse` override the kind; `section` gives a lane
+# its own heading. Naming any lane here replaces the defaults.
 [lanes.agent]
-delegable = true
-close = "self"
+kind = "agent"
 
-[lanes.local]
-delegable = true
-close = "self"
-note = "needs this machine, an account or a secret"
+[lanes.restricted]
+kind = "restricted"
+
+[lanes.manual]
+kind = "manual"
 
 [lanes.owner]
-delegable = false
-close = "decided"
-refuse = "a decision only the owner can make, not work to hand off"
+kind = "decision"
 
 [worktrees]
 # root = "../myrepo-wt"

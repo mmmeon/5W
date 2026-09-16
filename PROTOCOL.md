@@ -15,8 +15,10 @@ If `5w` is installed, use it instead of editing.
 - Fields follow the title, space-separated, any order: `@area`, `!1`–`!4` complexity, `>lane`,
   `needs:#a,#b`, `branch:<name>`, `rework:"<reason>"`, `via:<how>`, `submitted:<sha>`,
   `reviewed:<sha>`. A field value holds no spaces; `rework` is double-quoted with `\"` for a quote.
-- Lanes and the `via:` word each one closes with are in `.5w.toml` (default: `agent` and `local`
-  close `via:self`, `owner` closes `via:decided`). No `>lane` means `>agent`.
+- Lanes are named in `.5w.toml`, each with a kind: `agent` (anything can do it), `restricted`
+  (needs a machine, an account or a secret), `manual` (a person, by hand, outside the repository),
+  `decision` (the owner's call). A `decision` lane closes `via:decided`, every other `via:self`.
+  No `>lane` means the default lane, `>agent` unless configured.
 - Open rows sit under `## Open` (or their lane's own heading); closed rows under `## Done` or in the
   archive file `DONE.md`. Lines inside ``` fences are never rows.
 - A `<sha>` is `git rev-parse --short=12 <branch>`.
@@ -38,8 +40,8 @@ Never:
 
 - change or delete a closed row, other than reopening or archiving it;
 - delete any row, or reuse or renumber an id;
-- close an `>owner` row unless you are the owner, or a `>game`-style non-delegable row you did not
-  do yourself;
+- close, submit or accept a `decision` row unless you are the owner, or a `manual` row nobody did
+  by hand;
 - accept or ship your own delegated work — submit it and stop.
 
 ## Commits

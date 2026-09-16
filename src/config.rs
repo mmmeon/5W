@@ -257,9 +257,70 @@ fn literal(b: &[u8], i: &mut usize) -> Res<String> {
 
 // --- typed config ---------------------------------------------------------------
 
+/// What a lane's work needs, whatever the project calls the lane. Behaviour
+/// follows the kind; the name is the project's own vocabulary (`>game` can be a
+/// manual lane).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneKind {
+    /// Anything can do it from the repository alone.
+    Agent,
+    /// Needs access an agent may not have: a machine, an account, a secret.
+    Restricted,
+    /// A person doing it by hand, outside the repository.
+    Manual,
+    /// A call only the owner makes.
+    Decision,
+}
+
+impl LaneKind {
+    pub fn parse(s: &str) -> Option<LaneKind> {
+        Some(match s {
+            "agent" => LaneKind::Agent,
+            "restricted" => LaneKind::Restricted,
+            "manual" => LaneKind::Manual,
+            "decision" => LaneKind::Decision,
+            _ => return None,
+        })
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            LaneKind::Agent => "agent",
+            LaneKind::Restricted => "restricted",
+            LaneKind::Manual => "manual",
+            LaneKind::Decision => "decision",
+        }
+    }
+    pub fn delegable(self) -> bool {
+        matches!(self, LaneKind::Agent | LaneKind::Restricted)
+    }
+    pub fn close(self) -> &'static str {
+        if self == LaneKind::Decision {
+            "decided"
+        } else {
+            "self"
+        }
+    }
+    fn note(self) -> Option<&'static str> {
+        match self {
+            LaneKind::Restricted => {
+                Some("needs access an agent may not have: a machine, an account, a secret")
+            }
+            _ => None,
+        }
+    }
+    fn refuse(self) -> Option<&'static str> {
+        match self {
+            LaneKind::Manual => Some("manual — a person does this by hand, outside the repository"),
+            LaneKind::Decision => Some("a decision only the owner can make, not work to hand off"),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Lane {
     pub name: String,
+    pub kind: LaneKind,
     /// Shown by `ready` and accepted by `delegate`.
     pub delegable: bool,
     /// The flag `done` requires and the `via:` it records: `self` means `--self`.
@@ -304,20 +365,23 @@ pub struct Config {
     pub cmd_ship: String,
 }
 
+impl Lane {
+    pub fn of_kind(name: &str, kind: LaneKind) -> Lane {
+        Lane {
+            name: name.into(),
+            kind,
+            delegable: kind.delegable(),
+            close: kind.close().into(),
+            section: None,
+            note: kind.note().map(String::from),
+            refuse: kind.refuse().map(String::from),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
-        let lane = |name: &str, delegable, close: &str| Lane {
-            name: name.into(),
-            delegable,
-            close: close.into(),
-            section: None,
-            note: None,
-            refuse: None,
-        };
-        let mut owner = lane("owner", false, "decided");
-        owner.refuse = Some("a decision only the owner can make, not work to hand off".into());
-        let mut local = lane("local", true, "self");
-        local.note = Some("needs this machine, an account or a secret".into());
+        let lane = |name: &str, kind| Lane::of_kind(name, kind);
         Config {
             file: "TASKS.md".into(),
             archive: "DONE.md".into(),
@@ -337,7 +401,12 @@ impl Default for Config {
                     "open research — the strongest model, and review the reasoning".into(),
                 ),
             ]),
-            lanes: vec![lane("agent", true, "self"), local, owner],
+            lanes: vec![
+                lane("agent", LaneKind::Agent),
+                lane("restricted", LaneKind::Restricted),
+                lane("manual", LaneKind::Manual),
+                lane("owner", LaneKind::Decision),
+            ],
             require_task: false,
             wt_root: None,
             links_file: ".worktree-links".into(),
@@ -378,7 +447,18 @@ impl Config {
                 _ => Err(format!("config: {k} must be true or false")),
             }
         };
-        let mut lanes_seen = false;
+        // Lane fields are collected raw and resolved after the loop, because the
+        // kind decides the defaults and may be written after the fields.
+        #[derive(Default)]
+        struct RawLane {
+            kind: Option<String>,
+            delegable: Option<bool>,
+            close: Option<String>,
+            section: Option<String>,
+            note: Option<String>,
+            refuse: Option<String>,
+        }
+        let mut raw: Vec<(String, RawLane)> = Vec::new();
         for (k, v) in &kv {
             match k.as_str() {
                 "file" => c.file = s(v, k)?,
@@ -421,32 +501,21 @@ impl Config {
                     let Some((name, field)) = rest.split_once('.') else {
                         bail!("config: bad lane key {k}")
                     };
-                    if !lanes_seen {
-                        // A config that names lanes replaces the defaults wholesale.
-                        c.lanes.clear();
-                        lanes_seen = true;
-                    }
                     if !name.bytes().all(|b| b.is_ascii_lowercase()) {
                         bail!("config: lane names are lowercase letters: {name}");
                     }
-                    let idx = match c.lanes.iter().position(|l| l.name == name) {
+                    let idx = match raw.iter().position(|(n, _)| n == name) {
                         Some(i) => i,
                         None => {
-                            c.lanes.push(Lane {
-                                name: name.into(),
-                                delegable: true,
-                                close: "self".into(),
-                                section: None,
-                                note: None,
-                                refuse: None,
-                            });
-                            c.lanes.len() - 1
+                            raw.push((name.to_string(), RawLane::default()));
+                            raw.len() - 1
                         }
                     };
-                    let l = &mut c.lanes[idx];
+                    let l = &mut raw[idx].1;
                     match field {
-                        "delegable" => l.delegable = boolean(v, k)?,
-                        "close" => l.close = s(v, k)?,
+                        "kind" => l.kind = Some(s(v, k)?),
+                        "delegable" => l.delegable = Some(boolean(v, k)?),
+                        "close" => l.close = Some(s(v, k)?),
                         "section" => l.section = Some(s(v, k)?),
                         "note" => l.note = Some(s(v, k)?),
                         "refuse" => l.refuse = Some(s(v, k)?),
@@ -455,6 +524,39 @@ impl Config {
                 }
                 _ => bail!("config: unknown key {k}"),
             }
+        }
+        // A config that names lanes replaces the defaults wholesale.
+        if !raw.is_empty() {
+            c.lanes = raw
+                .into_iter()
+                .map(|(name, r)| {
+                    // Without `kind`, infer it from the older flags, so existing
+                    // configs keep their meaning.
+                    let kind = match &r.kind {
+                        Some(k) => LaneKind::parse(k).ok_or_else(|| {
+                            format!("config: lanes.{name}.kind must be agent, restricted, manual or decision, not {k:?}")
+                        })?,
+                        None if r.close.as_deref() == Some("decided") => LaneKind::Decision,
+                        None if r.delegable == Some(false) => LaneKind::Manual,
+                        None => LaneKind::Agent,
+                    };
+                    let mut l = Lane::of_kind(&name, kind);
+                    if let Some(d) = r.delegable {
+                        l.delegable = d;
+                    }
+                    if let Some(cl) = r.close {
+                        l.close = cl;
+                    }
+                    l.section = r.section;
+                    if r.note.is_some() {
+                        l.note = r.note;
+                    }
+                    if r.refuse.is_some() {
+                        l.refuse = r.refuse;
+                    }
+                    Ok(l)
+                })
+                .collect::<Res<Vec<Lane>>>()?;
         }
         if !c.lanes.iter().any(|l| l.name == c.default_lane) {
             bail!(
@@ -494,15 +596,19 @@ mod tests {
             "trunk = \"main\"   # trailing\n",
             "perennial = [\"cloudflare\", 'x']\n",
             "[lanes.agent]\ndelegable = true\n",
-            "[lanes.game]\ndelegable = false\nsection = \"## In-game capture\"\n",
+            "[lanes.capture]\nkind = \"manual\"\nsection = \"## Capture\"\n",
+            "[lanes.legacy]\ndelegable = false\n",
             "[levels]\n1 = \"tiny\"\n",
             "[delegate]\nfooter = \"\"\"\nline one\nline \"two\"\n\"\"\"\n",
         );
         let c = Config::from_toml(src).unwrap();
         assert_eq!(c.trunk.as_deref(), Some("main"));
         assert_eq!(c.perennial, vec!["cloudflare", "x"]);
-        assert_eq!(c.lanes.len(), 2);
-        assert!(!c.lane("game").unwrap().delegable);
+        assert_eq!(c.lanes.len(), 3);
+        let capture = c.lane("capture").unwrap();
+        assert!(capture.kind == LaneKind::Manual && !capture.delegable && capture.close == "self");
+        // An old-style lane with no kind keeps its meaning.
+        assert_eq!(c.lane("legacy").unwrap().kind, LaneKind::Manual);
         assert_eq!(c.levels[&1], "tiny");
         assert_eq!(c.brief_footer.as_deref(), Some("line one\nline \"two\"\n"));
     }

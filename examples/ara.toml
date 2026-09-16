@@ -21,23 +21,19 @@ done = "## Done"
 4 = "open research — the strongest model, and review the reasoning"
 
 [lanes.agent]
-delegable = true
-close = "self"
+kind = "agent"
 
 [lanes.local]
-delegable = true
-close = "self"
+kind = "restricted"
 note = "needs this machine, an account or a secret"
 
 [lanes.game]
-delegable = false
-close = "self"
+kind = "manual"
 section = "## In-game capture"
-refuse = "in-game — not delegable. It needs a human in the client."
+refuse = "in-game — it needs a human in the client."
 
 [lanes.owner]
-delegable = false
-close = "decided"
+kind = "decision"
 refuse = "a decision only the owner can make. The reasoning belongs in QUESTIONS.md."
 
 [worktrees]

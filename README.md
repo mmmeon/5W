@@ -28,7 +28,7 @@ cd your-repo && 5w init       # writes .5w.toml and TASKS.md, commits them
 
 ## Done
 
-- [x] #12 capture samples  @faces !1 >local via:self
+- [x] #12 capture samples  @faces !1 >restricted via:self
 - [x] #13 read the spec  @faces !2 branch:faces/spec via:review reviewed:3f9c2a1b7d04
 ```
 
@@ -36,7 +36,7 @@ cd your-repo && 5w init       # writes .5w.toml and TASKS.md, commits them
 | ------------------------ | --------------------------------------------------------------------------------------------- |
 | `@area`                  | groups the backlog; `delegate` lists the docs that exist under that directory                 |
 | `!1`–`!4`                | complexity — the _decision content_, not the size. Picks which model can be trusted with it   |
-| `>lane`                  | who can execute it at all. Lanes are configured; the default set is `agent`, `local`, `owner` |
+| `>lane`                  | who can execute it at all: a configured name with a kind — `agent`, `restricted`, `manual`, `decision` (defaults: `>agent` `>restricted` `>manual` `>owner`) |
 | `needs:#a,#b`            | blocked until every one is `[x]`                                                              |
 | `branch:`                | the branch doing the work; `ship` keys the gate on it                                         |
 | `rework:"…"`             | why the last attempt was rejected; `delegate` opens with it                                   |
@@ -44,7 +44,7 @@ cd your-repo && 5w init       # writes .5w.toml and TASKS.md, commits them
 | `submitted:` `reviewed:` | the commits submit and accept saw; `accept` and `ship` check them                             |
 
 `[ ]` open · `[~]` submitted · `[x]` closed. Lines inside ```fences are never tasks. Ids are
-permanent. Fields are order-free, and the *last* token of a kind is the field — an earlier`>game` in the prose stays prose.
+permanent. Fields are order-free, and the *last* token of a kind is the field — an earlier`>manual` in the prose stays prose.
 
 ## The loop
 
@@ -78,7 +78,7 @@ parallel `add`s mint distinct ids, and state checks read the committed queue und
 hand-edited `[~]` in a working copy does not make a task acceptable.
 
 **Closing says how.** `accept` records `via:review`. `done` refuses without the flag its lane
-names — `--self` on `agent`/`local`, `--decided` on `owner` — so closing an owner decision is never
+names — `--decided` on a decision lane, `--self` on the rest — so closing an owner decision is never
 a reflex. Nothing can check who is typing; the flag makes it a deliberate, recorded act.
 
 **Accept is of what was submitted.** A branch that gained commits after `submit` is not accepted
@@ -240,7 +240,7 @@ that keeps its own section, a custom brief footer and a review checklist.
 | `require_task`                              | refuse to ship a branch no task names                                                 |
 | `[sections]`                                | `open`, `done` headings; created if missing                                           |
 | `[levels]`                                  | the tier text per complexity                                                          |
-| `[lanes.<name>]`                            | `delegable`, `close`, `section`, `note`, `refuse`                                     |
+| `[lanes.<name>]`                            | `kind`, `section`; `delegable`, `close`, `note`, `refuse` override the kind            |
 | `[worktrees]`                               | `root`, `links_file`, `install`, `install_marker`, `disposable`                       |
 | `[delegate]`                                | `context`, `area_docs`, `conventions`, `footer` (`{tasks} {ship} {wt} {id} {branch}`) |
 | `[review]`                                  | `checklist`, printed under `5w review`                                                |

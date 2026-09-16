@@ -266,7 +266,7 @@ impl<'a> Q<'a> {
             )
         };
         let mut out = format!(
-            "{{\"id\":{},\"state\":\"{}\",\"level\":{},\"area\":{},\"lane\":{},\"title\":{},\"branch\":{},\"needs\":{},\"unmet\":{},\"rework\":{}",
+            "{{\"id\":{},\"state\":\"{}\",\"level\":{},\"area\":{},\"lane\":{},\"kind\":{},\"title\":{},\"branch\":{},\"needs\":{},\"unmet\":{},\"rework\":{}",
             t.id,
             match t.state {
                 State::Open => "open",
@@ -276,6 +276,12 @@ impl<'a> Q<'a> {
             t.level.map(|l| l.to_string()).unwrap_or("null".into()),
             opt(&t.area),
             js(self.lane(t)),
+            js(self
+                .repo
+                .cfg
+                .lane(self.lane(t))
+                .map(|l| l.kind.name())
+                .unwrap_or("unknown")),
             js(&t.text),
             opt(&t.branch),
             ids(&t.needs),
@@ -329,6 +335,28 @@ fn js(s: &str) -> String {
         }
     }
     out + "\""
+}
+
+/// Submit and accept cannot tell who is typing, so on a lane whose work only a
+/// person (manual) or the owner (decision) can do, they say so rather than
+/// refuse: an owner decision can legitimately arrive as a branch.
+fn warn_not_delegable(repo: &Repo, t: &Task, what: &str) {
+    let name = t.lane.as_deref().unwrap_or(&repo.cfg.default_lane);
+    if let Some(l) = repo.cfg.lane(name)
+        && !l.kind.delegable()
+    {
+        let who = if l.kind == crate::config::LaneKind::Manual {
+            "a person, by hand,"
+        } else {
+            "the owner"
+        };
+        eprintln!(
+            "note: #{} is >{} ({}): only {who} can have done this — {what} only if that is so",
+            t.id,
+            l.name,
+            l.kind.name()
+        );
+    }
 }
 
 /// The task as the committed queue has it, under the lock.
@@ -520,7 +548,13 @@ fn levels(repo: &Repo) -> Res<()> {
         .iter()
         .filter_map(|l| {
             let n = open.iter().filter(|t| q.lane(t) == l.name).count();
-            (n > 0).then(|| format!(">{} {n}", l.name))
+            (n > 0).then(|| {
+                if l.name == l.kind.name() {
+                    format!(">{} {n}", l.name)
+                } else {
+                    format!(">{} ({}) {n}", l.name, l.kind.name())
+                }
+            })
         })
         .collect();
     println!("open by lane: {}", lanes.join(" · "));
@@ -689,9 +723,10 @@ fn delegate(repo: &Repo, id: &str) -> Res<()> {
     let lane = cfg.lane(lane_name);
     if let Some(l) = lane.filter(|l| !l.delegable) {
         bail!(
-            "#{} is >{}: {}",
+            "#{} is >{} ({}): {}",
             t.id,
             l.name,
+            l.kind.name(),
             l.refuse.as_deref().unwrap_or("not delegable")
         );
     }
@@ -1088,6 +1123,7 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
     if ahead == "0" {
         eprintln!("warning: {branch} has nothing {} lacks", repo.trunk);
     }
+    warn_not_delegable(repo, t, "submit it");
     let sha = short(&tip).to_string();
     let msg = format!("{}: submit #{id} for review", repo.cfg.commit_prefix);
     let tasks_cmd = repo.cfg.cmd_tasks.clone();
@@ -1207,6 +1243,7 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
         }
         _ => {}
     }
+    warn_not_delegable(repo, t, "accept it");
     let mut reviewed = None;
     if let Some(b) = &t.branch {
         let tip = git::rev(&repo.primary, &format!("refs/heads/{b}"));
