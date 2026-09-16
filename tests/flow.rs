@@ -1148,6 +1148,39 @@ fn a_report_carries_the_last_failure_and_sends_nothing_by_itself() {
     assert!(!r.ok(&r.main, &["report", "list"]).contains("second"));
 }
 
+#[test]
+fn a_crash_records_last_failure_and_says_how_to_report_it() {
+    let r = Repo::new("crash");
+    let mut c = Command::new(bin5w());
+    c.args(["ready"]).current_dir(&r.main);
+    env(&mut c, &r.root);
+    c.env("FIVEW_TEST_PANIC", "1");
+    let o = c.output().unwrap();
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(
+        err.contains("5w crashed — this is a bug") && err.contains("5w report"),
+        "{err}"
+    );
+
+    let last =
+        std::fs::read_to_string(r.main.join(".git/5w/last-failure.md")).expect("last-failure.md");
+    assert!(last.contains("5w ready"), "{last}");
+    assert!(
+        last.contains("panic: ") && last.contains("FIVEW_TEST_PANIC"),
+        "{last}"
+    );
+
+    // The crash is attached to a report exactly like any other last failure.
+    let out = r.ok(&r.main, &["report", "ready crashed on me"]);
+    assert!(out.contains("saved report 1"), "{out}");
+    let shown = r.ok(&r.main, &["report", "show", "1"]);
+    assert!(
+        shown.contains("panic: ") && shown.contains("FIVEW_TEST_PANIC"),
+        "{shown}"
+    );
+}
+
 // --- staying current --------------------------------------------------------------------
 
 fn set_requires(r: &Repo, v: &str) {

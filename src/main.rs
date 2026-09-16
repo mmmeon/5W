@@ -30,6 +30,12 @@ fn main() {
         signal(13, 0); // SIGPIPE, SIG_DFL
     }
     report::install_panic_hook();
+    // Test-only: the panic hook has no other way to be exercised, since no
+    // ordinary command should ever crash. Not documented, and setting it does
+    // nothing but crash the process on purpose.
+    if std::env::var_os("FIVEW_TEST_PANIC").is_some() {
+        panic!("FIVEW_TEST_PANIC");
+    }
     let argv: Vec<String> = std::env::args().collect();
     // Invoked through a symlink named `tasks`, `wt` or `ship`, behave as that
     // tool — so a repo can keep `bin/tasks` and friends as the spelling.
