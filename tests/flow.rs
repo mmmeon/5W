@@ -23,7 +23,9 @@ fn env(c: &mut Command, root: &Path) {
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@example.com")
         .env("NO_COLOR", "1")
-        .env("FIVEW_WT_ROOT", root.join("wt"));
+        .env("FIVEW_WT_ROOT", root.join("wt"))
+        // Hooks call `5w` from PATH: make that the binary under test.
+        .env("PATH", path_with_5w());
 }
 
 impl Repo {
@@ -1112,4 +1114,115 @@ fn a_report_carries_the_last_failure_and_sends_nothing_by_itself() {
     assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
     r.ok(&r.main, &["report", "rm", "2"]);
     assert!(!r.ok(&r.main, &["report", "list"]).contains("second"));
+}
+
+// --- staying current --------------------------------------------------------------------
+
+fn set_requires(r: &Repo, v: &str) {
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let cfg = cfg
+        .lines()
+        .map(|l| {
+            if l.starts_with("requires = ") {
+                format!("requires = \"{v}\"")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "pin"]);
+}
+
+#[test]
+fn a_project_requiring_a_newer_5w_is_refused_clearly() {
+    let r = Repo::new("requires");
+    // init pins the version that wrote it.
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(
+        cfg.contains(&format!("requires = \"{}\"", env!("CARGO_PKG_VERSION"))),
+        "{cfg}"
+    );
+    r.ok(&r.main, &["doctor"]);
+
+    set_requires(&r, "99.0.0");
+    let out = r.fails(&r.main, &["ready"]);
+    assert!(
+        out.contains("requires 5w 99.0.0 or later") && out.contains("releases/tag/v99.0.0"),
+        "{out}"
+    );
+    // A newer key alongside does not mask the pin.
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap() + "future_key = true\n";
+    std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "future"]);
+    assert!(r.fails(&r.main, &["ready"]).contains("requires 5w 99.0.0"));
+    // Nothing that does not need the project is blocked.
+    r.ok(&r.main, &["--version"]);
+}
+
+#[test]
+fn an_unknown_key_says_a_newer_5w_may_know_it() {
+    let r = Repo::new("unknownkey");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap() + "future_key = true\n";
+    std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "future"]);
+    assert!(
+        r.fails(&r.main, &["ready"])
+            .contains("a newer one may know it")
+    );
+}
+
+#[test]
+fn doctor_finds_stale_installed_files_and_update_files_refreshes_them() {
+    let r = Repo::new("stale");
+    r.ok(&r.main, &["hook", "install"]);
+    let proto = std::fs::read_to_string(r.main.join("PROTOCOL.md")).unwrap();
+    assert!(proto.starts_with(&format!(
+        "<!-- 5w {} protocol -->",
+        env!("CARGO_PKG_VERSION")
+    )));
+    assert!(!r.ok(&r.main, &["doctor"]).contains("note: PROTOCOL.md"));
+
+    // As if an older 5w had installed both.
+    let old = proto
+        .replacen(env!("CARGO_PKG_VERSION"), "0.0.9", 1)
+        .replace("## Commits", "## Commit rules");
+    std::fs::write(r.main.join("PROTOCOL.md"), old).unwrap();
+    r.git(&r.main, &["commit", "-qam", "old protocol"]);
+    let hook = r.main.join(".git/hooks/pre-commit");
+    let h = std::fs::read_to_string(&hook)
+        .unwrap()
+        .replace(env!("CARGO_PKG_VERSION"), "0.0.9");
+    std::fs::write(&hook, h).unwrap();
+    set_requires(&r, "0.0.9");
+
+    let doc = r.ok(&r.main, &["doctor"]);
+    assert!(doc.contains("PROTOCOL.md is from 0.0.9"), "{doc}");
+    assert!(doc.contains("pre-commit hook is from an older 5w"), "{doc}");
+    assert!(doc.contains("requires = \"0.0.9\""), "{doc}");
+
+    let up = r.ok(&r.main, &["update-files", "--pin"]);
+    assert!(
+        up.contains("updated PROTOCOL.md")
+            && up.contains("updated pre-commit hook")
+            && up.contains("requires"),
+        "{up}"
+    );
+    // Left for review, not committed.
+    let status = r.git(&r.main, &["status", "--porcelain"]);
+    assert!(
+        status.contains("PROTOCOL.md") && status.contains(".5w.toml"),
+        "{status}"
+    );
+    r.git(&r.main, &["commit", "-qam", "update 5w files"]);
+    let doc = r.ok(&r.main, &["doctor"]);
+    assert!(
+        !doc.contains("note: PROTOCOL")
+            && !doc.contains("hook is from")
+            && !doc.contains("requires ="),
+        "{doc}"
+    );
+    assert!(r.ok(&r.main, &["update-files"]).contains("up to date"));
 }

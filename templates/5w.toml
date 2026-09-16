@@ -1,5 +1,7 @@
 # 5W — see https://github.com/<you>/5W for every key.
 
+# The oldest 5w this project works with; an older one refuses. `5w update-files --pin` raises it.
+requires = "{version}"
 trunk = "{trunk}"
 file = "TASKS.md"
 # `5w archive` moves closed tasks here; ids stay taken and ship still reads them.

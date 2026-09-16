@@ -33,6 +33,7 @@ write (each commits itself to the trunk, and only itself)
 protocol (PROTOCOL.md — the rules, for editing without the tool)
   lint [--staged | <rev> | <a>..<b>]   check queue edits follow it
   hook install | uninstall             pre-commit hook running `lint --staged`
+  update-files [--pin]                 refresh PROTOCOL.md and hooks to this 5w; --pin sets requires
   ci --base --head --ref|--branch      the forge-neutral check for CI and pre-receive
 
 feedback about 5W itself
@@ -878,6 +879,9 @@ fn doctor(repo: &Repo) -> Res<()> {
             "  note: {closed} closed tasks still in {} — `5w archive` moves them out",
             cfg.file
         );
+    }
+    for n in crate::upkeep::notes(repo)? {
+        println!("  note: {n}");
     }
     if long > 0 {
         println!(

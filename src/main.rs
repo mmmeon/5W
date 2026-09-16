@@ -7,6 +7,7 @@ mod report;
 mod ship;
 mod store;
 mod tasks;
+mod upkeep;
 mod util;
 mod wt;
 
@@ -15,7 +16,6 @@ use util::Res;
 
 const TEMPLATE_TASKS: &str = include_str!("../templates/TASKS.md");
 const TEMPLATE_CONFIG: &str = include_str!("../templates/5w.toml");
-const TEMPLATE_PROTOCOL: &str = include_str!("../templates/PROTOCOL.md");
 
 #[cfg(unix)]
 unsafe extern "C" {
@@ -97,6 +97,7 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         "lint" => lint::run(&repo, rest),
         "ci" => ci::run(&repo, rest),
         "hook" => lint::hook(&repo, rest),
+        "update-files" => upkeep::update_files(&repo, rest),
         _ => tasks::run(&repo, &cmd, rest),
     }
 }
@@ -110,8 +111,13 @@ fn init(repo: &Repo) -> Res<()> {
     let mut created = Vec::new();
     let cfg = p.join(store::CONFIG_FILE);
     if !cfg.exists() {
-        std::fs::write(&cfg, TEMPLATE_CONFIG.replace("{trunk}", &repo.trunk))
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            &cfg,
+            TEMPLATE_CONFIG
+                .replace("{trunk}", &repo.trunk)
+                .replace("{version}", upkeep::VERSION),
+        )
+        .map_err(|e| e.to_string())?;
         created.push(store::CONFIG_FILE.to_string());
     }
     let tf = p.join(&repo.cfg.file);
@@ -121,7 +127,7 @@ fn init(repo: &Repo) -> Res<()> {
     }
     let proto = p.join("PROTOCOL.md");
     if !proto.exists() {
-        std::fs::write(&proto, TEMPLATE_PROTOCOL).map_err(|e| e.to_string())?;
+        std::fs::write(&proto, upkeep::protocol_text()).map_err(|e| e.to_string())?;
         created.push("PROTOCOL.md".to_string());
     }
     if created.is_empty() {

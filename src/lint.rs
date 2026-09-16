@@ -410,18 +410,7 @@ fn check(cfg: &Config, repo: &Repo, old: &Snap, new: &Snap, at: &str, out: &mut 
 
 // --- the hook ----------------------------------------------------------------------------
 
-const HOOK_MARK: &str = "# installed by 5w";
-
-fn hook_path(repo: &Repo, kind: &str) -> Res<std::path::PathBuf> {
-    let dir = git::opt(
-        &repo.primary,
-        &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
-    )
-    .ok_or("cannot find the hooks directory")?;
-    Ok(std::path::PathBuf::from(dir).join(kind))
-}
-
-const PRE_RECEIVE: &str = include_str!("../ci/pre-receive");
+use crate::upkeep::{HOOK_MARK, hook_path, hook_script};
 
 pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
     let kind = args.get(1).map(|s| s.as_str()).unwrap_or("pre-commit");
@@ -433,10 +422,14 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
     match args.first().map(|s| s.as_str()) {
         Some("install") => {
             match ours {
-                Ok(true) => {
+                Ok(true)
+                    if std::fs::read_to_string(&path).ok().as_deref()
+                        == Some(hook_script(repo, kind).as_str()) =>
+                {
                     println!("hook: already installed at {}", path.display());
                     return Ok(());
                 }
+                Ok(true) => {} // ours, from another version: rewrite it
                 Ok(false) => bail!(
                     "{} exists and is not ours; call 5w from it instead (see `5w hook` in the README)",
                     path.display()
@@ -446,17 +439,7 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
             if let Some(d) = path.parent() {
                 std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
             }
-            let script = if kind == "pre-receive" {
-                PRE_RECEIVE.to_string()
-            } else {
-                format!(
-                    "#!/bin/sh\n{HOOK_MARK} — checks queue edits against PROTOCOL.md\n\
-                 if command -v 5w >/dev/null 2>&1; then\n  exec 5w lint --staged\nfi\n\
-                 if git diff --cached --name-only | grep -qx -e '{}' -e '{}'; then\n  \
-                 echo '5w is not installed: this queue edit is unchecked. Follow PROTOCOL.md.' >&2\nfi\nexit 0\n",
-                    repo.cfg.file, repo.cfg.archive
-                )
-            };
+            let script = hook_script(repo, kind);
             std::fs::write(&path, script).map_err(|e| e.to_string())?;
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))

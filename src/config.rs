@@ -335,6 +335,8 @@ pub struct Lane {
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// The oldest 5w this project works with.
+    pub requires: Option<String>,
     pub file: String,
     /// Where `archive` moves closed tasks.
     pub archive: String,
@@ -383,6 +385,7 @@ impl Default for Config {
     fn default() -> Self {
         let lane = |name: &str, kind| Lane::of_kind(name, kind);
         Config {
+            requires: None,
             file: "TASKS.md".into(),
             archive: "DONE.md".into(),
             title_max: 120,
@@ -428,6 +431,14 @@ impl Default for Config {
 impl Config {
     pub fn from_toml(src: &str) -> Res<Config> {
         let kv = parse_toml(src)?;
+        // The pin first: a project written for a newer 5w may use keys this one
+        // does not know, and "unknown key" would hide the real problem.
+        if let Some((_, v)) = kv.iter().find(|(k, _)| k == "requires") {
+            match v {
+                Val::Str(r) => crate::upkeep::check_requires(r)?,
+                _ => bail!("config: requires must be a version string"),
+            }
+        }
         let mut c = Config::default();
         let s = |v: &Val, k: &str| -> Res<String> {
             match v {
@@ -461,6 +472,7 @@ impl Config {
         let mut raw: Vec<(String, RawLane)> = Vec::new();
         for (k, v) in &kv {
             match k.as_str() {
+                "requires" => c.requires = Some(s(v, k)?),
                 "file" => c.file = s(v, k)?,
                 "archive" => c.archive = s(v, k)?,
                 "title_max" => match v {
@@ -522,7 +534,10 @@ impl Config {
                         _ => bail!("config: unknown lane field {k}"),
                     }
                 }
-                _ => bail!("config: unknown key {k}"),
+                _ => bail!(
+                    "config: unknown key {k} (this is 5w {}; a newer one may know it — set `requires` to say which)",
+                    crate::upkeep::VERSION
+                ),
             }
         }
         // A config that names lanes replaces the defaults wholesale.

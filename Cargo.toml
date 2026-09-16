@@ -1,6 +1,6 @@
 [package]
 name = "fivew"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A review-gated task queue over a markdown file, with stacked worktrees and a fast-forward ship"
 license = "MIT"

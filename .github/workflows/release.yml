@@ -1,6 +1,7 @@
-# 5w release. Push a tag v<version> matching Cargo.toml: builds static binaries with
-# ci/release.sh, tests the x86_64 one with the full suite, publishes both with
-# SHA256SUMS. (ci/release-github.yml is the same file, for other repositories.)
+# 5w release. Tag with ci/tag-release.sh (a signed tag carrying SHA256SUMS) and push
+# it: this checks the tag's signature, rebuilds with ci/release.sh, tests, refuses
+# unless the sums equal the signed ones, and publishes. ci/sign-release.sh then
+# attaches SHA256SUMS.asc. (ci/release-github.yml is the same file, for other repositories.)
 name: release
 on:
   push:
@@ -18,8 +19,21 @@ jobs:
         run: |
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "tag $GITHUB_REF_NAME != v$v"; exit 1; }
+      - name: the tag is signed by the release key
+        run: |
+          # checkout can leave an annotated tag lightweight; fetch the real object.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          gpg --batch --import SIGNING_KEY.asc
+          git verify-tag --raw "$GITHUB_REF_NAME" 2>&1 \
+            | grep -q '^\[GNUPG:\] VALIDSIG 1125DC32ECA09CA21A1810DE3491A839212CC7DB ' \
+            || { echo "tag $GITHUB_REF_NAME is not signed by the release key"; exit 1; }
+          git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents:body)' \
+            | grep -E '^[0-9a-f]{64}  5w-' > "$RUNNER_TEMP/tag-sums"
+          [ -s "$RUNNER_TEMP/tag-sums" ] || { echo "the tag carries no SHA256SUMS (ci/tag-release.sh)"; exit 1; }
       - name: build and test
         run: ci/release.sh
+      - name: the build is the one that was signed
+        run: diff "$RUNNER_TEMP/tag-sums" dist/SHA256SUMS
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}

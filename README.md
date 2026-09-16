@@ -176,8 +176,8 @@ A missing or all-zero `--base` means the merge-base with the trunk. The checkout
 | GitLab CI                                                                       | [ci/gitlab-ci.yml](ci/gitlab-ci.yml)                                                                                                                                                                                                 |
 | Anything else                                                                   | map its before/after SHAs, ref and change-request branch onto the flags                                                                                                                                                              |
 
-The wrappers install `5w` from a prebuilt binary (`FIVEW_URL` + `FIVEW_SHA256`) or build it
-(`FIVEW_GIT`).
+The wrappers install exactly the version the project pins (see *Staying current*), verified —
+[ci/install-5w.sh](ci/install-5w.sh), inlined.
 
 ### Release binaries
 
@@ -190,11 +190,18 @@ Static musl executables, about 1 MB, runnable on any Linux. The build runs in a 
 reproducible: the same commit gives the same bytes on any machine (compiler pinned, paths remapped,
 `--locked`, commit timestamp). Before writing `SHA256SUMS` it runs the full test suite against the
 artifact the host can execute (`FIVEW_TEST_BIN`), so what ships is what was tested.
-`5w --version` names the commit. [ci/release-github.yml](ci/release-github.yml) runs it on a
-`v<version>` tag and publishes the binaries with their sums.
+`5w --version` names the commit.
 
-For the CI wrappers: `FIVEW_URL` is the x86_64 asset's download URL, `FIVEW_SHA256` its hash from
-`SHA256SUMS`.
+Releasing ties the published binaries to the release key without the key leaving the maintainer's
+machine:
+
+1. `ci/tag-release.sh` builds, then makes a **signed tag whose message is `SHA256SUMS`**.
+2. Pushing it runs [the release workflow](.github/workflows/release.yml): it checks the tag is signed
+   by the key in [SIGNING_KEY.asc](SIGNING_KEY.asc) (fingerprint pinned in the workflow), rebuilds,
+   tests, and **refuses to publish unless its sums equal the signed ones** — possible because the
+   build is reproducible.
+3. `ci/sign-release.sh v<version>` checks the published sums against a local build and attaches
+   `SHA256SUMS.asc`, which installers verify.
 
 **What is and is not gated.** Queue commits land directly on the trunk, and hosted CI runs after a
 push is accepted: there a bad queue edit turns the build red rather than being refused. For a hard
@@ -283,6 +290,27 @@ text). Differences in behaviour to know about:
   existed for a layout where every branch carried its own queue, which the scripts had already
   abandoned.
 - Reads take milliseconds; the shell version took ten seconds on the same queue.
+
+## Staying current
+
+A project using 5W drifts in three places, and each is covered:
+
+- **The binary.** `.5w.toml` pins the oldest 5w the project works with: `requires = "0.1.2"` (`init`
+  writes it). An older binary refuses with the version to get and where, before reading anything
+  else in the config — so a key it does not know cannot hide the real problem. Newer binaries run:
+  releases only add config keys.
+- **CI.** [ci/install-5w.sh](ci/install-5w.sh), inlined in both wrappers, reads that same pin,
+  downloads that release, checks it against `SHA256SUMS`, and — when the release carries
+  `SHA256SUMS.asc` — that the sums are signed by the release key, whose fingerprint the script pins.
+  `FIVEW_REQUIRE_SIGNATURE=1` makes an unsigned release fatal. Upgrading a project, locally and in
+  CI, is one reviewed line.
+- **Files 5W installed.** PROTOCOL.md and the hooks carry the version that wrote them.
+  `5w doctor` notes a stale or hand-edited copy and a pin older than the running binary;
+  `5w update-files` rewrites them in the worktree you stand in (hooks in place), and `--pin` raises
+  `requires` — left uncommitted, to review like any change.
+
+Nothing checks for new releases in the background: agents often run offline, and a private
+repository should not call out on its own.
 
 ## Reporting problems with 5W
 

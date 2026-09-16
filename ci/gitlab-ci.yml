@@ -1,25 +1,52 @@
-# 5w — include in .gitlab-ci.yml (or copy the job). Set a CI/CD variable
-# FIVEW_URL + FIVEW_SHA256 for a prebuilt binary, or FIVEW_GIT to build it.
-# Make the pipeline required to merge; a merge request stays red until its task
-# is accepted — re-run the pipeline after `5w accept`.
+# 5w — include in .gitlab-ci.yml (or copy the job). 5w is installed at the version
+# .5w.toml pins (`requires`), verified against SHA256SUMS and, when present, its
+# signature; the before_script is ci/install-5w.sh, inlined. Make the pipeline
+# required to merge; a merge request stays red until its task is accepted —
+# re-run the pipeline after `5w accept`.
 5w:
-  image: rust:1-slim
+  image: debian:stable-slim
   variables:
     GIT_DEPTH: "0"
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
   before_script:
+    - apt-get update -qq && apt-get install -qq -y curl gnupg >/dev/null
     - |
-      if [ -n "$FIVEW_URL" ]; then
-        apt-get update -qq && apt-get install -qq -y curl >/dev/null
-        curl -fsSL "$FIVEW_URL" -o /usr/local/bin/5w
-        echo "$FIVEW_SHA256  /usr/local/bin/5w" | sha256sum -c -
-        chmod +x /usr/local/bin/5w
-      else
-        apt-get update -qq && apt-get install -qq -y git >/dev/null
-        cargo install --locked --root /usr/local --git "$FIVEW_GIT" fivew
+      set -eu
+      dest=/usr/local/bin
+      KEY_FPR=1125DC32ECA09CA21A1810DE3491A839212CC7DB   # mmmeon <si@mmmeon.com>, signing subkey
+      REPO=${FIVEW_REPO:-mmmeon/5W}
+
+      v=$(sed -n 's/^requires *= *"\([0-9][0-9.]*\)".*/\1/p' .5w.toml 2>/dev/null | head -1)
+      [ -n "$v" ] || { echo "install-5w: no requires = \"x.y.z\" in ./.5w.toml" >&2; exit 1; }
+      target="$(uname -m)-unknown-linux-musl"
+      asset="5w-$v-$target"
+      base="https://github.com/$REPO/releases/download/v$v"
+      tmp=$(mktemp -d)
+      trap 'rm -rf "$tmp"' EXIT
+
+      curl -fsSL "$base/$asset" -o "$tmp/$asset"
+      curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+      ( cd "$tmp" && grep "  $asset\$" SHA256SUMS | sha256sum -c - ) >&2 \
+        || { echo "install-5w: $asset does not match SHA256SUMS" >&2; exit 1; }
+
+      if curl -fsSL "$base/SHA256SUMS.asc" -o "$tmp/SHA256SUMS.asc" 2>/dev/null; then
+        curl -fsSL "https://raw.githubusercontent.com/$REPO/v$v/SIGNING_KEY.asc" -o "$tmp/key.asc"
+        export GNUPGHOME="$tmp/gnupg"; mkdir -m 700 "$GNUPGHOME"
+        gpg --batch --quiet --import "$tmp/key.asc"
+        # Trust comes from the fingerprint pinned in this file, not from the key download.
+        gpg --batch --status-fd 1 --verify "$tmp/SHA256SUMS.asc" "$tmp/SHA256SUMS" 2>/dev/null \
+          | grep -q "^\[GNUPG:\] VALIDSIG $KEY_FPR " \
+          || { echo "install-5w: SHA256SUMS is not signed by $KEY_FPR" >&2; exit 1; }
+        echo "install-5w: signature ok ($KEY_FPR)" >&2
+      elif [ "${FIVEW_REQUIRE_SIGNATURE:-}" = 1 ]; then
+        echo "install-5w: release v$v has no SHA256SUMS.asc and FIVEW_REQUIRE_SIGNATURE=1" >&2; exit 1
       fi
+
+      mkdir -p "$dest"
+      install -m 755 "$tmp/$asset" "$dest/5w"
+      echo "install-5w: $("$dest/5w" --version) → $dest/5w" >&2
   script:
     - |
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
