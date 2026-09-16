@@ -39,5 +39,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Tool-neutral, read-only, works on any 5W repository (e.g. ara). Sources only what 5W already has: TASKS.md and archive history in git, .git/5w/last-failure.md and saved reports, doctor and lint findings.
   Report: tasks by lane/level/area; submit→accept time; reject and rework cycles with reasons; tasks reopened; blocked time on needs; branches shipped without a task (when require_task is off); queue edits made outside 5w (lint over history); recorded failures and refusals; context cost of delegate briefs (bytes/estimated tokens, largest first — same estimator as the benchmark).
   Compact by default, --json, --since <rev|date>. Refusal-free on a repo with no history. Design the report sections in the README before building.
+- [ ] #16 Move git calls behind named operations in src/git.rs: no raw git argv outside it, output unchanged @vcs !3
+  About 50 call sites in 10 modules pass raw git arguments (ship 12, wt 11, lint 5, queue 4, store 3). Move each into a named function in src/git.rs. No behaviour change: tests/flow.rs and the #14 bench baseline prove it. Groundwork for the admin commands and a version-control shim.
 
 ## Done
