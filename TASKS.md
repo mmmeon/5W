@@ -21,5 +21,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #5 Split titles cut at a word boundary end in a misleading …: the rest is in the body, not lost @queue !1
 - [ ] #6 Normalize worktree paths: wt new prints /home/who/r/ara/../ara-wt/… @wt !1
 - [ ] #7 Test the panic hook: a crash records last-failure.md and says how to report it @report !2
+- [ ] #8 Run the aarch64 release binary on real arm64 hardware @release !1 >manual
 
 ## Done
