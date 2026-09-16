@@ -1,0 +1,79 @@
+# The configuration that reproduces the ara repo's bin/tasks, bin/wt and bin/ship.
+# Copy to <ara>/.5w.toml and symlink bin/tasks, bin/wt, bin/ship to `5w`.
+
+trunk = "main"
+file = "TASKS.md"
+commit_prefix = "chore(tasks)"
+perennial = ["cloudflare"]
+require_task = false
+default_lane = "agent"
+
+[sections]
+open = "## Open"
+done = "## Done"
+
+[levels]
+1 = "mechanical — a small fast model"
+2 = "standard implementation — a mid model"
+3 = "design judgement — the strongest model"
+4 = "open research — the strongest model, and review the reasoning"
+
+[lanes.agent]
+delegable = true
+close = "self"
+
+[lanes.local]
+delegable = true
+close = "self"
+note = "needs this machine, an account or a secret"
+
+[lanes.game]
+delegable = false
+close = "self"
+section = "## In-game capture"
+refuse = "in-game — not delegable. It needs a human in the client."
+
+[lanes.owner]
+delegable = false
+close = "decided"
+refuse = "a decision only the owner can make. The reasoning belongs in QUESTIONS.md."
+
+[worktrees]
+root = "../ara-wt"
+links_file = ".worktree-links"
+# sharp prefers a system libvips and then tries to compile — client/FINDINGS.md #638.
+install = "SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm install --prefer-offline"
+install_marker = "pnpm-lock.yaml"
+
+[delegate]
+context = ["PLAN.md"]
+area_docs = ["README.md", "FINDINGS.md", "DESIGN.md", "SCHEMA.md", "TESTING.md", "ATTRIBUTION.md"]
+conventions = ["CLAUDE.md", "WORKFLOW.md"]
+footer = """
+  Commit on that branch. Fold the consequence into PLAN.md if it changes what
+  gets built. Long extractions write to the primary checkout by absolute path —
+  ship removes this worktree and every gitignored output in it.
+
+  Then hand it back for review — do NOT ship, and do not mark it done:
+
+    {tasks} submit {id} {branch}
+
+  The supervisor reviews the branch and accepts or rejects it. Only an accepted
+  task can be shipped, and `{ship}` enforces that.
+"""
+
+[review]
+checklist = [
+  "Conventions in CLAUDE.md: provenance recorded, negative results kept, no unresolvable id asserted, nothing unlicensed republished",
+  "A finding is in the area's FINDINGS.md with its evidence, keyed ## #<task>, and its consequence folded into PLAN.md",
+  "Anything the change disproves is retracted in place where it was claimed — workers reliably miss this",
+  "Every new reader of owner/handle goes through nameFor (handle only when named)",
+  "Re-emitted data files carry the current install.root stamp",
+  "Tests were run in the right runner for the package, and the output is in the report",
+  "The branch carries no TASKS.md changes",
+]
+
+[commands]
+tasks = "bin/tasks"
+wt = "bin/wt"
+ship = "bin/ship"
