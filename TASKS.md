@@ -14,4 +14,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 
 ## Open
 
+- [ ] #1 Attach SHA256SUMS.asc to v0.1.2: dist/SHA256SUMS.asc is signed, the gh token lacks Contents write @release !1 >restricted
+
 ## Done
