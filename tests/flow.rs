@@ -1047,3 +1047,69 @@ fn lane_kinds_set_behaviour_whatever_the_lane_is_called() {
             .contains("needs access an agent may not have")
     );
 }
+
+// --- report: feedback about 5W itself -------------------------------------------------
+
+#[test]
+fn a_report_carries_the_last_failure_and_sends_nothing_by_itself() {
+    let r = Repo::new("report");
+    r.ok(&r.main, &["add", "x"]);
+    let refused = r.fails(&r.main, &["accept", "1"]);
+    assert!(refused.contains("never submitted"));
+
+    let out = r.ok(
+        &r.main,
+        &[
+            "report",
+            "accept refused a task I had just submitted",
+            "--expected",
+            "it accepts",
+        ],
+    );
+    assert!(
+        out.contains("saved report 1") && out.contains("nothing was sent"),
+        "{out}"
+    );
+    let shown = r.ok(&r.main, &["report", "show", "1"]);
+    assert!(
+        shown.starts_with("# accept refused a task I had just submitted\n"),
+        "{shown}"
+    );
+    assert!(shown.contains("## Expected\n\nit accepts"));
+    assert!(
+        shown.contains("5w accept 1") && shown.contains("never submitted"),
+        "last failure attached:\n{shown}"
+    );
+    assert!(shown.contains(&format!("- 5w {}", env!("CARGO_PKG_VERSION"))));
+    assert!(
+        r.ok(&r.main, &["report", "list"])
+            .contains("1 accept refused")
+    );
+
+    // The report command's own failure does not replace the recorded one.
+    r.fails(&r.main, &["report", "show", "9"]);
+    r.ok(&r.main, &["report", "second", "--no-last"]);
+    assert!(
+        !r.ok(&r.main, &["report", "show", "2"])
+            .contains("Last failure")
+    );
+
+    let url = r.ok(&r.main, &["report", "send", "1", "--print"]);
+    assert!(url.starts_with("https://github.com/mmmeon/5W/issues/new?labels=report&title=accept%20refused%20a%20task"), "{url}");
+    assert!(url.contains("%23%23%20What%20happened"), "{url}");
+    let mut c = Command::new(bin5w());
+    c.args(["report", "send", "1", "--print"])
+        .current_dir(&r.main);
+    env(&mut c, &r.root);
+    c.env("FIVEW_ISSUES", "someone/fork");
+    let o = c.output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&o.stdout)
+            .starts_with("https://github.com/someone/fork/issues/new?")
+    );
+
+    // Reports live under .git, never in the working tree.
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    r.ok(&r.main, &["report", "rm", "2"]);
+    assert!(!r.ok(&r.main, &["report", "list"]).contains("second"));
+}

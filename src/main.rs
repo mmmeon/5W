@@ -3,6 +3,7 @@ mod config;
 mod git;
 mod lint;
 mod queue;
+mod report;
 mod ship;
 mod store;
 mod tasks;
@@ -28,6 +29,7 @@ fn main() {
     unsafe {
         signal(13, 0); // SIGPIPE, SIG_DFL
     }
+    report::install_panic_hook();
     let argv: Vec<String> = std::env::args().collect();
     // Invoked through a symlink named `tasks`, `wt` or `ship`, behave as that
     // tool — so a repo can keep `bin/tasks` and friends as the spelling.
@@ -42,7 +44,11 @@ fn main() {
         "ship" => args.insert(0, "ship".into()),
         _ => {}
     }
-    if let Err(e) = dispatch(args) {
+    let reporting = args.first().is_some_and(|a| a == "report");
+    if let Err(e) = dispatch(args.clone()) {
+        if !reporting {
+            report::record_failure(&args, &e);
+        }
         eprintln!("5w: {e}");
         std::process::exit(1);
     }
@@ -68,6 +74,7 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         && cmd != "wt"
         && cmd != "lint"
         && cmd != "ci"
+        && cmd != "report"
     {
         println!(
             "{}",
@@ -78,6 +85,9 @@ fn dispatch(args: Vec<String>) -> Res<()> {
             }
         );
         return Ok(());
+    }
+    if cmd == "report" {
+        return report::run(rest);
     }
     let repo = Repo::open()?;
     match cmd.as_str() {

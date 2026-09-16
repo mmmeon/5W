@@ -284,6 +284,24 @@ text). Differences in behaviour to know about:
   abandoned.
 - Reads take milliseconds; the shell version took ten seconds on the same queue.
 
+## Reporting problems with 5W
+
+Most people using 5W are agents, so the path is built for them:
+
+```
+5w report "accept refused a task I had just submitted" --expected "it accepts"
+5w report list | show <n>
+5w report send <n> --print     # the prefilled issue URL; or --gh to create it, or no flag for a browser
+```
+
+`report` saves a Markdown report under `.git/5w/reports/` with the environment (5w version and commit,
+OS, git) and the **last failure 5w recorded** — the exact command and message — so the reporter does not
+reconstruct it. A crash is recorded the same way and says how to report it. **Nothing is sent** until
+`send`: a report can quote task text or branch names from a private repository, so read it first.
+Briefs from `delegate` tell workers to use `report` when a refusal itself looks wrong.
+
+Issues go to `mmmeon/5W`; `FIVEW_ISSUES=owner/repo` points them at a fork.
+
 ## Development
 
 ```

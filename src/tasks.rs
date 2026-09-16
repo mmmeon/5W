@@ -35,6 +35,10 @@ protocol (PROTOCOL.md — the rules, for editing without the tool)
   hook install | uninstall             pre-commit hook running `lint --staged`
   ci --base --head --ref|--branch      the forge-neutral check for CI and pre-receive
 
+feedback about 5W itself
+  report <what happened>               save a report locally (last failure attached); nothing is sent
+  report list | show | send [--gh|--print] | rm
+
 branches
   wt <new|add|ls|path|rm|link|install|setup>
   ship [branch] [--sync] [--squash [-m msg]] [--discard-ignored] [--force]
@@ -784,7 +788,8 @@ fn delegate(repo: &Repo, id: &str) -> Res<()> {
     println!("tier: {}", cfg.tier(t.level));
     let footer = cfg.brief_footer.clone().unwrap_or_else(|| {
         "steps:\n  {setup}\n  cd \"$({wt} path {branch})\"\n  work, commit, then: {tasks} submit {id} {branch}\n\
-         rules: do not ship or close it. If 5w refuses something, the refusal names the fix.\n"
+         rules: do not ship or close it. If 5w refuses something, the refusal names the fix;\n\
+         a refusal that itself looks wrong: 5w report \"<what happened>\".\n"
             .into()
     });
     print!(
