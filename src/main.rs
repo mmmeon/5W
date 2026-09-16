@@ -71,7 +71,8 @@ fn dispatch(args: Vec<String>) -> Res<()> {
 /// This one commit goes through `git commit`, deliberately: it is the only time
 /// the tool creates files rather than editing a line.
 fn init(repo: &Repo) -> Res<()> {
-    let p = &repo.primary;
+    let checkout = repo.trunk_checkout()?;
+    let p = checkout.as_ref().unwrap_or(&repo.primary);
     let mut created = Vec::new();
     let cfg = p.join(store::CONFIG_FILE);
     if !cfg.exists() {
@@ -79,7 +80,7 @@ fn init(repo: &Repo) -> Res<()> {
             .map_err(|e| e.to_string())?;
         created.push(store::CONFIG_FILE.to_string());
     }
-    let tf = repo.file_path();
+    let tf = p.join(&repo.cfg.file);
     if !tf.exists() {
         std::fs::write(&tf, TEMPLATE_TASKS).map_err(|e| e.to_string())?;
         created.push(repo.cfg.file.clone());
@@ -95,7 +96,7 @@ fn init(repo: &Repo) -> Res<()> {
     for c in &created {
         println!("init: wrote {c}");
     }
-    if !repo.primary_on_trunk() {
+    if checkout.is_none() {
         println!(
             "init: the primary worktree is not on {}; commit these there yourself",
             repo.trunk

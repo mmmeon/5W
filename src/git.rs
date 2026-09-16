@@ -124,35 +124,52 @@ pub fn dirty(dir: &Path) -> Res<bool> {
     Ok(!git(dir, &["status", "--porcelain"])?.is_empty())
 }
 
-/// Tracked changes only. An untracked stray file does not stop a fast-forward
-/// unless the merge would overwrite it, and git says so itself when it does.
-pub fn dirty_tracked(dir: &Path) -> Res<bool> {
-    Ok(!git(dir, &["status", "--porcelain", "--untracked-files=no"])?.is_empty())
-}
-
-/// The patch-id of everything `tip` adds over its merge-base with `base`. Equal
-/// patch-ids mean the same change, whatever it was rebased onto.
+/// An identity for everything `tip` adds over its merge-base with `base`, the
+/// same across a clean rebase and different for any other change.
+///
+/// Not `git patch-id`: it ignores whitespace, so an indentation change made after
+/// review — a semantic change in Python or YAML — would pass as the reviewed one.
+/// This hashes the exact diff, binary content and modes included, with only the
+/// parts a rebase legitimately moves taken out: `index` blob lines and the line
+/// numbers in hunk headers. Context lines stay, so a rebase that changed text
+/// next to the change reads as different and asks for a fresh look — the safe way
+/// to be wrong.
 pub fn change_id(dir: &Path, base: &str, tip: &str) -> Res<String> {
     let mb = git(dir, &["merge-base", base, tip])?;
     let diff = raw(
         dir,
-        &["diff", "--no-color", "--no-ext-diff", &mb, tip],
+        &[
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-renames",
+            "--binary",
+            "--full-index",
+            &mb,
+            tip,
+        ],
         &[],
         None,
     )?;
     if !diff.ok {
         return Err(format!("git diff {mb} {tip}: {}", diff.stderr.trim()));
     }
-    if diff.stdout.is_empty() {
-        return Ok("empty".into());
+    let mut norm = String::with_capacity(diff.stdout.len());
+    for line in diff.stdout.split_inclusive('\n') {
+        if line.starts_with("index ") {
+            continue;
+        }
+        if line.starts_with("@@ ")
+            && let Some(end) = line[3..].find(" @@")
+        {
+            norm.push_str("@@");
+            norm.push_str(&line[3 + end + 3..]);
+            continue;
+        }
+        norm.push_str(line);
     }
-    let pid = raw(dir, &["patch-id", "--stable"], &[], Some(&diff.stdout))?;
-    Ok(pid
-        .stdout
-        .split_whitespace()
-        .next()
-        .unwrap_or("empty")
-        .to_string())
+    let o = raw(dir, &["hash-object", "--stdin"], &[], Some(&norm))?;
+    Ok(o.stdout.trim().to_string())
 }
 
 pub fn parent_of(dir: &Path, branch: &str) -> Option<String> {

@@ -21,15 +21,16 @@ use crate::util::{Res, short};
 use crate::wt;
 
 pub const USAGE: &str = "\
-usage: 5w ship [<branch>] [--sync] [--squash] [-m <message>] [--force]
+usage: 5w ship [<branch>] [--sync] [--squash] [-m <message>] [--discard-ignored] [--force]
 
   --sync     rebase the branch onto the trunk first, in its worktree
   --squash   land one commit (message from -m, or composed from the branch's commits)
+  --discard-ignored   delete gitignored files in the branch's worktree with it
   --force    override the review gate only — never the safety checks";
 
 pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     let mut branch = None;
-    let (mut sync, mut squash, mut force) = (false, false, false);
+    let (mut sync, mut squash, mut force, mut discard_ignored) = (false, false, false, false);
     let mut message = None;
     let mut i = 0;
     while i < args.len() {
@@ -37,6 +38,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             "--sync" => sync = true,
             "--squash" => squash = true,
             "--force" => force = true,
+            "--discard-ignored" => discard_ignored = true,
             "-m" | "--message" => {
                 message = Some(args.get(i + 1).ok_or("-m needs a message")?.clone());
                 i += 1;
@@ -125,22 +127,49 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
 
     // --- preflight ------------------------------------------------------------------
     let branch_wt = git::worktree_of(p, &branch)?;
-    if let Some(w) = &branch_wt
-        && git::dirty(w)?
-    {
-        bail!(
-            "{branch} has uncommitted or untracked files in {} — commit or clean them",
-            w.display()
-        );
+    if let Some(w) = &branch_wt {
+        if git::dirty(w)? {
+            bail!(
+                "{branch} has uncommitted or untracked files in {} — commit or clean them",
+                w.display()
+            );
+        }
+        // Removing the worktree deletes its gitignored files too: an extraction's
+        // output, a local database. Name them while refusing is still free.
+        let doomed = ignored_files(repo, w)?;
+        if !doomed.is_empty() && !discard_ignored {
+            let more = if doomed.len() > 10 {
+                format!("\n  … and {} more", doomed.len() - 10)
+            } else {
+                String::new()
+            };
+            bail!(
+                "shipping removes {}, and these gitignored files in it would be deleted:\n{}{more}\n\n  \
+                 Move what you need, list what is safe under worktrees.disposable, or pass --discard-ignored.",
+                w.display(),
+                doomed
+                    .iter()
+                    .take(10)
+                    .map(|f| format!("  {f}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
     }
     let trunk_wt = git::worktree_of(p, trunk)?;
-    if let Some(w) = &trunk_wt
-        && git::dirty_tracked(w)?
-    {
-        bail!(
-            "{} has uncommitted changes to tracked files; a fast-forward of {trunk} wants them committed or stashed",
-            w.display()
-        );
+    if let Some(w) = &trunk_wt {
+        // Uncommitted queue rows are an expected state there, not a blocker; git
+        // itself refuses the fast-forward if the branch touches that file.
+        let dirt = git::git(w, &["status", "--porcelain", "--untracked-files=no"])?;
+        if dirt
+            .lines()
+            .any(|l| l.get(3..) != Some(repo.cfg.file.as_str()))
+        {
+            bail!(
+                "{} has uncommitted changes to tracked files; a fast-forward of {trunk} wants them committed or stashed",
+                w.display()
+            );
+        }
     }
 
     // Before anything rewrites the branch, and again after a rebase has.
@@ -160,24 +189,32 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 repo.cfg.cmd_wt
             )
         };
+        let before = git::rev(p, &format!("refs/heads/{branch}")).ok_or("cannot resolve branch")?;
         println!("ship: rebasing {branch} onto {trunk}");
         let o = git::raw(w, &["rebase", trunk], &[], None)?;
         if !o.ok {
             let _ = git::raw(w, &["rebase", "--abort"], &[], None);
             bail!(
-                "rebase of {branch} onto {trunk} stopped on conflicts and was aborted:\n{}\n  Resolve it by hand in {}, then ship again. A resolved conflict changes the patch, so it will need a fresh accept.",
+                "rebase of {branch} onto {trunk} stopped on conflicts and was aborted:\n{}\n  Resolve it by hand in {}, then ship again. A resolved conflict changes the change, so it will need a fresh accept.",
                 o.stderr.trim(),
                 w.display()
             );
         }
-        verify_reviewed(repo, &rows, &branch, force, false)?;
+        if let Err(e) = verify_reviewed(repo, &rows, &branch, force, false) {
+            // The rebase bought nothing; do not leave the branch rewritten.
+            let _ = git::raw(w, &["reset", "--hard", "--quiet", &before], &[], None);
+            bail!(
+                "{e}\n  ({branch} is back at {} as it was before the rebase)",
+                short(&before)
+            );
+        }
     }
 
     let tip = git::rev(p, &format!("refs/heads/{branch}")).ok_or("cannot resolve branch")?;
-
-    // --- squash ----------------------------------------------------------------------
-    let mut land = tip.clone();
     let trunk_sha = git::rev(p, &format!("refs/heads/{trunk}")).ok_or("cannot resolve trunk")?;
+
+    // --- squash: build the commit, move nothing yet --------------------------------------
+    let mut land = tip.clone();
     if squash {
         let count: usize = git::git(p, &["rev-list", "--count", &format!("{trunk_sha}..{tip}")])?
             .parse()
@@ -220,30 +257,10 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 bail!("git commit-tree: {}", o.stderr.trim());
             }
             land = o.stdout.trim().to_string();
-            // Same tree, so the branch's worktree stays clean when its ref moves.
-            git::git(
-                p,
-                &[
-                    "update-ref",
-                    "-m",
-                    "5w ship --squash",
-                    &format!("refs/heads/{branch}"),
-                    &land,
-                    &tip,
-                ],
-            )?;
-            println!("ship: squashed {count} commits into {}", short(&land));
         }
     }
 
-    // --- worktree off, fast-forward, clean up ----------------------------------------------
-    let removed = match &branch_wt {
-        Some(_) => {
-            wt::remove(repo, &branch, false)?;
-            true
-        }
-        None => false,
-    };
+    // --- fast-forward first: until it succeeds nothing has changed ------------------------
     let ff = match &trunk_wt {
         Some(w) => {
             git::raw(w, &["merge", "--ff-only", "--quiet", &land], &[], None).and_then(|o| {
@@ -268,17 +285,20 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         .map(|_| ()),
     };
     if let Err(e) = ff {
-        if removed {
-            eprintln!("ship: fast-forward failed — restoring the worktree");
-            if let Err(e2) = wt::add_worktree(repo, &branch, false) {
-                eprintln!(
-                    "ship: could not restore it ({e2}); {} add {branch}",
-                    repo.cfg.cmd_wt
-                );
-            }
-        }
+        bail!("fast-forward of {trunk} to {branch} failed; nothing was changed:\n{e}");
+    }
+    if land != tip {
+        println!("ship: squashed into {}", short(&land));
+    }
+
+    // --- landed. Now tidy: the worktree, then the branch. ---------------------------------
+    if branch_wt.is_some()
+        && let Err(e) = wt::remove(repo, &branch, false)
+    {
         bail!(
-            "fast-forward of {trunk} to {branch} failed: {e}\n  Check `git log {trunk}` before retrying."
+            "{branch} is on {trunk}, but its worktree could not be removed ({e}).\n  \
+             Remove it with `{} rm {branch}`, then `git branch -D {branch}`.",
+            repo.cfg.cmd_wt
         );
     }
 
@@ -339,9 +359,34 @@ fn compose(p: &std::path::Path, base: &str, tip: &str) -> Res<String> {
     Ok(msg)
 }
 
+/// Gitignored files in a worktree that removing it would delete: not the
+/// symlinks `wt` made, not anything under a `worktrees.disposable` name.
+fn ignored_files(repo: &Repo, w: &std::path::Path) -> Res<Vec<String>> {
+    let out = git::git(
+        w,
+        &[
+            "status",
+            "--porcelain",
+            "--ignored",
+            "--untracked-files=all",
+        ],
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.strip_prefix("!! "))
+        .filter(|f| {
+            let first = f.trim_end_matches('/').split('/').next().unwrap_or("");
+            let last = f.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+            !repo.cfg.disposable.iter().any(|d| d == first || d == last)
+        })
+        .filter(|f| !w.join(f.trim_end_matches('/')).is_symlink())
+        .map(String::from)
+        .collect())
+}
+
 /// The reviewed change is the change that lands: compare what the branch adds
-/// now with what it added at the reviewed commit, by patch-id, so a clean rebase
-/// passes and anything added or altered after the review does not.
+/// now with what it added at the reviewed commit (`git::change_id`), so a clean
+/// rebase passes and anything added or altered after the review does not.
 fn verify_reviewed(
     repo: &Repo,
     rows: &[queue::Task],

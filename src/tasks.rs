@@ -161,6 +161,18 @@ impl<'a> Q<'a> {
     }
 }
 
+/// The task as the committed queue has it, under the lock.
+fn committed(t: Option<&Task>, id: u64) -> Res<&Task> {
+    t.ok_or_else(|| format!("#{id} is not on the trunk's queue"))
+}
+
+fn open_only(t: Option<&Task>, id: u64, tasks: &str) -> Res<()> {
+    if committed(t, id)?.state == State::Done {
+        bail!("#{id} is closed; `{tasks} open {id}` first");
+    }
+    Ok(())
+}
+
 fn ids_str(v: &[u64]) -> String {
     v.iter()
         .map(|i| format!("#{i}"))
@@ -542,13 +554,16 @@ fn doctor(repo: &Repo) -> Res<()> {
             }
         }
     }
-    if repo.primary_on_trunk()
+    if queue::unclosed_fence(&text) {
+        say("a ``` fence is never closed — every task after it is invisible".into());
+    }
+    if repo.trunk_checkout()?.is_some()
         && let Some(c) = repo.committed()?
         && c != text
     {
         println!(
-            "  (note: {} has uncommitted edits in the primary worktree)",
-            cfg.file
+            "  (note: {} has uncommitted edits in the {} checkout)",
+            cfg.file, repo.trunk
         );
     }
     if problems == 0 {
@@ -562,9 +577,17 @@ fn doctor(repo: &Repo) -> Res<()> {
 // --- writing -------------------------------------------------------------------------
 
 fn validate_field(repo: &Repo, w: &str, ids: &HashSet<u64>) -> Res<Kind> {
+    if w.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        bail!("a field cannot contain whitespace or control characters: {w:?}");
+    }
     let k = queue::classify(w);
     match k {
-        Kind::Area | Kind::Level | Kind::Branch => {}
+        Kind::Area | Kind::Level => {}
+        Kind::Branch => {
+            if !git::ok(&repo.primary, &["check-ref-format", "--branch", &w[7..]]) {
+                bail!("not a valid branch name: {:?}", &w[7..]);
+            }
+        }
         Kind::Lane => {
             if repo.cfg.lane(&w[1..]).is_none() {
                 bail!(
@@ -640,7 +663,7 @@ fn add(repo: &Repo, args: &[String]) -> Res<()> {
         i += 1;
     }
     let text = text.ok_or(usage)?;
-    if text.contains('\n') {
+    if text.contains(['\n', '\r']) {
         bail!("task text is one line; put the rest in --body");
     }
     let current = queue::parse(&repo.load()?);
@@ -677,6 +700,7 @@ fn add(repo: &Repo, args: &[String]) -> Res<()> {
         repo,
         |ctx| format!("{prefix}: add #{} — {short_text}", ctx.next_id),
         &[],
+        |_| Ok(()),
         |doc, ctx| {
             let mut line = format!("- [ ] #{} {text}", ctx.next_id);
             for f in &fields {
@@ -705,6 +729,15 @@ fn set(repo: &Repo, args: &[String]) -> Res<()> {
     let value = args.get(2).ok_or(usage)?.as_str();
     let q = Q::load(repo)?;
     let t = q.get(id)?;
+    // A closed task's fields are its record. Rewriting one — above all its
+    // branch, which is what ship's gate keys on — would let a closure authorise
+    // work it never saw.
+    if t.state == State::Done {
+        bail!(
+            "#{id} is closed; its fields are the record. `{} open {id}` first",
+            repo.cfg.cmd_tasks
+        );
+    }
     let ids: HashSet<u64> = q.tasks.iter().map(|t| t.id).collect();
     let (kind, v) = match field {
         "area" => (Kind::Area, value.trim_start_matches('@').to_string()),
@@ -738,10 +771,12 @@ fn set(repo: &Repo, args: &[String]) -> Res<()> {
     }
     let msg = format!("{}: set #{id} {field} {value}", repo.cfg.commit_prefix);
     let done = repo.cfg.done_section.clone();
+    let tasks_cmd = repo.cfg.cmd_tasks.clone();
     store::transact(
         repo,
         |_| msg.clone(),
         &[id],
+        |c| open_only(c, id, &tasks_cmd),
         |doc, _| {
             doc.update(
                 id,
@@ -793,10 +828,18 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
     }
     let sha = short(&tip).to_string();
     let msg = format!("{}: submit #{id} for review", repo.cfg.commit_prefix);
+    let tasks_cmd = repo.cfg.cmd_tasks.clone();
     store::transact(
         repo,
         |_| msg.clone(),
         &[id],
+        |c| {
+            open_only(c, id, &tasks_cmd)?;
+            match &committed(c, id)?.branch {
+                Some(b) if *b != branch => bail!("#{id} now names branch {b}, not {branch}"),
+                _ => Ok(()),
+            }
+        },
         |doc, _| {
             doc.update(
                 id,
@@ -934,18 +977,36 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
                 }
                 reviewed = Some(tip);
             }
-            (None, None) => {
+            (None, None) if force => {
                 eprintln!("warning: branch {b} does not exist; no reviewed commit recorded")
             }
+            (None, None) => bail!(
+                "branch {b} does not exist, so there is no commit to record as reviewed — and a\n  \
+                 closed row with none would authorise whatever branch later takes that name.\n  \
+                 Find the work, or --force if it landed some other way."
+            ),
         }
     }
     let sha = reviewed.as_deref().map(|r| short(r).to_string());
     let msg = format!("{}: accept #{id}", repo.cfg.commit_prefix);
     let done = repo.cfg.done_section.clone();
+    let seen = (t.state, t.submitted.clone(), t.branch.clone());
     store::transact(
         repo,
         |_| msg.clone(),
         &[id],
+        |c| {
+            let c = committed(c, id)?;
+            if (c.state, c.submitted.clone(), c.branch.clone()) != seen {
+                bail!(
+                    "#{id} changed on the trunk while this ran (or differs from the working copy) — look again"
+                );
+            }
+            if c.state != State::Review && !force {
+                bail!("#{id} is not submitted on the trunk");
+            }
+            Ok(())
+        },
         |doc, _| {
             doc.update(
                 id,
@@ -980,10 +1041,12 @@ fn reject(repo: &Repo, args: &[String]) -> Res<()> {
         bail!("#{id} is closed; `{} open {id}` first", repo.cfg.cmd_tasks);
     }
     let msg = format!("{}: reject #{id}", repo.cfg.commit_prefix);
+    let tasks_cmd = repo.cfg.cmd_tasks.clone();
     store::transact(
         repo,
         |_| msg.clone(),
         &[id],
+        |c| open_only(c, id, &tasks_cmd),
         |doc, _| {
             doc.update(
                 id,
@@ -1038,10 +1101,23 @@ fn done(repo: &Repo, args: &[String]) -> Res<()> {
     let close = lane.close.clone();
     let msg = format!("{}: close #{id} via:{close}", repo.cfg.commit_prefix);
     let done = repo.cfg.done_section.clone();
+    let tasks_cmd = repo.cfg.cmd_tasks.clone();
+    let default_lane = repo.cfg.default_lane.clone();
     store::transact(
         repo,
         |_| msg.clone(),
         &[id],
+        |c| {
+            open_only(c, id, &tasks_cmd)?;
+            let l = committed(c, id)?
+                .lane
+                .clone()
+                .unwrap_or(default_lane.clone());
+            if l != lane_name {
+                bail!("#{id} is on >{l} on the trunk, not >{lane_name} — look again");
+            }
+            Ok(())
+        },
         |doc, _| {
             doc.update(
                 id,
@@ -1070,6 +1146,7 @@ fn reopen(repo: &Repo, id: &str) -> Res<()> {
         repo,
         |_| msg.clone(),
         &[id],
+        |c| committed(c, id).map(|_| ()),
         |doc, _| {
             doc.update(
                 id,

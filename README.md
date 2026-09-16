@@ -71,25 +71,43 @@ is a redirect that silently creates a file called `agent`.
 
 **Every queue change is its own commit on the trunk, and holds nothing else.** The edit is applied to
 the trunk's committed file and committed with plumbing — a private index, `commit-tree`, and a
-compare-and-swap `update-ref` — then mirrored into the primary checkout. A peer's uncommitted row
-in the same file stays uncommitted; it is never swept into your commit, and it never makes your
-command decline. Writers take a lock, so parallel `add`s mint distinct ids.
+compare-and-swap `update-ref` — then mirrored into the trunk's checkout, wherever that is: its
+working file, and its index entry, on top of anything already staged there. A peer's uncommitted
+row stays uncommitted; it is never swept into your commit, never makes your command decline, and
+the next ordinary `git commit` in that checkout does not revert the queue. Writers take a lock, so
+parallel `add`s mint distinct ids, and state checks read the committed queue under that lock — a
+hand-edited `[~]` in a working copy does not make a task acceptable.
 
 **Closing says how.** `accept` records `via:review`. `done` refuses without the flag its lane
 names — `--self` on `agent`/`local`, `--decided` on `owner` — so closing an owner decision is never
 a reflex. Nothing can check who is typing; the flag makes it a deliberate, recorded act.
 
 **Accept is of what was submitted.** A branch that gained commits after `submit` is not accepted
-until you say which commit you reviewed (`--at`).
+until you say which commit you reviewed (`--at`). A task whose branch does not exist is not
+accepted at all without `--force`, and a closed task's fields cannot be changed without reopening
+it — otherwise a closure could be pointed at a branch it never saw. Field values are validated
+(branch names by `git check-ref-format`, no whitespace or control characters), so no value can
+write a second line into the file.
 
-**Ship lands what was accepted.** `ship` compares the patch-id of what the branch adds now with what
-it added at the reviewed commit. A clean rebase passes. A commit added after review, or a conflict
-resolved differently, does not. This check runs before anything rewrites the branch.
+**Ship lands what was accepted.** `ship` compares the exact diff the branch adds now with the one it
+added at the reviewed commit — whitespace, modes and binary content included, only blob ids and
+hunk line numbers normalised away. Not `git patch-id`, which ignores whitespace and would pass an
+indentation change made after review. A clean rebase passes. A commit added after review, or a
+rebase that changed the lines next to the change, does not, and a refused `--sync` puts the branch
+back where it was. The check runs before anything rewrites the branch, and again after the rebase.
 
 **Ship refuses before it acts**, naming the fix: trunk or perennial branch; not accepted; stacked on
 an unshipped parent (ship the bottom first; children are reparented after); behind the trunk (use
-`--sync`); a dirty branch worktree; tracked changes in the trunk's checkout. Untracked strays in
-the primary do not block it. If the fast-forward fails, the removed worktree is put back.
+`--sync`); a dirty branch worktree; tracked changes in the trunk's checkout (uncommitted queue rows
+excepted). Untracked strays do not block it.
+
+**Removing a worktree deletes its gitignored files**, so ship lists them and refuses — an
+extraction's output or a local database dies silently otherwise. Symlinks `wt` made and anything
+named in `worktrees.disposable` (default `node_modules`, `target`, `.next`) are exempt;
+`--discard-ignored` accepts the loss.
+
+**The trunk moves first.** The fast-forward happens before the worktree is removed or the branch
+touched, so a fast-forward git refuses leaves everything exactly as it was.
 
 **`--squash` cannot revert the trunk.** The squash commit is built from the branch's own tree and
 parented on the trunk *sha* the branch was just verified against — never on the trunk by name, which
@@ -117,7 +135,7 @@ configures both.
 
 ## Configuration
 
-`.5w.toml` at the repo root. Every key is optional; see
+`.5w.toml` at the repo root, read from the trunk. Every key is optional; see
 [templates/5w.toml](templates/5w.toml) for the defaults and
 [examples/ara.toml](examples/ara.toml) for a full configuration with an extra non-delegable lane
 that keeps its own section, a custom brief footer and a review checklist.
@@ -130,7 +148,7 @@ that keeps its own section, a custom brief footer and a review checklist.
 | `[sections]` | `open`, `done` headings; created if missing |
 | `[levels]` | the tier text per complexity |
 | `[lanes.<name>]` | `delegable`, `close`, `section`, `note`, `refuse` |
-| `[worktrees]` | `root`, `links_file`, `install`, `install_marker` |
+| `[worktrees]` | `root`, `links_file`, `install`, `install_marker`, `disposable` |
 | `[delegate]` | `context`, `area_docs`, `conventions`, `footer` (`{tasks} {ship} {wt} {id} {branch}`) |
 | `[review]` | `checklist`, printed under `5w review` |
 | `[commands]` | how briefs spell the tools: `tasks`, `wt`, `ship` |
@@ -146,7 +164,10 @@ text). Differences in behaviour to know about:
 
 - `add` commits. It used to leave the row uncommitted.
 - `accept` requires the task to be submitted (`--force` to override), and refuses when the branch
-  moved after submit.
+  moved after submit or no longer exists.
+- `set` refuses closed tasks; `open` them first.
+- `ship` refuses when the worktree holds gitignored files it would delete (`--discard-ignored`).
+- A fenced example's id counts toward the next id, so no two lines ever share a number.
 - `ship` needs no cwd, needs no git-town, and can `--sync` and `--squash` itself.
 - `reject` takes the reason as the remaining arguments and accepts any character in it.
 - The branch scans that read rework notes, submissions and ids off every branch are gone: they

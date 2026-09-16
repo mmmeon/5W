@@ -297,10 +297,15 @@ fn the_format_example_in_a_fence_is_never_a_task() {
     std::fs::write(r.main.join("TASKS.md"), &t).unwrap();
     r.git(&r.main, &["commit", "-qam", "example"]);
     r.ok(&r.main, &["add", "real"]);
-    r.ok(&r.main, &["done", "1", "--self"]);
+    // Minting skips even a fenced id, so no two lines ever share a number.
+    r.ok(&r.main, &["done", "2", "--self"]);
+    assert!(
+        r.fails(&r.main, &["done", "1", "--self"])
+            .contains("no task #1")
+    );
     let after = r.tasks();
     assert!(after.contains("```\n- [ ] #1 <what"), "example untouched");
-    assert!(after.contains("- [x] #1 real via:self"));
+    assert!(after.contains("- [x] #2 real via:self"));
 }
 
 #[test]
@@ -386,4 +391,204 @@ fn symlinked_as_tasks_wt_ship() {
     env(&mut c, &r.root);
     assert!(c.output().unwrap().status.success());
     assert!(r.git(&r.main, &["branch", "--list", "x/y"]).contains("x/y"));
+}
+
+// --- regressions from the adversarial review ---------------------------------------
+
+#[test]
+fn a_staged_edit_to_the_queue_keeps_the_new_row() {
+    let r = Repo::new("staged");
+    r.ok(&r.main, &["add", "first"]);
+    let t = r
+        .tasks()
+        .replace("Ids are permanent", "NOTE staged. Ids are permanent");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    r.ok(&r.main, &["add", "second"]);
+    // The staged diff is the note alone; committing it keeps #2.
+    let cached = r.git(&r.main, &["diff", "--cached"]);
+    assert!(
+        !cached.contains("+- [ ] #2") && !cached.contains("-- [ ] #2"),
+        "{cached}"
+    );
+    r.git(&r.main, &["commit", "-qm", "note"]);
+    let head = r.git(&r.main, &["show", "HEAD:TASKS.md"]);
+    assert!(
+        head.contains("#2 second") && head.contains("NOTE staged"),
+        "{head}"
+    );
+}
+
+#[test]
+fn a_trunk_checked_out_in_a_linked_worktree_is_kept_in_step() {
+    let r = Repo::new("linkedtrunk");
+    r.git(&r.main, &["checkout", "-qb", "side"]);
+    let mainwt = r.root.join("mainwt");
+    r.git(
+        &r.main,
+        &["worktree", "add", "-q", mainwt.to_str().unwrap(), "main"],
+    );
+    r.ok(&r.main, &["add", "x"]);
+    assert_eq!(r.git(&mainwt, &["status", "--porcelain"]), "");
+    std::fs::write(mainwt.join("other"), "o\n").unwrap();
+    r.git(&mainwt, &["add", "other"]);
+    r.git(&mainwt, &["commit", "-qm", "work"]);
+    assert!(r.git(&mainwt, &["show", "HEAD:TASKS.md"]).contains("#1 x"));
+}
+
+#[test]
+fn a_closed_task_cannot_be_repointed_at_another_branch() {
+    let r = Repo::new("repoint");
+    r.ok(&r.main, &["add", "old chore"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    assert!(
+        r.fails(&r.main, &["set", "1", "branch", "evil"])
+            .contains("closed")
+    );
+}
+
+#[test]
+fn field_values_cannot_inject_lines() {
+    let r = Repo::new("inject");
+    r.ok(&r.main, &["add", "a"]);
+    r.fails(
+        &r.main,
+        &[
+            "set",
+            "1",
+            "branch",
+            "x\n- [x] #7 forged via:review branch:evil",
+        ],
+    );
+    r.fails(&r.main, &["set", "1", "branch", "a b"]);
+    r.fails(&r.main, &["add", "b", "branch:x\n- [x] #9 forged"]);
+    r.fails(&r.main, &["add", "c\r- [x] #9 forged"]);
+    assert!(!r.tasks().contains("forged"));
+}
+
+#[test]
+fn a_whitespace_change_after_review_blocks_ship() {
+    let r = Repo::new("ws");
+    r.ok(&r.main, &["add", "feature"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "a.py", "if ok:\n    run()\nsafe()\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.commit_in(&wt, "a.py", "if ok:\n    run()\n    safe()\n");
+    let out = r.fails(&r.main, &["ship", "f/a", "--sync"]);
+    assert!(out.contains("is not the change #1 accepted"), "{out}");
+    // Refused before the rebase, so the branch was never rewritten.
+    assert!(!out.contains("rebasing"), "{out}");
+}
+
+#[test]
+fn a_failing_fast_forward_changes_nothing() {
+    let r = Repo::new("ffail");
+    r.ok(&r.main, &["add", "feature"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "f1", "1\n");
+    r.commit_in(&wt, "f2", "2\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    // An untracked file in the trunk checkout the merge would overwrite.
+    std::fs::write(r.main.join("f2"), "u\n").unwrap();
+    r.fails(&r.main, &["ship", "f/a", "--sync", "--squash"]);
+    assert!(wt.exists());
+    assert_eq!(
+        r.git(&r.main, &["rev-list", "--count", "main..f/a"]),
+        "2",
+        "branch not squashed"
+    );
+}
+
+#[test]
+fn ignored_files_in_the_worktree_stop_ship_until_discarded() {
+    let r = Repo::new("ignored");
+    std::fs::write(r.main.join(".gitignore"), ".env\nnode_modules\n").unwrap();
+    r.git(&r.main, &["add", ".gitignore"]);
+    r.git(&r.main, &["commit", "-qm", "ignore"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "x", "x\n");
+    std::fs::create_dir_all(wt.join("node_modules/pkg")).unwrap();
+    std::fs::write(wt.join("node_modules/pkg/i.js"), "\n").unwrap();
+    std::fs::write(wt.join(".env"), "SECRET=1\n").unwrap();
+    let out = r.fails(&r.main, &["ship", "f/a"]);
+    assert!(
+        out.contains(".env") && !out.contains("node_modules"),
+        "{out}"
+    );
+    r.ok(&r.main, &["ship", "f/a", "--discard-ignored"]);
+}
+
+#[test]
+fn a_crlf_queue_still_gates_its_branches() {
+    let r = Repo::new("crlf");
+    r.ok(&r.main, &["add", "feature", "branch:f/a"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "x", "x\n");
+    let crlf = r.tasks().replace('\n', "\r\n");
+    std::fs::write(r.main.join("TASKS.md"), crlf).unwrap();
+    r.git(&r.main, &["commit", "-qam", "crlf"]);
+    assert!(
+        r.fails(&r.main, &["ship", "f/a", "--sync"])
+            .contains("not accepted")
+    );
+    r.ok(&wt, &["submit", "1"]);
+    let t = r.tasks();
+    assert!(
+        t.contains("branch:f/a submitted:") && t.contains("\r\n") && !t.contains("\r "),
+        "{t:?}"
+    );
+    assert!(
+        !t.replace("\r\n", "").contains('\n'),
+        "line endings stay CRLF"
+    );
+}
+
+#[test]
+fn state_checks_read_the_committed_queue() {
+    let r = Repo::new("handedit");
+    r.ok(&r.main, &["add", "x"]);
+    // A hand edit claims it was submitted; the trunk says otherwise.
+    let t = r.tasks().replace("- [ ] #1 x", "- [~] #1 x");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    r.fails(&r.main, &["accept", "1"]);
+}
+
+#[test]
+fn an_unclosed_fence_does_not_reuse_ids() {
+    let r = Repo::new("fenceid");
+    r.ok(&r.main, &["add", "one"]);
+    let t = r.tasks().replace("## Open", "```\n## Open");
+    std::fs::write(r.main.join("TASKS.md"), &t).unwrap();
+    r.git(&r.main, &["commit", "-qam", "break"]);
+    r.fails(&r.main, &["doctor"]);
+    r.ok(&r.main, &["add", "two"]);
+    assert!(r.tasks().contains("#2 two"));
+}
+
+#[test]
+fn a_rebase_that_changes_the_reviewed_context_is_rolled_back() {
+    let r = Repo::new("rollback");
+    std::fs::write(r.main.join("c"), "1\n2\n3\n4\n5\n6\n7\n8\n").unwrap();
+    r.git(&r.main, &["add", "c"]);
+    r.git(&r.main, &["commit", "-qm", "c"]);
+    r.ok(&r.main, &["add", "x"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "c", "1\nTWO\n3\n4\n5\n6\n7\n8\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    let before = r.git(&r.main, &["rev-parse", "f/a"]);
+    // The trunk changes the line next to the reviewed one: the rebase is clean,
+    // but what lands is no longer exactly what was read.
+    std::fs::write(r.main.join("c"), "1\n2\n3\n4\nFIVE\n6\n7\n8\n").unwrap();
+    r.git(&r.main, &["commit", "-qam", "neighbour"]);
+    let out = r.fails(&r.main, &["ship", "f/a", "--sync"]);
+    assert!(out.contains("rebasing") && out.contains("back at"), "{out}");
+    assert_eq!(r.git(&r.main, &["rev-parse", "f/a"]), before);
 }

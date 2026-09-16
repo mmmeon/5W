@@ -158,7 +158,7 @@ pub fn tokenize(rest: &str) -> Vec<Tok> {
     let mut i = 0;
     let mut out = Vec::new();
     while i < b.len() {
-        if b[i] == b' ' || b[i] == b'\t' {
+        if b[i] == b' ' || b[i] == b'\t' || b[i] == b'\r' {
             i += 1;
             continue;
         }
@@ -177,7 +177,7 @@ pub fn tokenize(rest: &str) -> Vec<Tok> {
                 }
             }
             if let Some(e) = end
-                && (e == b.len() || b[e] == b' ' || b[e] == b'\t')
+                && (e == b.len() || b[e] == b' ' || b[e] == b'\t' || b[e] == b'\r')
             {
                 out.push(Tok {
                     kind: Kind::Rework,
@@ -188,7 +188,7 @@ pub fn tokenize(rest: &str) -> Vec<Tok> {
                 continue;
             }
         }
-        while i < b.len() && b[i] != b' ' && b[i] != b'\t' {
+        while i < b.len() && b[i] != b' ' && b[i] != b'\t' && b[i] != b'\r' {
             i += 1;
         }
         out.push(Tok {
@@ -230,7 +230,12 @@ pub fn is_body(line: &str) -> bool {
 }
 
 pub fn parse(text: &str) -> Vec<Task> {
-    let lines: Vec<&str> = text.split('\n').collect();
+    // CRLF files parse like LF ones: a trailing \r must not become part of the
+    // last field, or `branch:x\r` stops matching the branch ship looks for.
+    let lines: Vec<&str> = text
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .collect();
     let mut tasks = Vec::new();
     let mut fence = false;
     let mut section: Option<String> = None;
@@ -320,8 +325,17 @@ pub fn duplicates(tasks: &[Task]) -> Vec<(u64, usize, usize)> {
     out
 }
 
+/// The highest id on any task-shaped line, fences included. Minting must never
+/// reuse an id, and an unclosed fence would otherwise hide every task after it.
 pub fn max_id(text: &str) -> u64 {
-    parse(text).iter().map(|t| t.id).max().unwrap_or(0)
+    text.split('\n')
+        .filter_map(|l| head(l.trim_end_matches('\r')).map(|(_, id, _)| id))
+        .max()
+        .unwrap_or(0)
+}
+
+pub fn unclosed_fence(text: &str) -> bool {
+    text.split('\n').filter(|l| is_fence(l)).count() % 2 == 1
 }
 
 // --- editing ----------------------------------------------------------------------
@@ -381,17 +395,23 @@ pub fn set_field(line: &str, kind: Kind, value: Option<&str>) -> String {
 
 pub struct Doc {
     pub lines: Vec<String>,
+    crlf: bool,
 }
 
 impl Doc {
+    /// Lines are held without their \r; a CRLF file is written back as CRLF.
     pub fn new(text: &str) -> Doc {
         Doc {
-            lines: text.split('\n').map(String::from).collect(),
+            lines: text
+                .split('\n')
+                .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+                .collect(),
+            crlf: text.contains("\r\n"),
         }
     }
 
     pub fn text(&self) -> String {
-        self.lines.join("\n")
+        self.lines.join(if self.crlf { "\r\n" } else { "\n" })
     }
 
     /// (line, length including body) of task `id`, fences skipped.
