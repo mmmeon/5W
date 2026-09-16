@@ -1,0 +1,54 @@
+# 5W — see https://github.com/<you>/5W for every key.
+
+trunk = "{trunk}"
+file = "TASKS.md"
+commit_prefix = "chore(tasks)"
+# Branches never shipped, rebased or deleted.
+perennial = []
+# Refuse to ship a branch no task names.
+require_task = false
+default_lane = "agent"
+
+[sections]
+open = "## Open"
+done = "## Done"
+
+[levels]
+1 = "mechanical — a small fast model"
+2 = "standard implementation — a mid model"
+3 = "design judgement — the strongest model"
+4 = "open research — the strongest model, and review the reasoning"
+
+# Who can execute a task at all. `close` is the flag `5w done` requires and the
+# via: it records. Naming any lane here replaces the defaults.
+[lanes.agent]
+delegable = true
+close = "self"
+
+[lanes.local]
+delegable = true
+close = "self"
+note = "needs this machine, an account or a secret"
+
+[lanes.owner]
+delegable = false
+close = "decided"
+refuse = "a decision only the owner can make, not work to hand off"
+
+[worktrees]
+# root = "../myrepo-wt"
+links_file = ".worktree-links"
+# install = "pnpm install --prefer-offline"
+# install_marker = "pnpm-lock.yaml"
+
+[delegate]
+context = []
+area_docs = ["README.md", "DESIGN.md"]
+conventions = []
+
+[review]
+checklist = [
+  "The diff does what the task says, and nothing it does not",
+  "Tests were run, and their output is in the report",
+  "Anything the change disproves is retracted where it was claimed",
+]

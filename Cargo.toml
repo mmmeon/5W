@@ -1,0 +1,17 @@
+[package]
+name = "fivew"
+version = "0.1.0"
+edition = "2024"
+description = "A review-gated task queue over a markdown file, with stacked worktrees and a fast-forward ship"
+license = "MIT"
+
+[[bin]]
+name = "5w"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
