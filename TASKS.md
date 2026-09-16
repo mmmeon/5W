@@ -72,6 +72,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. wt rm reads rest.get(1); scan args like tasks::opts() does.
 - [ ] #31 README: one-line uninstall note (cargo uninstall 5w) next to the install line @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning.
+- [ ] #32 review --json prints the same text as review: give it JSON output or refuse the flag @output !1
+  Found by the #14 benchmark: review --json output is byte-identical to review at every queue size.
 
 ## Done
 
