@@ -148,9 +148,10 @@ fn new(repo: &Repo, rest: &[String]) -> Res<()> {
     if seen.iter().any(|s| s == "--install") {
         install(repo, &dir)?;
     }
+    let normalized = fs::canonicalize(&dir).unwrap_or(dir);
     println!(
         "\nwt: {branch} (child of {parent})\n    cd {}",
-        dir.display()
+        normalized.display()
     );
     Ok(())
 }
@@ -181,7 +182,8 @@ pub fn add_worktree(repo: &Repo, branch: &str, do_install: bool) -> Res<()> {
     if do_install {
         install(repo, &dir)?;
     }
-    println!("\nwt: cd {}", dir.display());
+    let normalized = fs::canonicalize(&dir).unwrap_or(dir);
+    println!("\nwt: cd {}", normalized.display());
     Ok(())
 }
 

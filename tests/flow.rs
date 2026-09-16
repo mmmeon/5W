@@ -28,6 +28,20 @@ fn env(c: &mut Command, root: &Path) {
         .env("PATH", path_with_5w());
 }
 
+fn env_with_relative_wt_root(c: &mut Command, _root: &Path) {
+    c.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("NO_COLOR", "1")
+        // Don't set FIVEW_WT_ROOT to test relative path normalization
+        .env_remove("FIVEW_WT_ROOT")
+        // Hooks call `5w` from PATH: make that the binary under test.
+        .env("PATH", path_with_5w());
+}
+
 impl Repo {
     fn new(name: &str) -> Repo {
         let root = std::env::temp_dir().join(format!(
@@ -52,6 +66,24 @@ impl Repo {
         c.args(args).current_dir(cwd);
         env(&mut c, &self.root);
         c.output().unwrap()
+    }
+
+    fn cli_with_relative_wt(&self, cwd: &Path, args: &[&str]) -> Output {
+        let mut c = Command::new(bin5w());
+        c.args(args).current_dir(cwd);
+        env_with_relative_wt_root(&mut c, &self.root);
+        c.output().unwrap()
+    }
+
+    fn ok_with_relative_wt(&self, cwd: &Path, args: &[&str]) -> String {
+        let o = self.cli_with_relative_wt(cwd, args);
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(o.status.success(), "5w {args:?} failed:\n{out}");
+        out
     }
 
     fn ok(&self, cwd: &Path, args: &[&str]) -> String {
@@ -1283,4 +1315,34 @@ fn queue_commits_are_signed_when_the_repository_signs() {
         .trim()
         .to_string();
     assert!(shown.ends_with(&fpr) && !shown.starts_with('N'), "{shown}");
+}
+
+#[test]
+fn worktree_paths_are_normalized() {
+    let r = Repo::new("wt-paths");
+    r.ok(&r.main, &["add", "test task"]);
+
+    // Configure the worktree root to use a relative path to trigger the normalization issue
+    let config_path = r.main.join(".5w.toml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap();
+    config = config.replace("[worktrees]", "[worktrees]\nroot = \"../wt-rel\"");
+    std::fs::write(&config_path, config).unwrap();
+
+    // Create a new worktree using the relative path configuration
+    let output = r.ok_with_relative_wt(&r.main, &["wt", "new", "feature/test"]);
+
+    // Verify the output path is normalized (no .. components)
+    assert!(
+        !output.contains(".."),
+        "wt new output should not contain .. components, got:\n{}",
+        output
+    );
+
+    // Also verify wt path returns normalized paths
+    let path_output = r.ok_with_relative_wt(&r.main, &["wt", "path", "feature/test"]);
+    assert!(
+        !path_output.trim().contains(".."),
+        "wt path output should not contain .. components, got: {}",
+        path_output
+    );
 }
