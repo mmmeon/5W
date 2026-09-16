@@ -424,9 +424,9 @@ pub fn split_title(text: &str, max: usize) -> Option<(String, String)> {
     } else if let Some((i, n)) = find_last(&[" — ", " -- ", "; ", ": ", ", "]) {
         (i, n, false)
     } else if let Some(i) = head.rfind(' ').filter(|i| *i >= min) {
-        (i, 1, true)
+        (i, 1, false)
     } else {
-        (limit, 0, true)
+        (limit, 0, false)
     };
     let mut title = text[..cut].trim_end().to_string();
     if ellipsis {
@@ -695,6 +695,26 @@ mod tests {
             set_text(line, "new"),
             "- [ ] #5 new @a !2 >agent branch:x/y"
         );
+    }
+
+    #[test]
+    fn split_at_word_boundary_without_ellipsis() {
+        // When splitting at a word boundary, there should be no ellipsis because
+        // the rest is preserved in the body, not lost.
+        let t =
+            "Build the thing on the site so that every reader sees it correctly and understands";
+        let (title, rest) = split_title(t, 60).unwrap();
+        // The title should NOT end with "…" because the text is not lost, it's in the body
+        assert!(
+            !title.ends_with('…'),
+            "title should not end with ellipsis: {}",
+            title
+        );
+        assert_eq!(
+            title,
+            "Build the thing on the site so that every reader sees it"
+        );
+        assert_eq!(rest, "correctly and understands");
     }
 
     #[test]
