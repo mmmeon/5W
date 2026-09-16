@@ -4,92 +4,135 @@ use crate::queue::{self, Kind, State, Task};
 use crate::store::{self, Repo};
 use crate::util::{Res, Sty, parse_id, short, truncate};
 use std::collections::HashSet;
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 
 pub const USAGE: &str = "\
 usage: 5w <command> [args]
 
-queue
-  ready [filters]       Delegable work with every blocker done, by complexity (default)
-  ls [filters]          Every open task, blocked ones marked
-  blocked               Open tasks waiting on something, with what
-  levels                Counts per complexity and per lane
-  all                   Open, submitted and done
-  show <id>             One task: fields, body, blockers, dependents
-  delegate <id>         A brief to hand an agent
-  branch <id>           The task's branch, or a suggestion
-  doctor                Check the file: duplicate ids, unknown blockers and lanes
+read
+  ready [filters] [out]   unblocked delegable work, easiest first (default)
+  next [filters] [out]    the first ready task, with its body
+  ls [filters] [out]      open and submitted tasks
+  blocked | levels | all  what waits on what · counts · every queued task
+  show <id> [--json]      one task, archived ones included
+  delegate <id>           the brief for whoever does it
+  review [--checklist]    submitted work, with drift since submit
+  doctor                  check the file
 
-changes (each one commits itself to the trunk, and only itself)
-  add \"<text>\" [fields] [--body <text>|--body -]
+write (each commits itself to the trunk, and only itself)
+  add <text> [fields] [--body <text>|-]   over-long text is split into title + body
   set <id> <area|level|lane|needs|branch> <value|->
-  submit <id> [branch]  Worker: finished, hand it back. Records the tip reviewed against
-  review                Supervisor: submitted work, with diffstat and drift since submit
+  submit <id> [branch]    worker: hand it back
   accept <id> [--at <rev>] [--force]
-                        Reviewed and good. Records the reviewed commit; ship checks it
-  reject <id> <reason>  Back to open, carrying the objection into the next brief
-  done <id> --<close>   Close without review; the flag must match the lane (--self, --decided)
-  open <id>             Reopen, closure record dropped
+  reject <id> <reason>
+  done <id> --<close>     close without review; flag per lane (--self, --decided)
+  open <id>
+  archive                 move closed tasks to the archive file
+  split [--all]           shorten over-long titles into title + body
 
 branches
-  wt <new|add|ls|path|rm|link|install|setup>   see `5w wt help`
-  ship <branch> [--sync] [--squash [-m msg]] [--force]
-  init                  Write .5w.toml and TASKS.md if missing, and commit them
+  wt <new|add|ls|path|rm|link|install|setup>
+  ship [branch] [--sync] [--squash [-m msg]] [--discard-ignored] [--force]
+  init
 
-filters, any order: @area !level >lane — or area:x level:n lane:x, which need no quoting
-ids: #14 or 14 — the bare number needs no quoting in zsh";
+filters  @area !level >lane — or area:x level:n lane:x (no quoting)
+out      --json  --ids  --limit N  --full
+ids      14 or #14. Output is compact when not on a terminal or FIVEW_AGENT=1.";
 
-struct Filters {
+// --- options ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct Opts {
     area: Option<String>,
     level: Option<u8>,
     lane: Option<String>,
+    json: bool,
+    ids: bool,
+    limit: Option<usize>,
+    compact: bool,
+    flags: Vec<String>,
 }
 
-fn filters(args: &[String]) -> Res<Filters> {
-    let mut f = Filters {
-        area: None,
-        level: None,
-        lane: None,
+fn opts(args: &[String]) -> Res<Opts> {
+    let mut o = Opts {
+        compact: compact_default(),
+        ..Default::default()
     };
-    for a in args {
-        if let Some(v) = a.strip_prefix('@').or_else(|| a.strip_prefix("area:")) {
-            f.area = Some(v.into());
-        } else if let Some(v) = a.strip_prefix('!').or_else(|| a.strip_prefix("level:")) {
-            f.level = Some(v.parse().map_err(|_| format!("bad level {a}"))?);
-        } else if let Some(v) = a.strip_prefix('>').or_else(|| a.strip_prefix("lane:")) {
-            f.lane = Some(v.into());
-        } else {
-            bail!("unknown filter {a:?} (want @area, !level, >lane)");
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        match a.as_str() {
+            "--json" => o.json = true,
+            "--ids" => o.ids = true,
+            "--full" => o.compact = false,
+            "--limit" => {
+                let n = args.get(i + 1).ok_or("--limit needs a number")?;
+                o.limit = Some(n.parse().map_err(|_| format!("bad --limit {n}"))?);
+                i += 1;
+            }
+            f if f.starts_with("--") => o.flags.push(f.to_string()),
+            _ => {
+                if let Some(v) = a.strip_prefix('@').or_else(|| a.strip_prefix("area:")) {
+                    o.area = Some(v.into());
+                } else if let Some(v) = a.strip_prefix('!').or_else(|| a.strip_prefix("level:")) {
+                    o.level = Some(v.parse().map_err(|_| format!("bad level {a}"))?);
+                } else if let Some(v) = a.strip_prefix('>').or_else(|| a.strip_prefix("lane:")) {
+                    o.lane = Some(v.into());
+                } else {
+                    bail!("unknown filter {a:?} (want @area !level >lane)");
+                }
+            }
         }
+        i += 1;
     }
-    Ok(f)
+    Ok(o)
 }
+
+/// Compact unless a person is looking: stdout a terminal and FIVEW_AGENT unset.
+fn compact_default() -> bool {
+    match std::env::var("FIVEW_AGENT").as_deref() {
+        Ok("0") => false,
+        Ok(_) => true,
+        Err(_) => !std::io::stdout().is_terminal(),
+    }
+}
+
+// --- the loaded queue --------------------------------------------------------------------
 
 struct Q<'a> {
     repo: &'a Repo,
     tasks: Vec<Task>,
+    archived: Vec<Task>,
     done: HashSet<u64>,
     sty: Sty,
 }
 
 impl<'a> Q<'a> {
     fn load(repo: &'a Repo) -> Res<Q<'a>> {
-        let text = repo.load()?;
-        let tasks = queue::parse(&text);
+        let tasks = queue::parse(&repo.load()?);
+        let archived = queue::parse(&repo.load_archive()?);
+        let mut both = tasks.clone();
+        both.extend(archived.iter().cloned());
         let dup = queue::duplicates(&tasks);
-        if !dup.is_empty() {
-            let mut msg = format!(
-                "{} carries an id twice — every state and count would be wrong:\n",
-                repo.cfg.file
-            );
+        let cross: Vec<u64> = archived
+            .iter()
+            .filter(|a| tasks.iter().any(|t| t.id == a.id))
+            .map(|a| a.id)
+            .collect();
+        if !dup.is_empty() || !cross.is_empty() {
+            let mut msg = String::from("duplicate ids — fix before anything else:");
             for (id, a, b) in dup {
-                msg += &format!("  #{id:<4} line {a} and line {b}\n");
+                msg += &format!("\n  #{id} lines {a} and {b} of {}", repo.cfg.file);
             }
-            msg +=
-                "Delete the stale line, or renumber the younger one if they are different tasks.";
+            for id in cross {
+                msg += &format!(
+                    "\n  #{id} in both {} and {}",
+                    repo.cfg.file, repo.cfg.archive
+                );
+            }
             return Err(msg);
         }
-        let done = tasks
+        let done = both
             .iter()
             .filter(|t| t.state == State::Done)
             .map(|t| t.id)
@@ -97,6 +140,7 @@ impl<'a> Q<'a> {
         Ok(Q {
             repo,
             tasks,
+            archived,
             done,
             sty: Sty::new(),
         })
@@ -105,8 +149,13 @@ impl<'a> Q<'a> {
     fn get(&self, id: u64) -> Res<&Task> {
         self.tasks
             .iter()
+            .chain(&self.archived)
             .find(|t| t.id == id)
             .ok_or_else(|| format!("no task #{id}"))
+    }
+
+    fn is_archived(&self, id: u64) -> bool {
+        self.archived.iter().any(|t| t.id == id)
     }
 
     fn lane<'t>(&'t self, t: &'t Task) -> &'t str {
@@ -129,14 +178,60 @@ impl<'a> Q<'a> {
             .unwrap_or(false)
     }
 
-    fn matches(&self, t: &Task, f: &Filters) -> bool {
-        f.area.as_ref().is_none_or(|a| t.area.as_ref() == Some(a))
-            && f.level.is_none_or(|l| t.level == Some(l))
-            && f.lane.as_ref().is_none_or(|l| self.lane(t) == l)
+    fn matches(&self, t: &Task, o: &Opts) -> bool {
+        o.area.as_ref().is_none_or(|a| t.area.as_ref() == Some(a))
+            && o.level.is_none_or(|l| t.level == Some(l))
+            && o.lane.as_ref().is_none_or(|l| self.lane(t) == l)
     }
 
-    fn row(&self, t: &Task, note: &str) {
+    fn ready(&self, o: &Opts) -> Vec<&Task> {
+        let mut v: Vec<&Task> = self
+            .tasks
+            .iter()
+            .filter(|t| t.state == State::Open)
+            .filter(|t| o.lane.is_some() || self.delegable(t))
+            .filter(|t| self.matches(t, o) && self.unmet(t).is_empty())
+            .collect();
+        v.sort_by_key(|t| (t.level.unwrap_or(9), t.id));
+        v
+    }
+
+    /// One line per task. Compact: `#14 !3 @faces title [branch] >lane — note`.
+    fn row(&self, t: &Task, note: &str, o: &Opts) {
         let s = &self.sty;
+        let lane = self.lane(t);
+        let lane = if lane != self.repo.cfg.default_lane {
+            format!(" >{lane}")
+        } else {
+            String::new()
+        };
+        let branch = t
+            .branch
+            .as_ref()
+            .map(|b| format!(" [{b}]"))
+            .unwrap_or_default();
+        if o.compact {
+            let level = t.level.map(|l| format!(" !{l}")).unwrap_or_default();
+            let area = t
+                .area
+                .as_ref()
+                .map(|a| format!(" @{a}"))
+                .unwrap_or_default();
+            let max = self.repo.cfg.title_max;
+            let title = if max > 0 {
+                truncate(&t.text, max)
+            } else {
+                t.text.clone()
+            };
+            let body = if t.body.is_empty() { "" } else { " +" };
+            let note = if note.is_empty() {
+                String::new()
+            } else {
+                format!(" — {note}")
+            };
+            println!("#{}{level}{area} {title}{body}{branch}{lane}{note}", t.id);
+            return;
+        }
         let area = t.area.as_ref().map(|a| format!("@{a}")).unwrap_or_default();
         let mut out = format!(
             "  {} {:<9} {}",
@@ -144,13 +239,7 @@ impl<'a> Q<'a> {
             area,
             t.text
         );
-        if let Some(b) = &t.branch {
-            out += &format!(" {}", s.dim(&format!("[{b}]")));
-        }
-        let lane = self.lane(t);
-        if lane != self.repo.cfg.default_lane {
-            out += &format!(" {}", s.dim(&format!(">{lane}")));
-        }
+        out += &s.dim(&format!("{branch}{lane}"));
         if !t.body.is_empty() {
             out += &s.dim(" +body");
         }
@@ -159,6 +248,82 @@ impl<'a> Q<'a> {
         }
         println!("{out}");
     }
+
+    fn json(&self, t: &Task, body: bool) -> String {
+        let opt = |v: &Option<String>| v.as_ref().map(|s| js(s)).unwrap_or("null".into());
+        let ids = |v: &[u64]| {
+            format!(
+                "[{}]",
+                v.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        let mut out = format!(
+            "{{\"id\":{},\"state\":\"{}\",\"level\":{},\"area\":{},\"lane\":{},\"title\":{},\"branch\":{},\"needs\":{},\"unmet\":{},\"rework\":{}",
+            t.id,
+            match t.state {
+                State::Open => "open",
+                State::Review => "review",
+                State::Done => "done",
+            },
+            t.level.map(|l| l.to_string()).unwrap_or("null".into()),
+            opt(&t.area),
+            js(self.lane(t)),
+            js(&t.text),
+            opt(&t.branch),
+            ids(&t.needs),
+            ids(&self.unmet(t)),
+            opt(&t.rework),
+        );
+        if body {
+            out += &format!(
+                ",\"body\":[{}],\"via\":{},\"submitted\":{},\"reviewed\":{},\"archived\":{}",
+                t.body.iter().map(|l| js(l)).collect::<Vec<_>>().join(","),
+                opt(&t.via),
+                opt(&t.submitted),
+                opt(&t.reviewed),
+                self.is_archived(t.id)
+            );
+        }
+        out + "}"
+    }
+
+    /// Rows, ids or JSON lines for a list, honouring --limit.
+    fn list(&self, rows: Vec<(&Task, String)>, o: &Opts) -> usize {
+        let n = rows.len();
+        let shown = o.limit.unwrap_or(n).min(n);
+        for (t, note) in rows.into_iter().take(shown) {
+            if o.json {
+                println!("{}", self.json(t, false));
+            } else if o.ids {
+                println!("{}", t.id);
+            } else {
+                self.row(t, &note, o);
+            }
+        }
+        if shown < n && !o.json && !o.ids {
+            println!("… {} more (--limit)", n - shown);
+        }
+        n
+    }
+}
+
+fn js(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out += "\\\"",
+            '\\' => out += "\\\\",
+            '\n' => out += "\\n",
+            '\r' => out += "\\r",
+            '\t' => out += "\\t",
+            c if (c as u32) < 0x20 => out += &format!("\\u{:04x}", c as u32),
+            c => out.push(c),
+        }
+    }
+    out + "\""
 }
 
 /// The task as the committed queue has it, under the lock.
@@ -183,23 +348,26 @@ fn ids_str(v: &[u64]) -> String {
 pub fn run(repo: &Repo, cmd: &str, args: &[String]) -> Res<()> {
     match cmd {
         "ready" => ready(repo, args),
+        "next" => next(repo, args),
         "ls" | "list" => ls(repo, args),
-        "blocked" => blocked(repo),
+        "blocked" => blocked(repo, args),
         "levels" => levels(repo),
-        "all" => all(repo),
-        "show" => show(repo, arg(args, 0, "show <id>")?),
+        "all" => all(repo, args),
+        "show" => show(repo, args),
         "delegate" => delegate(repo, arg(args, 0, "delegate <id>")?),
         "branch" => branch(repo, arg(args, 0, "branch <id>")?),
         "doctor" => doctor(repo),
         "add" => add(repo, args),
         "set" => set(repo, args),
         "submit" => submit(repo, args),
-        "review" => review(repo),
+        "review" => review(repo, args),
         "accept" => accept(repo, args),
         "reject" => reject(repo, args),
         "done" => done(repo, args),
         "open" | "reopen" => reopen(repo, arg(args, 0, "open <id>")?),
-        _ => bail!("unknown command: {cmd} (try: 5w help)"),
+        "archive" => archive(repo),
+        "split" => split(repo, args),
+        _ => bail!("unknown command: {cmd} (5w help)"),
     }
 }
 
@@ -209,45 +377,41 @@ fn arg<'a>(args: &'a [String], i: usize, usage: &str) -> Res<&'a str> {
         .ok_or_else(|| format!("usage: 5w {usage}"))
 }
 
-// --- reading ------------------------------------------------------------------------
+// --- reading ----------------------------------------------------------------------------
 
 fn ready(repo: &Repo, args: &[String]) -> Res<()> {
-    let f = filters(args)?;
+    let o = opts(args)?;
     let q = Q::load(repo)?;
-    let mut shown = 0;
-    for lvl in [Some(1), Some(2), Some(3), Some(4), None] {
-        let mut header = false;
-        for t in q
-            .tasks
-            .iter()
-            .filter(|t| t.state == State::Open && t.level == lvl)
-        {
-            // Non-delegable lanes appear only when asked for by name.
-            if f.lane.is_none() && !q.delegable(t) {
-                continue;
+    let ready = q.ready(&o);
+    let note = |t: &Task| {
+        if t.rework.is_some() {
+            "sent back".to_string()
+        } else {
+            String::new()
+        }
+    };
+    if o.json || o.ids || o.compact {
+        q.list(ready.iter().map(|t| (*t, note(t))).collect(), &o);
+    } else {
+        let mut last = None::<Option<u8>>;
+        let limit = o.limit.unwrap_or(usize::MAX);
+        for t in ready.iter().take(limit) {
+            if last != Some(t.level) {
+                let label = t.level.map(|l| format!("!{l}")).unwrap_or("!-".into());
+                println!("\n{}  {}", q.sty.bold(&label), repo.cfg.tier(t.level));
+                last = Some(t.level);
             }
-            if !q.matches(t, &f) || !q.unmet(t).is_empty() {
-                continue;
-            }
-            if !header {
-                let label = lvl.map(|l| format!("!{l}")).unwrap_or("!-".into());
-                println!("\n{}  {}", q.sty.bold(&label), repo.cfg.tier(lvl));
-                header = true;
-            }
-            let note = if t.rework.is_some() {
-                format!("sent back — {} delegate {}", repo.cfg.cmd_tasks, t.id)
-            } else {
-                String::new()
-            };
-            q.row(t, &note);
-            shown += 1;
+            q.row(t, &note(t), &o);
         }
     }
-    if shown == 0 {
-        println!("(nothing ready under those filters)");
+    if o.json || o.ids {
+        return Ok(());
+    }
+    if ready.is_empty() {
+        println!("(nothing ready)");
     }
     let open: Vec<&Task> = q.tasks.iter().filter(|t| t.state == State::Open).collect();
-    let mut parts = vec![format!("{shown} ready")];
+    let mut parts = vec![format!("{} ready", ready.len())];
     for l in repo.cfg.lanes.iter().filter(|l| !l.delegable) {
         let n = open.iter().filter(|t| q.lane(t) == l.name).count();
         if n > 0 {
@@ -258,129 +422,159 @@ fn ready(repo: &Repo, args: &[String]) -> Res<()> {
     parts.push(format!("{blocked} blocked"));
     let review = q.tasks.iter().filter(|t| t.state == State::Review).count();
     if review > 0 {
-        parts.push(format!("{review} waiting on review"));
+        parts.push(format!("{review} in review"));
     }
-    println!("\n{}", q.sty.dim(&parts.join(" · ")));
+    let line = parts.join(" · ");
+    if o.compact {
+        println!("{line}")
+    } else {
+        println!("\n{}", q.sty.dim(&line))
+    }
+    Ok(())
+}
+
+fn next(repo: &Repo, args: &[String]) -> Res<()> {
+    let o = opts(args)?;
+    let q = Q::load(repo)?;
+    let Some(t) = q.ready(&o).into_iter().next() else {
+        bail!("nothing ready under those filters");
+    };
+    if o.json {
+        println!("{}", q.json(t, true));
+    } else if o.ids {
+        println!("{}", t.id);
+    } else {
+        print_task(&q, t);
+        println!("→ {} delegate {}", repo.cfg.cmd_tasks, t.id);
+    }
     Ok(())
 }
 
 fn ls(repo: &Repo, args: &[String]) -> Res<()> {
-    let f = filters(args)?;
+    let o = opts(args)?;
     let q = Q::load(repo)?;
-    for t in q
+    let rows = q
         .tasks
         .iter()
-        .filter(|t| t.state != State::Done && q.matches(t, &f))
-    {
-        let mut notes = Vec::new();
-        if t.state == State::Review {
-            notes.push("in review".to_string());
-        }
-        let u = q.unmet(t);
-        if !u.is_empty() {
-            notes.push(format!("blocked by {}", ids_str(&u)));
-        }
-        if t.rework.is_some() {
-            notes.push("sent back".into());
-        }
-        q.row(t, &notes.join(", "));
-    }
+        .filter(|t| t.state != State::Done && q.matches(t, &o))
+        .map(|t| {
+            let mut notes = Vec::new();
+            if t.state == State::Review {
+                notes.push("in review".to_string());
+            }
+            let u = q.unmet(t);
+            if !u.is_empty() {
+                notes.push(format!("blocked by {}", ids_str(&u)));
+            }
+            if t.rework.is_some() {
+                notes.push("sent back".into());
+            }
+            (t, notes.join(", "))
+        })
+        .collect();
+    q.list(rows, &o);
     Ok(())
 }
 
-fn blocked(repo: &Repo) -> Res<()> {
+fn blocked(repo: &Repo, args: &[String]) -> Res<()> {
+    let o = opts(args)?;
     let q = Q::load(repo)?;
-    for t in q.tasks.iter().filter(|t| t.state == State::Open) {
-        let u = q.unmet(t);
-        if !u.is_empty() {
-            q.row(t, &format!("blocked by {}", ids_str(&u)));
-        }
-    }
+    let rows = q
+        .tasks
+        .iter()
+        .filter(|t| t.state == State::Open && q.matches(t, &o))
+        .filter_map(|t| {
+            let u = q.unmet(t);
+            (!u.is_empty()).then(|| (t, format!("blocked by {}", ids_str(&u))))
+        })
+        .collect();
+    q.list(rows, &o);
     Ok(())
 }
 
 fn levels(repo: &Repo) -> Res<()> {
     let q = Q::load(repo)?;
     let open: Vec<&Task> = q.tasks.iter().filter(|t| t.state == State::Open).collect();
-    println!("By complexity (open, delegable lanes):");
+    let mut parts = Vec::new();
     for lvl in [Some(1), Some(2), Some(3), Some(4), None] {
         let n = open
             .iter()
             .filter(|t| t.level == lvl && q.delegable(t))
             .count();
         if n > 0 {
-            let label = lvl.map(|l| l.to_string()).unwrap_or("-".into());
-            println!("  !{label}  {n:>3}  {}", repo.cfg.tier(lvl));
+            parts.push(format!(
+                "!{} {n}",
+                lvl.map(|l| l.to_string()).unwrap_or("-".into())
+            ));
         }
     }
-    println!("By lane:");
-    for l in &repo.cfg.lanes {
-        let n = open.iter().filter(|t| q.lane(t) == l.name).count();
-        if n > 0 {
-            println!("  >{:<7} {n:>3}", l.name);
-        }
-    }
-    let unknown = open
+    println!("delegable by level: {}", parts.join(" · "));
+    let lanes: Vec<String> = repo
+        .cfg
+        .lanes
         .iter()
-        .filter(|t| repo.cfg.lane(q.lane(t)).is_none())
-        .count();
-    if unknown > 0 {
-        println!("  {unknown} on lanes the config does not name — 5w doctor");
-    }
-    Ok(())
-}
-
-fn all(repo: &Repo) -> Res<()> {
-    let q = Q::load(repo)?;
-    for t in &q.tasks {
-        let area = t.area.as_ref().map(|a| format!("@{a}")).unwrap_or_default();
-        println!("  [{}] #{:<3} {:<9} {}", t.state.mark(), t.id, area, t.text);
-    }
-    Ok(())
-}
-
-fn show(repo: &Repo, id: &str) -> Res<()> {
-    let q = Q::load(repo)?;
-    let t = q.get(parse_id(id)?)?;
-    println!("#{}  {}", t.id, t.text);
-    for l in &t.body {
-        println!("    {l}");
-    }
-    println!("  state:     {}", t.state.name());
-    println!("  area:      {}", t.area.as_deref().unwrap_or("-"));
+        .filter_map(|l| {
+            let n = open.iter().filter(|t| q.lane(t) == l.name).count();
+            (n > 0).then(|| format!(">{} {n}", l.name))
+        })
+        .collect();
+    println!("open by lane: {}", lanes.join(" · "));
     println!(
-        "  level:     {} — {}",
-        t.level.map(|l| l.to_string()).unwrap_or("-".into()),
-        repo.cfg.tier(t.level)
+        "closed: {} in queue, {} archived",
+        q.tasks.len() - open.len() - q.tasks.iter().filter(|t| t.state == State::Review).count(),
+        q.archived.len()
     );
-    println!("  lane:      {}", q.lane(t));
-    println!("  branch:    {}", t.branch.as_deref().unwrap_or("-"));
-    if let Some(r) = &t.rework {
-        println!("  rework:    {r}");
-    }
-    if let Some(s) = &t.submitted {
-        println!("  submitted: at {s}");
-    }
-    if let Some(r) = &t.reviewed {
-        println!("  reviewed:  at {r}");
-    }
-    if let Some(v) = &t.via {
-        println!("  closed:    via:{v}");
-    }
-    let u = q.unmet(t);
+    Ok(())
+}
+
+fn all(repo: &Repo, args: &[String]) -> Res<()> {
+    let o = opts(args)?;
+    let q = Q::load(repo)?;
+    let rows = q
+        .tasks
+        .iter()
+        .filter(|t| q.matches(t, &o))
+        .map(|t| (t, format!("[{}]", t.state.mark())))
+        .collect();
+    q.list(rows, &o);
+    Ok(())
+}
+
+fn print_task(q: &Q, t: &Task) {
+    let level = t.level.map(|l| format!(" !{l}")).unwrap_or_default();
+    let area = t
+        .area
+        .as_ref()
+        .map(|a| format!(" @{a}"))
+        .unwrap_or_default();
+    let archived = if q.is_archived(t.id) {
+        ", archived"
+    } else {
+        ""
+    };
     println!(
-        "  needs:     {}{}",
-        if t.needs.is_empty() {
-            "-".into()
-        } else {
-            ids_str(&t.needs)
-        },
-        if u.is_empty() {
+        "#{} [{}{archived}]{level}{area} >{}  {}",
+        t.id,
+        t.state.name(),
+        q.lane(t),
+        t.text
+    );
+    for l in &t.body {
+        println!("  {l}");
+    }
+    let mut facts = Vec::new();
+    if let Some(b) = &t.branch {
+        facts.push(format!("branch {b}"));
+    }
+    if !t.needs.is_empty() {
+        let u = q.unmet(t);
+        let unmet = if u.is_empty() {
             String::new()
         } else {
-            format!(" (unmet: {})", ids_str(&u))
-        }
-    );
+            format!(" (unmet {})", ids_str(&u))
+        };
+        facts.push(format!("needs {}{unmet}", ids_str(&t.needs)));
+    }
     let deps: Vec<u64> = q
         .tasks
         .iter()
@@ -388,7 +582,33 @@ fn show(repo: &Repo, id: &str) -> Res<()> {
         .map(|d| d.id)
         .collect();
     if !deps.is_empty() {
-        println!("  blocks:    {}", ids_str(&deps));
+        facts.push(format!("blocks {}", ids_str(&deps)));
+    }
+    if let Some(s) = &t.submitted {
+        facts.push(format!("submitted at {s}"));
+    }
+    if let Some(r) = &t.reviewed {
+        facts.push(format!("reviewed at {r}"));
+    }
+    if let Some(v) = &t.via {
+        facts.push(format!("via:{v}"));
+    }
+    if !facts.is_empty() {
+        println!("{}", facts.join(" · "));
+    }
+    if let Some(r) = &t.rework {
+        println!("rework: {r}");
+    }
+}
+
+fn show(repo: &Repo, args: &[String]) -> Res<()> {
+    let o = opts(&args.iter().skip(1).cloned().collect::<Vec<_>>())?;
+    let q = Q::load(repo)?;
+    let t = q.get(parse_id(arg(args, 0, "show <id>")?)?)?;
+    if o.json {
+        println!("{}", q.json(t, true));
+    } else {
+        print_task(&q, t);
     }
     Ok(())
 }
@@ -407,13 +627,45 @@ fn branch(repo: &Repo, id: &str) -> Res<()> {
     Ok(())
 }
 
+/// `path.md #12`, `path.md §3`, `path.md R7` — the sections a brief points at, so
+/// a worker reads those rather than the whole file.
+fn refs(text: &str) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let clean = |w: &str| {
+        w.trim_matches(|c: char| "()[],;:'\"`".contains(c))
+            .trim_end_matches(['.', ',', ';', ':', ')'])
+            .to_string()
+    };
+    let mut out: Vec<String> = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let w = clean(w);
+        if !w.ends_with(".md") {
+            continue;
+        }
+        let sec = words.get(i + 1).map(|n| clean(n)).filter(|n| {
+            let n = n.trim_end_matches('.');
+            (n.starts_with('#') || n.starts_with('§') || n.starts_with('R'))
+                && n.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
+                || n.chars().all(|c| c.is_ascii_digit() || c == '.') && !n.is_empty()
+        });
+        let r = match sec {
+            Some(s) => format!("{w} {}", s.trim_end_matches('.')),
+            None => w,
+        };
+        if !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
+}
+
 fn delegate(repo: &Repo, id: &str) -> Res<()> {
     let q = Q::load(repo)?;
     let t = q.get(parse_id(id)?)?;
     let cfg = &repo.cfg;
     match t.state {
-        State::Done => bail!("#{} is already closed", t.id),
-        State::Review => bail!("#{} is submitted and waiting on review, not on work", t.id),
+        State::Done => bail!("#{} is closed", t.id),
+        State::Review => bail!("#{} is in review, not waiting on work", t.id),
         State::Open => {}
     }
     let lane_name = q.lane(t);
@@ -434,12 +686,9 @@ fn delegate(repo: &Repo, id: &str) -> Res<()> {
     let setup = if !git::branch_exists(&repo.primary, &branch) {
         format!("{} new {branch}", cfg.cmd_wt)
     } else if git::worktree_of(&repo.primary, &branch)?.is_some() {
-        format!("# {branch} exists with a worktree — the last attempt is in it")
+        format!("# {branch} and its worktree exist — the last attempt is there")
     } else {
-        format!(
-            "{} add {branch}    # the branch exists; this restores its worktree",
-            cfg.cmd_wt
-        )
+        format!("{} add {branch}", cfg.cmd_wt)
     };
     let mut docs = cfg.context_docs.clone();
     if let Some(a) = &t.area {
@@ -449,52 +698,47 @@ fn delegate(repo: &Repo, id: &str) -> Res<()> {
             }
         }
     }
-    println!("\nTask #{} — {}\n", t.id, t.text);
+    let all_text = format!("{} {}", t.text, t.body.join(" "));
+    let refs = refs(&all_text);
+
+    let level = t.level.map(|l| format!(" !{l}")).unwrap_or_default();
+    let area = t
+        .area
+        .as_ref()
+        .map(|a| format!(" @{a}"))
+        .unwrap_or_default();
+    println!("#{}{level}{area} >{lane_name}  {}", t.id, t.text);
     for l in &t.body {
         println!("  {l}");
     }
-    if !t.body.is_empty() {
-        println!();
+    if let Some(r) = &t.rework {
+        println!("REWORK (last attempt sent back): {r}");
     }
-    println!(
-        "  complexity  !{}  ({})",
-        t.level.map(|l| l.to_string()).unwrap_or("-".into()),
-        cfg.tier(t.level)
-    );
-    println!(
-        "  lane        >{lane_name}{}",
-        lane.and_then(|l| l.note.as_ref())
-            .map(|n| format!("  — {n}"))
-            .unwrap_or_default()
-    );
-    println!(
-        "  area        {}",
-        t.area
-            .as_ref()
-            .map(|a| format!("{a}/"))
-            .unwrap_or("(none)".into())
-    );
+    if let Some(n) = lane.and_then(|l| l.note.as_ref()) {
+        println!("lane: {n}");
+    }
+    if !refs.is_empty() {
+        println!(
+            "refs: {} — read these sections, not whole files",
+            refs.join(", ")
+        );
+    }
     if !docs.is_empty() {
-        println!("  context     {}", docs.join(", "));
+        println!("docs: {}", docs.join(", "));
     }
     if !cfg.conventions.is_empty() {
-        println!("  conventions {}", cfg.conventions.join(", "));
+        println!("conventions: {}", cfg.conventions.join(", "));
     }
-    if let Some(r) = &t.rework {
-        println!("  REWORK      {r}");
-        println!("              (the last attempt was sent back for this — read it first)");
-    }
-    println!("\n  {setup}\n  cd \"$({} path {branch})\"\n", cfg.cmd_wt);
+    println!("tier: {}", cfg.tier(t.level));
     let footer = cfg.brief_footer.clone().unwrap_or_else(|| {
-        "  Commit on that branch. Then hand it back for review — do not ship it and do\n  \
-         not close it:\n\n    {tasks} submit {id} {branch}\n\n  \
-         The supervisor reviews the branch and accepts or rejects it. Only an\n  \
-         accepted task ships, and `{ship}` enforces that.\n"
+        "steps:\n  {setup}\n  cd \"$({wt} path {branch})\"\n  work, commit, then: {tasks} submit {id} {branch}\n\
+         rules: do not ship or close it. If 5w refuses something, the refusal names the fix.\n"
             .into()
     });
     print!(
         "{}",
         footer
+            .replace("{setup}", &setup)
             .replace("{tasks}", &cfg.cmd_tasks)
             .replace("{ship}", &cfg.cmd_ship)
             .replace("{wt}", &cfg.cmd_wt)
@@ -506,7 +750,9 @@ fn delegate(repo: &Repo, id: &str) -> Res<()> {
 
 fn doctor(repo: &Repo) -> Res<()> {
     let text = repo.load()?;
+    let archive = repo.load_archive()?;
     let tasks = queue::parse(&text);
+    let archived = queue::parse(&archive);
     let mut problems = 0;
     let mut say = |s: String| {
         println!("  {s}");
@@ -515,8 +761,17 @@ fn doctor(repo: &Repo) -> Res<()> {
     for (id, a, b) in queue::duplicates(&tasks) {
         say(format!("#{id} appears twice: lines {a} and {b}"));
     }
-    let ids: HashSet<u64> = tasks.iter().map(|t| t.id).collect();
+    for a in &archived {
+        if tasks.iter().any(|t| t.id == a.id) {
+            say(format!(
+                "#{} is in both {} and {}",
+                a.id, repo.cfg.file, repo.cfg.archive
+            ));
+        }
+    }
+    let ids: HashSet<u64> = tasks.iter().chain(&archived).map(|t| t.id).collect();
     let cfg = &repo.cfg;
+    let mut long = 0;
     for t in &tasks {
         for n in &t.needs {
             if !ids.contains(n) {
@@ -553,28 +808,35 @@ fn doctor(repo: &Repo) -> Res<()> {
                 _ => {}
             }
         }
+        if t.state != State::Done && cfg.title_max > 0 && t.text.chars().count() > cfg.title_max {
+            long += 1;
+        }
     }
     if queue::unclosed_fence(&text) {
         say("a ``` fence is never closed — every task after it is invisible".into());
     }
-    if repo.trunk_checkout()?.is_some()
-        && let Some(c) = repo.committed()?
-        && c != text
-    {
+    let closed = tasks.iter().filter(|t| t.state == State::Done).count();
+    if closed > 0 {
         println!(
-            "  (note: {} has uncommitted edits in the {} checkout)",
-            cfg.file, repo.trunk
+            "  note: {closed} closed tasks still in {} — `5w archive` moves them out",
+            cfg.file
+        );
+    }
+    if long > 0 {
+        println!(
+            "  note: {long} open titles over {} chars — `5w split`",
+            cfg.title_max
         );
     }
     if problems == 0 {
-        println!("  ok — {} tasks", tasks.len());
+        println!("  ok — {} queued, {} archived", tasks.len(), archived.len());
         Ok(())
     } else {
         bail!("{problems} problem(s)")
     }
 }
 
-// --- writing -------------------------------------------------------------------------
+// --- writing -------------------------------------------------------------------------------
 
 fn validate_field(repo: &Repo, w: &str, ids: &HashSet<u64>) -> Res<Kind> {
     if w.chars().any(|c| c.is_whitespace() || c.is_control()) {
@@ -590,15 +852,13 @@ fn validate_field(repo: &Repo, w: &str, ids: &HashSet<u64>) -> Res<Kind> {
         }
         Kind::Lane => {
             if repo.cfg.lane(&w[1..]).is_none() {
-                bail!(
-                    "unknown lane {w} (configured: {})",
-                    repo.cfg
-                        .lanes
-                        .iter()
-                        .map(|l| format!(">{}", l.name))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
+                let names: Vec<String> = repo
+                    .cfg
+                    .lanes
+                    .iter()
+                    .map(|l| format!(">{}", l.name))
+                    .collect();
+                bail!("unknown lane {w} (have: {})", names.join(" "));
             }
         }
         Kind::Needs => {
@@ -609,9 +869,7 @@ fn validate_field(repo: &Repo, w: &str, ids: &HashSet<u64>) -> Res<Kind> {
                 }
             }
         }
-        _ => bail!(
-            "not a field: {w:?} (want @area !n >lane needs:#a,#b branch:x — or area:x level:n lane:x)"
-        ),
+        _ => bail!("not a field: {w:?} (want @area !n >lane needs:#a,#b branch:x)"),
     }
     Ok(k)
 }
@@ -630,8 +888,7 @@ fn normalise_field(a: &str) -> String {
 }
 
 fn add(repo: &Repo, args: &[String]) -> Res<()> {
-    let usage =
-        "usage: 5w add \"<text>\" [@area] [!n] [>lane] [needs:#1,#2] [--body <text>|--body -]";
+    let usage = "usage: 5w add <text> [@area] [!n] [>lane] [needs:#1,#2] [--body <text>|-]";
     let mut text = None;
     let mut fields = Vec::new();
     let mut body: Option<String> = None;
@@ -654,7 +911,7 @@ fn add(repo: &Repo, args: &[String]) -> Res<()> {
         }
         if text.is_none() {
             if a.starts_with('-') {
-                bail!("add takes text first, not a flag: {a}\n{usage}");
+                bail!("text first, not a flag: {a}\n{usage}");
             }
             text = Some(a.clone());
         } else {
@@ -662,37 +919,41 @@ fn add(repo: &Repo, args: &[String]) -> Res<()> {
         }
         i += 1;
     }
-    let text = text.ok_or(usage)?;
+    let mut text = text.ok_or(usage)?;
     if text.contains(['\n', '\r']) {
-        bail!("task text is one line; put the rest in --body");
+        bail!("text is one line; the rest goes in --body");
     }
-    let current = queue::parse(&repo.load()?);
-    let ids: HashSet<u64> = current.iter().map(|t| t.id).collect();
+    let q = Q::load(repo)?;
+    let ids: HashSet<u64> = q.tasks.iter().chain(&q.archived).map(|t| t.id).collect();
     let mut lane = repo.cfg.default_lane.clone();
     for f in &fields {
         if validate_field(repo, f, &ids)? == Kind::Lane {
             lane = f[1..].to_string();
         }
     }
-    // Stray field syntax inside the text would be parsed as a field later.
     for tok in queue::tokenize(&text) {
         if tok.kind != Kind::Text {
             bail!(
-                "the text contains {:?}, which reads as a field — pass fields as separate arguments",
+                "text contains {:?}, which reads as a field — pass fields as separate arguments",
                 &text[tok.start..tok.end]
             );
         }
     }
+    let mut body_lines = Vec::new();
+    if let Some((title, rest)) = queue::split_title(&text, repo.cfg.title_max) {
+        println!(
+            "  (text over {} chars: the rest went to the body)",
+            repo.cfg.title_max
+        );
+        text = title;
+        body_lines = queue::body_lines(&rest, 100);
+    }
+    body_lines.extend(
+        body.map(|b| queue::body_lines(&b, usize::MAX))
+            .unwrap_or_default(),
+    );
     let section = repo.cfg.section_for(&lane);
     let done = repo.cfg.done_section.clone();
-    let body_lines: Vec<String> = body
-        .map(|b| {
-            b.lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| format!("  {l}"))
-                .collect()
-        })
-        .unwrap_or_default();
     let minted = std::cell::Cell::new(0);
     let prefix = repo.cfg.commit_prefix.clone();
     let short_text = truncate(&text, 60);
@@ -701,24 +962,20 @@ fn add(repo: &Repo, args: &[String]) -> Res<()> {
         |ctx| format!("{prefix}: add #{} — {short_text}", ctx.next_id),
         &[],
         |_| Ok(()),
-        |doc, ctx| {
+        |f, ctx| {
             let mut line = format!("- [ ] #{} {text}", ctx.next_id);
-            for f in &fields {
+            for fld in &fields {
                 line.push(' ');
-                line.push_str(f);
+                line.push_str(fld);
             }
             let mut block = vec![line];
             block.extend(body_lines.iter().cloned());
-            doc.insert(block, &section, Some(&done));
+            f.queue.insert(block, &section, Some(&done));
             minted.set(ctx.next_id);
             Ok(())
         },
     )?;
-    println!(
-        "  added #{} under {}",
-        minted.get(),
-        section.trim_start_matches("## ")
-    );
+    println!("  added #{}", minted.get());
     Ok(())
 }
 
@@ -729,16 +986,11 @@ fn set(repo: &Repo, args: &[String]) -> Res<()> {
     let value = args.get(2).ok_or(usage)?.as_str();
     let q = Q::load(repo)?;
     let t = q.get(id)?;
-    // A closed task's fields are its record. Rewriting one — above all its
-    // branch, which is what ship's gate keys on — would let a closure authorise
-    // work it never saw.
+    // A closed task's fields are its record; its branch is what ship keys on.
     if t.state == State::Done {
-        bail!(
-            "#{id} is closed; its fields are the record. `{} open {id}` first",
-            repo.cfg.cmd_tasks
-        );
+        bail!("#{id} is closed; `{} open {id}` first", repo.cfg.cmd_tasks);
     }
-    let ids: HashSet<u64> = q.tasks.iter().map(|t| t.id).collect();
+    let ids: HashSet<u64> = q.tasks.iter().chain(&q.archived).map(|t| t.id).collect();
     let (kind, v) = match field {
         "area" => (Kind::Area, value.trim_start_matches('@').to_string()),
         "level" => (Kind::Level, value.trim_start_matches('!').to_string()),
@@ -760,15 +1012,10 @@ fn set(repo: &Repo, args: &[String]) -> Res<()> {
             bail!("{value:?} is not a valid {field}");
         }
     }
-    let mut to = None;
-    if kind == Kind::Lane && t.state != State::Done {
-        let lane = if clear {
-            repo.cfg.default_lane.clone()
-        } else {
-            v.clone()
-        };
-        to = Some(repo.cfg.section_for(&lane));
-    }
+    let to = (kind == Kind::Lane).then(|| {
+        repo.cfg
+            .section_for(if clear { &repo.cfg.default_lane } else { &v })
+    });
     let msg = format!("{}: set #{id} {field} {value}", repo.cfg.commit_prefix);
     let done = repo.cfg.done_section.clone();
     let tasks_cmd = repo.cfg.cmd_tasks.clone();
@@ -777,8 +1024,8 @@ fn set(repo: &Repo, args: &[String]) -> Res<()> {
         |_| msg.clone(),
         &[id],
         |c| open_only(c, id, &tasks_cmd),
-        |doc, _| {
-            doc.update(
+        |f, _| {
+            f.queue.update(
                 id,
                 |l| queue::set_field(l, kind, (!clear).then_some(v.as_str())),
                 to.as_deref(),
@@ -793,12 +1040,10 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
     let q = Q::load(repo)?;
     let t = q.get(id)?;
     if t.state == State::Done {
-        bail!("#{id} is already closed");
+        bail!("#{id} is closed");
     }
     let branch = match (args.get(1), &t.branch) {
-        (Some(b), Some(tb)) if b != tb => {
-            bail!("#{id} names branch {tb}, not {b} — `5w set {id} branch {b}` if that changed")
-        }
+        (Some(b), Some(tb)) if b != tb => bail!("#{id} names branch {tb}, not {b}"),
         (Some(b), _) => b.clone(),
         (None, Some(tb)) => tb.clone(),
         (None, None) => match git::current_branch(&repo.cwd) {
@@ -813,7 +1058,7 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
         && git::dirty(&wt)?
     {
         bail!(
-            "{branch} has uncommitted or untracked files in {} — work that is not committed is not handed in. Commit it, then submit.",
+            "{branch} has uncommitted files in {}; commit, then submit",
             wt.display()
         );
     }
@@ -824,7 +1069,7 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
         &["rev-list", "--count", &format!("{}..{tip}", repo.trunk)],
     )?;
     if ahead == "0" {
-        eprintln!("warning: {branch} has no commits that {} lacks", repo.trunk);
+        eprintln!("warning: {branch} has nothing {} lacks", repo.trunk);
     }
     let sha = short(&tip).to_string();
     let msg = format!("{}: submit #{id} for review", repo.cfg.commit_prefix);
@@ -840,8 +1085,8 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
                 _ => Ok(()),
             }
         },
-        |doc, _| {
-            doc.update(
+        |f, _| {
+            f.queue.update(
                 id,
                 |l| {
                     let l = queue::set_mark(l, State::Review);
@@ -853,15 +1098,14 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
             )
         },
     )?;
-    println!("  #{id} submitted for review — {branch} at {sha}");
+    println!("  #{id} submitted — {branch} at {sha}");
     Ok(())
 }
 
-fn review(repo: &Repo) -> Res<()> {
+fn review(repo: &Repo, args: &[String]) -> Res<()> {
+    let o = opts(args)?;
     let q = Q::load(repo)?;
-    let s = &q.sty;
     let mut found = false;
-    println!("Waiting on review:");
     for t in q.tasks.iter().filter(|t| t.state == State::Review) {
         found = true;
         let mut notes = Vec::new();
@@ -880,7 +1124,7 @@ fn review(repo: &Repo) -> Res<()> {
             .unwrap_or("?".into());
             notes.push(format!("moved since submit (+{n} commits)"));
         }
-        q.row(t, &notes.join(", "));
+        q.row(t, &notes.join(", "), &o);
         if let (Some(b), Some(_)) = (b, &tip) {
             let range = format!("{}...{b}", repo.trunk);
             let stat =
@@ -890,24 +1134,26 @@ fn review(repo: &Repo) -> Res<()> {
                 &["rev-list", "--count", &format!("{b}..{}", repo.trunk)],
             )
             .unwrap_or_default();
-            println!("        {}", s.dim(stat.trim()));
-            let behind_note = if behind != "0" && !behind.is_empty() {
-                format!("   ({behind} behind {})", repo.trunk)
+            let behind = if behind != "0" && !behind.is_empty() {
+                format!(" · {behind} behind")
             } else {
                 String::new()
             };
-            println!(
-                "        {}",
-                s.dim(&format!("git diff {range}{behind_note}"))
-            );
+            println!("    {} · git diff {range}{behind}", stat.trim());
         }
     }
     if !found {
-        println!("  (nothing submitted)");
-    } else if !repo.cfg.checklist.is_empty() {
-        println!("\nEvery review checks:");
-        for (i, c) in repo.cfg.checklist.iter().enumerate() {
-            println!("  {}. {c}", i + 1);
+        println!("(nothing submitted)");
+    }
+    let checklist = &repo.cfg.checklist;
+    if !checklist.is_empty() {
+        if o.flags.iter().any(|f| f == "--checklist") || (!o.compact && found) {
+            println!("checklist:");
+            for (i, c) in checklist.iter().enumerate() {
+                println!("  {}. {c}", i + 1);
+            }
+        } else if found {
+            println!("(checklist: 5w review --checklist)");
         }
     }
     Ok(())
@@ -932,16 +1178,16 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
         i += 1;
     }
     let id = id.ok_or(usage)?;
+    let tasks = &repo.cfg.cmd_tasks;
     let q = Q::load(repo)?;
     let t = q.get(id)?;
     match t.state {
         State::Done => bail!("#{id} is already closed"),
-        State::Open if !force => bail!(
-            "#{id} was never submitted. Whoever did the work runs `{} submit {id} <branch>`;\n  \
-             if you did it yourself, `{} done {id} --self`. (--force accepts anyway.)",
-            repo.cfg.cmd_tasks,
-            repo.cfg.cmd_tasks
-        ),
+        State::Open if !force => {
+            bail!(
+                "#{id} was never submitted — worker: `{tasks} submit {id} <branch>`; self-done: `{tasks} done {id} --self`"
+            )
+        }
         _ => {}
     }
     let mut reviewed = None;
@@ -953,37 +1199,28 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
                     Some(git::rev(&repo.primary, r).ok_or_else(|| format!("cannot resolve {r}"))?)
             }
             (None, Some(tip)) => {
-                // The review was of the submitted commit. A tip that moved since
-                // carries commits nobody has looked at.
+                // The review was of the submitted commit; later ones are unread.
                 if let Some(sub) = &t.submitted
                     && !tip.starts_with(sub.as_str())
                     && !force
                 {
-                    let log = git::opt(
+                    let n = git::opt(
                         &repo.primary,
-                        &["log", "--oneline", &format!("{sub}..{tip}")],
+                        &["rev-list", "--count", &format!("{sub}..{tip}")],
                     )
-                    .unwrap_or_default();
+                    .unwrap_or("?".into());
                     bail!(
-                        "{b} gained commits after it was submitted at {sub}:\n{}\n\n  \
-                             Review them, then accept what you reviewed:\n    {} accept {id} --at {}",
-                        log.lines()
-                            .map(|l| format!("    {l}"))
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                        repo.cfg.cmd_tasks,
+                        "{b} gained {n} commit(s) after it was submitted at {sub}: `git log {sub}..{b}`; once reviewed, `{tasks} accept {id} --at {}`",
                         short(&tip)
                     );
                 }
                 reviewed = Some(tip);
             }
             (None, None) if force => {
-                eprintln!("warning: branch {b} does not exist; no reviewed commit recorded")
+                eprintln!("warning: branch {b} is gone; no reviewed commit recorded")
             }
             (None, None) => bail!(
-                "branch {b} does not exist, so there is no commit to record as reviewed — and a\n  \
-                 closed row with none would authorise whatever branch later takes that name.\n  \
-                 Find the work, or --force if it landed some other way."
+                "branch {b} is gone, so there is nothing to record as reviewed (--force if it landed another way)"
             ),
         }
     }
@@ -998,17 +1235,15 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
         |c| {
             let c = committed(c, id)?;
             if (c.state, c.submitted.clone(), c.branch.clone()) != seen {
-                bail!(
-                    "#{id} changed on the trunk while this ran (or differs from the working copy) — look again"
-                );
+                bail!("#{id} differs on the trunk from what you read — look again");
             }
             if c.state != State::Review && !force {
                 bail!("#{id} is not submitted on the trunk");
             }
             Ok(())
         },
-        |doc, _| {
-            doc.update(
+        |f, _| {
+            f.queue.update(
                 id,
                 |l| {
                     let l = queue::set_mark(l, State::Done);
@@ -1022,7 +1257,7 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
         },
     )?;
     println!(
-        "  #{id} accepted (via:review){}",
+        "  #{id} accepted{}",
         sha.map(|s| format!(" at {s}")).unwrap_or_default()
     );
     Ok(())
@@ -1033,11 +1268,10 @@ fn reject(repo: &Repo, args: &[String]) -> Res<()> {
     let id = parse_id(args.first().ok_or(usage)?)?;
     let reason = args[1..].join(" ");
     if reason.trim().is_empty() {
-        bail!("a rejection needs a reason — it is what the next attempt reads first");
+        bail!("a rejection needs a reason — the next attempt reads it first");
     }
     let q = Q::load(repo)?;
-    let t = q.get(id)?;
-    if t.state == State::Done {
+    if q.get(id)?.state == State::Done {
         bail!("#{id} is closed; `{} open {id}` first", repo.cfg.cmd_tasks);
     }
     let msg = format!("{}: reject #{id}", repo.cfg.commit_prefix);
@@ -1047,8 +1281,8 @@ fn reject(repo: &Repo, args: &[String]) -> Res<()> {
         |_| msg.clone(),
         &[id],
         |c| open_only(c, id, &tasks_cmd),
-        |doc, _| {
-            doc.update(
+        |f, _| {
+            f.queue.update(
                 id,
                 |l| {
                     let l = queue::set_mark(l, State::Open);
@@ -1060,7 +1294,7 @@ fn reject(repo: &Repo, args: &[String]) -> Res<()> {
             )
         },
     )?;
-    println!("  #{id} sent back: {}", reason.trim());
+    println!("  #{id} sent back");
     Ok(())
 }
 
@@ -1079,22 +1313,19 @@ fn done(repo: &Repo, args: &[String]) -> Res<()> {
     let want = format!("--{}", lane.close);
     if flag != want {
         let tasks = &repo.cfg.cmd_tasks;
-        let how = if lane.delegable {
-            format!(
-                "  Delegable work goes through review:\n    {tasks} submit {id} <branch>   # whoever did it\n    {tasks} accept {id}            # the supervisor, after reading the diff\n\n"
-            )
+        let review = if lane.delegable {
+            format!("; delegated work: `{tasks} submit {id}` then `accept`")
         } else {
             String::new()
         };
         bail!(
-            "#{id} is on >{lane_name}. Closing it records via:{} and needs the flag that says so:\n\n{how}  {tasks} done {id} {want}\n\n  \
-             No flag can check who is typing. It exists so closing is a deliberate act with a recorded meaning.",
+            "#{id} is >{lane_name}: close with `{tasks} done {id} {want}` (records via:{}){review}",
             lane.close
         );
     }
     if t.state == State::Review {
         eprintln!(
-            "warning: #{id} was submitted for review; closing it via:{} instead",
+            "warning: #{id} was submitted; closing via:{} instead of review",
             lane.close
         );
     }
@@ -1114,12 +1345,12 @@ fn done(repo: &Repo, args: &[String]) -> Res<()> {
                 .clone()
                 .unwrap_or(default_lane.clone());
             if l != lane_name {
-                bail!("#{id} is on >{l} on the trunk, not >{lane_name} — look again");
+                bail!("#{id} is >{l} on the trunk, not >{lane_name} — look again");
             }
             Ok(())
         },
-        |doc, _| {
-            doc.update(
+        |f, _| {
+            f.queue.update(
                 id,
                 |l| {
                     let l = queue::set_mark(l, State::Done);
@@ -1131,7 +1362,7 @@ fn done(repo: &Repo, args: &[String]) -> Res<()> {
             )
         },
     )?;
-    println!("  #{id} closed (via:{close})");
+    println!("  #{id} closed via:{close}");
     Ok(())
 }
 
@@ -1139,6 +1370,13 @@ fn reopen(repo: &Repo, id: &str) -> Res<()> {
     let id = parse_id(id)?;
     let q = Q::load(repo)?;
     let t = q.get(id)?;
+    if q.is_archived(id) {
+        bail!(
+            "#{id} is archived; move its block from {} back to {} by hand",
+            repo.cfg.archive,
+            repo.cfg.file
+        );
+    }
     let section = repo.cfg.section_for(q.lane(t));
     let msg = format!("{}: reopen #{id}", repo.cfg.commit_prefix);
     let done = repo.cfg.done_section.clone();
@@ -1147,8 +1385,8 @@ fn reopen(repo: &Repo, id: &str) -> Res<()> {
         |_| msg.clone(),
         &[id],
         |c| committed(c, id).map(|_| ()),
-        |doc, _| {
-            doc.update(
+        |f, _| {
+            f.queue.update(
                 id,
                 |l| {
                     let l = queue::set_mark(l, State::Open);
@@ -1162,5 +1400,79 @@ fn reopen(repo: &Repo, id: &str) -> Res<()> {
         },
     )?;
     println!("  #{id} reopened");
+    Ok(())
+}
+
+pub const ARCHIVE_HEADER: &str = "# Archive\n\nClosed tasks moved out of the queue by `5w archive`. Their ids stay taken, they still\nsatisfy `needs:`, and ship still reads their `branch:` and `reviewed:`.\n";
+
+/// Move every closed task out of the queue, in one commit touching both files.
+fn archive(repo: &Repo) -> Res<()> {
+    let q = Q::load(repo)?;
+    let n = q.tasks.iter().filter(|t| t.state == State::Done).count();
+    if n == 0 {
+        println!("  nothing closed to archive");
+        return Ok(());
+    }
+    let msg = format!("{}: archive {n} closed tasks", repo.cfg.commit_prefix);
+    let done = repo.cfg.done_section.clone();
+    store::transact(
+        repo,
+        |_| msg.clone(),
+        &[],
+        |_| Ok(()),
+        |f, _| {
+            let blocks = f.queue.take(|t| t.state == State::Done);
+            if f.archive.lines.iter().all(|l| l.trim().is_empty()) {
+                f.archive = queue::Doc::new(ARCHIVE_HEADER);
+            }
+            for b in blocks {
+                f.archive.insert(b, &done, None);
+            }
+            Ok(())
+        },
+    )?;
+    println!("  archived {n} → {}", repo.cfg.archive);
+    Ok(())
+}
+
+/// Shorten over-long titles into title + body, in one commit.
+fn split(repo: &Repo, args: &[String]) -> Res<()> {
+    let all = args.iter().any(|a| a == "--all");
+    let max = repo.cfg.title_max;
+    if max == 0 {
+        bail!("title_max is 0 in the config — nothing to split to");
+    }
+    let q = Q::load(repo)?;
+    let ids: Vec<u64> = q
+        .tasks
+        .iter()
+        .filter(|t| (all || t.state != State::Done) && t.text.chars().count() > max)
+        .map(|t| t.id)
+        .collect();
+    if ids.is_empty() {
+        println!("  no titles over {max} chars");
+        return Ok(());
+    }
+    let msg = format!(
+        "{}: split {} over-long titles",
+        repo.cfg.commit_prefix,
+        ids.len()
+    );
+    store::transact(
+        repo,
+        |_| msg.clone(),
+        &[],
+        |_| Ok(()),
+        |f, _| {
+            for &id in &ids {
+                // A copy that lacks the task (not yet committed) is left alone.
+                if f.queue.block(id).is_some() {
+                    f.queue.split_title(id, max)?;
+                }
+            }
+            Ok(())
+        },
+    )?;
+    println!("  split {} titles", ids.len());
     Ok(())
 }

@@ -2,6 +2,10 @@
 
 trunk = "{trunk}"
 file = "TASKS.md"
+# `5w archive` moves closed tasks here; ids stay taken and ship still reads them.
+archive = "DONE.md"
+# Longer task text is split into a title and an indented body. 0 disables.
+title_max = 120
 commit_prefix = "chore(tasks)"
 # Branches never shipped, rebased or deleted.
 perennial = []
@@ -40,6 +44,8 @@ refuse = "a decision only the owner can make, not work to hand off"
 links_file = ".worktree-links"
 # install = "pnpm install --prefer-offline"
 # install_marker = "pnpm-lock.yaml"
+# Gitignored names ship may delete with a worktree without asking.
+# disposable = ["node_modules", "target", ".next"]
 
 [delegate]
 context = []

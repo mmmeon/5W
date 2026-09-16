@@ -193,7 +193,7 @@ fn reject_reason_survives_every_special_character() {
     let reason = r#"a | b / c "quoted" \ back"#;
     r.ok(&r.main, &["reject", "1", reason]);
     let show = r.ok(&r.main, &["show", "1"]);
-    assert!(show.contains(&format!("rework:    {reason}")), "{show}");
+    assert!(show.contains(&format!("rework: {reason}")), "{show}");
     assert!(r.ok(&r.main, &["delegate", "1"]).contains(reason));
 }
 
@@ -208,10 +208,7 @@ fn commits_after_submit_block_accept_until_reviewed() {
     r.commit_in(&wt, "f", "2\n");
     assert!(r.ok(&r.main, &["review"]).contains("moved since submit"));
     let out = r.fails(&r.main, &["accept", "1"]);
-    assert!(
-        out.contains("gained commits after it was submitted"),
-        "{out}"
-    );
+    assert!(out.contains("after it was submitted"), "{out}");
     r.ok(&r.main, &["accept", "1", "--at", "a/x"]);
 }
 
@@ -357,7 +354,7 @@ fn stacks_ship_bottom_first_and_children_reparent() {
     r.commit_in(&b, "b", "b\n");
     assert!(
         r.fails(&r.main, &["ship", "s/b"])
-            .contains("Ship the bottom of the stack first")
+            .contains("ship that first")
     );
     r.ok(&r.main, &["ship", "s/a"]);
     assert_eq!(
@@ -376,7 +373,7 @@ fn duplicate_ids_stop_every_command() {
         .tasks()
         .replace("- [ ] #1 one", "- [ ] #1 one\n- [ ] #1 again");
     std::fs::write(r.main.join("TASKS.md"), t).unwrap();
-    assert!(r.fails(&r.main, &["ready"]).contains("carries an id twice"));
+    assert!(r.fails(&r.main, &["ready"]).contains("duplicate ids"));
     assert!(r.fails(&r.main, &["doctor"]).contains("appears twice"));
 }
 
@@ -591,4 +588,118 @@ fn a_rebase_that_changes_the_reviewed_context_is_rolled_back() {
     let out = r.fails(&r.main, &["ship", "f/a", "--sync"]);
     assert!(out.contains("rebasing") && out.contains("back at"), "{out}");
     assert_eq!(r.git(&r.main, &["rev-parse", "f/a"]), before);
+}
+
+// --- context economy -----------------------------------------------------------------
+
+#[test]
+fn archive_moves_closed_tasks_and_keeps_every_guarantee() {
+    let r = Repo::new("archive");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.ok(&r.main, &["add", "second", "needs:#1"]);
+    r.ok(&r.main, &["archive"]);
+    // One commit, both files.
+    assert_eq!(
+        r.git(&r.main, &["show", "--name-only", "--format=", "HEAD"]),
+        "DONE.md\nTASKS.md"
+    );
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    assert!(!r.tasks().contains("#1 first"));
+    let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
+    assert!(
+        done.contains("- [x] #1 first") && done.contains("reviewed:"),
+        "{done}"
+    );
+    // Blockers still satisfied, ids never reused, show still finds it.
+    assert!(r.ok(&r.main, &["ready"]).contains("#2"));
+    r.ok(&r.main, &["add", "third"]);
+    assert!(r.tasks().contains("#3 third"));
+    assert!(r.ok(&r.main, &["show", "1"]).contains("archived"));
+    // Ship's gate reads the archive: the accepted, archived row still authorises.
+    let out = r.ok(&r.main, &["ship", "a/x", "--sync"]);
+    assert!(out.contains("authorised by #1"), "{out}");
+    r.ok(&r.main, &["doctor"]);
+}
+
+#[test]
+fn over_long_text_becomes_title_and_body() {
+    let r = Repo::new("titles");
+    let long = "Build the thing on the site so that every reader sees it. Then explain in detail why the thing matters, which takes a lot of words that do not belong on one line of a queue.";
+    let out = r.ok(&r.main, &["add", long]);
+    assert!(out.contains("went to the body"));
+    let t = r.tasks();
+    assert!(
+        t.contains(
+            "- [ ] #1 Build the thing on the site so that every reader sees it.\n  Then explain"
+        ),
+        "{t}"
+    );
+    // An old-style long row is split by `split`, fields kept.
+    let t = t.replace(
+        "- [ ] #1 Build",
+        &format!("- [ ] #2 {long} @x !2\n- [ ] #1 Build"),
+    );
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    r.git(&r.main, &["commit", "-qam", "old row"]);
+    r.ok(&r.main, &["split"]);
+    let t = r.tasks();
+    assert!(t.contains("- [ ] #2 Build the thing on the site so that every reader sees it. @x !2\n  Then explain"), "{t}");
+    r.ok(&r.main, &["doctor"]);
+}
+
+#[test]
+fn compact_json_ids_limit_and_next() {
+    let r = Repo::new("compact");
+    r.ok(&r.main, &["add", "hard one", "level:3", "area:core"]);
+    r.ok(
+        &r.main,
+        &["add", "easy one", "level:1", "--body", "the details"],
+    );
+    r.ok(&r.main, &["add", "a decision", "lane:owner"]);
+    let out = r.ok(&r.main, &["ready"]);
+    assert_eq!(
+        out,
+        "#2 !1 easy one +\n#1 !3 @core hard one\n2 ready · 1 >owner · 0 blocked\n"
+    );
+    assert_eq!(r.ok(&r.main, &["ready", "--ids", "--limit", "1"]), "2\n");
+    let json = r.ok(&r.main, &["ready", "--json"]);
+    assert!(
+        json.starts_with("{\"id\":2,\"state\":\"open\",\"level\":1,"),
+        "{json}"
+    );
+    let next = r.ok(&r.main, &["next"]);
+    assert!(
+        next.contains("#2") && next.contains("the details") && next.contains("delegate 2"),
+        "{next}"
+    );
+    assert!(
+        r.ok(&r.main, &["show", "1", "--json"])
+            .contains("\"body\":[]")
+    );
+}
+
+#[test]
+fn briefs_point_at_sections_and_carry_the_steps() {
+    let r = Repo::new("brief");
+    r.ok(
+        &r.main,
+        &[
+            "add",
+            "fix the parser",
+            "--body",
+            "Evidence in client/FINDINGS.md #779 section 4 and PLAN.md.",
+        ],
+    );
+    let b = r.ok(&r.main, &["delegate", "1"]);
+    assert!(b.contains("refs: client/FINDINGS.md #779, PLAN.md"), "{b}");
+    assert!(
+        b.contains("5w wt new work/task-1") && b.contains("5w submit 1 work/task-1"),
+        "{b}"
+    );
+    assert!(b.lines().count() < 15, "{b}");
 }

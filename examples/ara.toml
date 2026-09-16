@@ -3,6 +3,8 @@
 
 trunk = "main"
 file = "TASKS.md"
+archive = "DONE.md"
+title_max = 120
 commit_prefix = "chore(tasks)"
 perennial = ["cloudflare"]
 require_task = false
@@ -50,16 +52,12 @@ context = ["PLAN.md"]
 area_docs = ["README.md", "FINDINGS.md", "DESIGN.md", "SCHEMA.md", "TESTING.md", "ATTRIBUTION.md"]
 conventions = ["CLAUDE.md", "WORKFLOW.md"]
 footer = """
-  Commit on that branch. Fold the consequence into PLAN.md if it changes what
-  gets built. Long extractions write to the primary checkout by absolute path —
-  ship removes this worktree and every gitignored output in it.
-
-  Then hand it back for review — do NOT ship, and do not mark it done:
-
-    {tasks} submit {id} {branch}
-
-  The supervisor reviews the branch and accepts or rejects it. Only an accepted
-  task can be shipped, and `{ship}` enforces that.
+steps:
+  {setup}
+  cd "$({wt} path {branch})"
+  work, commit, then: {tasks} submit {id} {branch}
+rules: do not ship or close it. Fold consequences into PLAN.md. Long extractions write to the
+primary checkout by absolute path — ship removes this worktree. If 5w refuses, the refusal names the fix.
 """
 
 [review]

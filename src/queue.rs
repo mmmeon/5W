@@ -393,6 +393,92 @@ pub fn set_field(line: &str, kind: Kind, value: Option<&str>) -> String {
     format!("{prefix}{out}")
 }
 
+/// Split over-long task text into a title of at most `max` characters and the
+/// rest. Prefers the end of the first sentence, then the last clause break, then
+/// the last word boundary. `title + rest` loses nothing but the break itself.
+pub fn split_title(text: &str, max: usize) -> Option<(String, String)> {
+    if max == 0 || text.chars().count() <= max {
+        return None;
+    }
+    // Byte offset of the max-th char.
+    let limit = text
+        .char_indices()
+        .nth(max)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    let head = &text[..limit];
+    let min = head.char_indices().nth(20).map(|(i, _)| i).unwrap_or(0);
+    let find_last = |pats: &[&str]| {
+        pats.iter()
+            .filter_map(|p| head.rfind(p).map(|i| (i, p.len())))
+            .filter(|(i, _)| *i >= min)
+            .max_by_key(|(i, _)| *i)
+    };
+    let first_sentence = [". ", "? ", "! "]
+        .iter()
+        .filter_map(|p| head.find(p).map(|i| (i + 1, p.len() - 1)))
+        .filter(|(i, _)| *i >= min)
+        .min_by_key(|(i, _)| *i);
+    let (cut, skip, ellipsis) = if let Some((i, n)) = first_sentence {
+        (i, n, false)
+    } else if let Some((i, n)) = find_last(&[" — ", " -- ", "; ", ": ", ", "]) {
+        (i, n, false)
+    } else if let Some(i) = head.rfind(' ').filter(|i| *i >= min) {
+        (i, 1, true)
+    } else {
+        (limit, 0, true)
+    };
+    let mut title = text[..cut].trim_end().to_string();
+    if ellipsis {
+        title.push('…');
+    }
+    let rest = text[cut + skip..].trim_start().to_string();
+    Some((title, rest))
+}
+
+/// Replace the text of a task line, keeping every field token as it was.
+pub fn set_text(line: &str, text: &str) -> String {
+    let Some((_, _, rest)) = head(line) else {
+        return line.to_string();
+    };
+    let prefix = &line[..line.len() - rest.len()];
+    let toks = tokenize(rest);
+    let fields: Vec<&str> = toks
+        .iter()
+        .enumerate()
+        .filter(|(n, t)| t.kind != Kind::Text && !toks[n + 1..].iter().any(|u| u.kind == t.kind))
+        .map(|(_, t)| &rest[t.start..t.end])
+        .collect();
+    let mut out = format!("{prefix}{text}");
+    for f in fields {
+        out.push(' ');
+        out.push_str(f);
+    }
+    out
+}
+
+/// Word-wrap into body lines, two-space indented.
+pub fn body_lines(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.lines().filter(|l| !l.trim().is_empty()) {
+        let mut line = String::new();
+        for w in para.split_whitespace() {
+            if !line.is_empty() && line.chars().count() + 1 + w.chars().count() > width {
+                out.push(format!("  {line}"));
+                line.clear();
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(w);
+        }
+        if !line.is_empty() {
+            out.push(format!("  {line}"));
+        }
+    }
+    out
+}
+
 pub struct Doc {
     pub lines: Vec<String>,
     crlf: bool,
@@ -480,6 +566,45 @@ impl Doc {
         }
     }
 
+    /// Shorten task `id`'s line to a title, moving the rest to the top of its
+    /// body. Returns whether anything changed.
+    pub fn split_title(&mut self, id: u64, max: usize) -> Res<bool> {
+        let Some((at, _)) = self.block(id) else {
+            bail!("no task #{id}")
+        };
+        let text = self.text();
+        let t = parse(&text)
+            .into_iter()
+            .find(|t| t.id == id)
+            .expect("block found");
+        let Some((title, rest)) = split_title(&t.text, max) else {
+            return Ok(false);
+        };
+        self.lines[at] = set_text(&self.lines[at], &title);
+        let body = body_lines(&rest, 100);
+        self.lines.splice(at + 1..at + 1, body);
+        Ok(true)
+    }
+
+    /// Remove and return the blocks of every task matching `pick`.
+    pub fn take(&mut self, pick: impl Fn(&Task) -> bool) -> Vec<Vec<String>> {
+        let text = self.text();
+        let mut spans: Vec<(usize, usize)> = parse(&text)
+            .iter()
+            .filter(|t| pick(t))
+            .map(|t| (t.line, 1 + t.body.len()))
+            .collect();
+        spans.sort();
+        let blocks: Vec<Vec<String>> = spans
+            .iter()
+            .map(|(a, n)| self.lines[*a..*a + *n].to_vec())
+            .collect();
+        for (a, n) in spans.iter().rev() {
+            self.lines.drain(*a..*a + *n);
+        }
+        blocks
+    }
+
     /// Rewrite the task line of `id`, and move its block to `to` if it is not
     /// already under that heading.
     pub fn update(
@@ -553,6 +678,23 @@ mod tests {
             "- [x] #3 old via:self\n- [x] #1 real one @faces !3 >agent needs:#2\n  body line\n"
         ));
         assert_eq!(parse(&out).len(), 3);
+    }
+
+    #[test]
+    fn splits_titles_without_losing_text() {
+        let t = "Recreate the editor on the site: render every one of the 329 slider values a decoded preset carries. The data is all there and none of it is a guess.";
+        let (title, rest) = split_title(t, 120).unwrap();
+        assert_eq!(
+            title,
+            "Recreate the editor on the site: render every one of the 329 slider values a decoded preset carries."
+        );
+        assert_eq!(rest, "The data is all there and none of it is a guess.");
+        assert!(split_title("short", 120).is_none());
+        let line = "- [ ] #5 still >game prose here  @a !2 >agent branch:x/y";
+        assert_eq!(
+            set_text(line, "new"),
+            "- [ ] #5 new @a !2 >agent branch:x/y"
+        );
     }
 
     #[test]

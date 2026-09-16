@@ -83,7 +83,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         && git::branch_exists(p, &parent)
     {
         bail!(
-            "{branch} is stacked on {parent}. Ship the bottom of the stack first:\n    {} {parent}",
+            "{branch} is stacked on {parent}; ship that first: `{} {parent}`",
             repo.cfg.cmd_ship
         );
     }
@@ -95,14 +95,18 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             repo.cfg.file
         )
     })?;
+    // Archived rows count: an accepted task moved out by `archive` still
+    // authorises its branch, and still records what was reviewed.
+    let archived = repo.committed_file(&repo.cfg.archive)?.unwrap_or_default();
     let rows: Vec<_> = queue::parse(&committed)
         .into_iter()
+        .chain(queue::parse(&archived))
         .filter(|t| t.branch.as_deref() == Some(branch.as_str()))
         .collect();
     if rows.is_empty() {
         if repo.cfg.require_task && !force {
             bail!(
-                "no task names branch:{branch}, and this repo requires one (require_task). --force to ship unreviewed."
+                "no task names branch:{branch} and require_task is on (--force ships unreviewed)"
             );
         }
         eprintln!("ship: no task references {branch} — shipping unreviewed");
@@ -112,11 +116,11 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         if !force {
             let list: Vec<String> = unaccepted
                 .iter()
-                .map(|t| format!("  #{} [{}] {}", t.id, t.state.mark(), t.text))
+                .map(|t| format!("#{} [{}]", t.id, t.state.mark()))
                 .collect();
             bail!(
-                "not accepted yet:\n{}\n\n  Review it:\n    git diff {trunk}...{branch}\n  then:\n    {tasks} accept <id>    # or: {tasks} reject <id> <reason>",
-                list.join("\n")
+                "not accepted: {} — review `git diff {trunk}...{branch}`, then `{tasks} accept <id>` or `reject`",
+                list.join("; ")
             );
         }
         eprintln!(
@@ -130,7 +134,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     if let Some(w) = &branch_wt {
         if git::dirty(w)? {
             bail!(
-                "{branch} has uncommitted or untracked files in {} — commit or clean them",
+                "{branch} has uncommitted files in {}; commit or clean them",
                 w.display()
             );
         }
@@ -138,21 +142,20 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         // output, a local database. Name them while refusing is still free.
         let doomed = ignored_files(repo, w)?;
         if !doomed.is_empty() && !discard_ignored {
-            let more = if doomed.len() > 10 {
-                format!("\n  … and {} more", doomed.len() - 10)
+            let more = if doomed.len() > 5 {
+                format!(" (+{} more)", doomed.len() - 5)
             } else {
                 String::new()
             };
             bail!(
-                "shipping removes {}, and these gitignored files in it would be deleted:\n{}{more}\n\n  \
-                 Move what you need, list what is safe under worktrees.disposable, or pass --discard-ignored.",
+                "removing {} would delete ignored files: {}{more} — move them, add to worktrees.disposable, or --discard-ignored",
                 w.display(),
                 doomed
                     .iter()
-                    .take(10)
-                    .map(|f| format!("  {f}"))
+                    .take(5)
+                    .cloned()
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join(", ")
             );
         }
     }
@@ -166,7 +169,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             .any(|l| l.get(3..) != Some(repo.cfg.file.as_str()))
         {
             bail!(
-                "{} has uncommitted changes to tracked files; a fast-forward of {trunk} wants them committed or stashed",
+                "{} has uncommitted tracked changes; commit or stash before {trunk} can fast-forward",
                 w.display()
             );
         }
@@ -179,13 +182,13 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     if behind {
         if !sync {
             bail!(
-                "{branch} is behind {trunk}. Rebase it first, or let ship do it:\n    {} {branch} --sync",
+                "{branch} is behind {trunk}: `{} {branch} --sync`",
                 repo.cfg.cmd_ship
             );
         }
         let Some(w) = &branch_wt else {
             bail!(
-                "--sync rebases in the branch's worktree, and {branch} has none:\n    {} add {branch}",
+                "--sync needs a worktree for {branch}: `{} add {branch}`",
                 repo.cfg.cmd_wt
             )
         };
@@ -195,8 +198,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         if !o.ok {
             let _ = git::raw(w, &["rebase", "--abort"], &[], None);
             bail!(
-                "rebase of {branch} onto {trunk} stopped on conflicts and was aborted:\n{}\n  Resolve it by hand in {}, then ship again. A resolved conflict changes the change, so it will need a fresh accept.",
-                o.stderr.trim(),
+                "rebase onto {trunk} conflicts (aborted); rebase by hand in {}, then re-review",
                 w.display()
             );
         }
@@ -296,8 +298,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         && let Err(e) = wt::remove(repo, &branch, false)
     {
         bail!(
-            "{branch} is on {trunk}, but its worktree could not be removed ({e}).\n  \
-             Remove it with `{} rm {branch}`, then `git branch -D {branch}`.",
+            "{branch} landed on {trunk}, but its worktree could not be removed ({e}); `{} rm {branch}` then `git branch -D {branch}`",
             repo.cfg.cmd_wt
         );
     }
@@ -416,7 +417,7 @@ fn verify_reviewed(
                         continue;
                     }
                     bail!(
-                        "#{} was reviewed at {r}, which no longer resolves. Re-review and `{tasks} accept {} --force --at {branch}`.",
+                        "#{} was reviewed at {r}, which no longer exists; re-review, then `{tasks} accept {} --force --at {branch}`",
                         t.id,
                         t.id
                     )
@@ -435,9 +436,7 @@ fn verify_reviewed(
                     );
                 } else {
                     bail!(
-                        "{branch} is not the change #{} accepted at {r} — something was added or altered after the review.\n  \
-                         What changed:\n    git range-diff {trunk}...{r} {trunk}...{branch}\n  \
-                         Re-review, then:\n    {tasks} open {id} && {tasks} submit {id} && {tasks} accept {id}",
+                        "{branch} is not the change #{} accepted at {r}: `git range-diff {trunk}...{r} {trunk}...{branch}`; re-review with `{tasks} open {id}`, submit, accept",
                         t.id,
                         id = t.id
                     );

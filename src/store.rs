@@ -90,29 +90,43 @@ impl Repo {
         git::worktree_of(&self.primary, &self.trunk)
     }
 
-    pub fn committed(&self) -> Res<Option<String>> {
-        let spec = format!("refs/heads/{}:{}", self.trunk, self.cfg.file);
+    /// A file as the trunk's tip commits it.
+    pub fn committed_file(&self, name: &str) -> Res<Option<String>> {
+        let spec = format!("refs/heads/{}:{name}", self.trunk);
         let o = git::raw(&self.primary, &["show", &spec], &[], None)?;
         Ok(o.ok.then_some(o.stdout))
     }
 
+    pub fn committed(&self) -> Res<Option<String>> {
+        self.committed_file(&self.cfg.file)
+    }
+
     /// What reads see: the trunk checkout's working copy when there is one (so a
     /// just-added row is visible), otherwise the trunk's committed copy.
-    pub fn load(&self) -> Res<String> {
+    fn load_file(&self, name: &str) -> Res<Option<String>> {
         if let Some(w) = self.trunk_checkout()?
-            && let Ok(s) = fs::read_to_string(w.join(&self.cfg.file))
+            && let Ok(s) = fs::read_to_string(w.join(name))
         {
-            return Ok(s);
+            return Ok(Some(s));
         }
-        match self.committed()? {
+        self.committed_file(name)
+    }
+
+    pub fn load(&self) -> Res<String> {
+        match self.load_file(&self.cfg.file)? {
             Some(s) => Ok(s),
             None => bail!(
-                "no {} on {} — run `{} init` to create one",
+                "no {} on {} — `{} init`",
                 self.cfg.file,
                 self.trunk,
                 self.cfg.cmd_tasks
             ),
         }
+    }
+
+    /// Closed tasks moved out of the queue by `archive`. Empty when there is none.
+    pub fn load_archive(&self) -> Res<String> {
+        Ok(self.load_file(&self.cfg.archive)?.unwrap_or_default())
     }
 
     /// Worktree root for new branches.
@@ -159,8 +173,14 @@ impl Repo {
 }
 
 pub struct Ctx {
-    /// The next free id, computed under the lock from every copy.
+    /// The next free id, computed under the lock from every copy of both files.
     pub next_id: u64,
+}
+
+/// One copy of the queue and its archive, edited together.
+pub struct Files {
+    pub queue: Doc,
+    pub archive: Doc,
 }
 
 struct Lock(#[allow(dead_code)] fs::File);
@@ -178,17 +198,9 @@ fn lock(repo: &Repo) -> Res<Lock> {
     Ok(Lock(f))
 }
 
-/// Apply `op` to one copy of the queue. A task the op touches that this copy
-/// lacks but `donor` has (a row someone added and never committed) is carried in
-/// first, so the op does not fail on it.
-fn apply(
-    repo: &Repo,
-    base: &str,
-    donor: Option<&str>,
-    ids: &[u64],
-    ctx: &Ctx,
-    op: &impl Fn(&mut Doc, &Ctx) -> Res<()>,
-) -> Res<String> {
+/// Carry into `base` any task in `ids` that it lacks and `donor` has — a row
+/// someone added and never committed — so an op on it does not fail.
+fn carry(repo: &Repo, base: &str, donor: Option<&str>, ids: &[u64]) -> Doc {
     let mut d = Doc::new(base);
     if let Some(w) = donor {
         let wdoc = Doc::new(w);
@@ -210,94 +222,172 @@ fn apply(
             }
         }
     }
-    op(&mut d, ctx)?;
-    Ok(d.text())
+    d
 }
 
-/// Apply `op` to the queue and commit it to the trunk as one commit that holds
-/// nothing else.
+/// Per file: the committed text, the checkout's working text and the staged
+/// text where it differs from the commit, and the staged blob id.
+struct Copies {
+    name: String,
+    old_blob: Option<String>,
+    committed: String,
+    working: Option<String>,
+    staged_blob: Option<String>,
+    staged: Option<String>,
+}
+
+fn copies(repo: &Repo, checkout: Option<&Path>, old: &str, name: &str) -> Res<Copies> {
+    let old_blob = git::opt(
+        &repo.primary,
+        &["rev-parse", "--verify", "--quiet", &format!("{old}:{name}")],
+    );
+    let committed = match &old_blob {
+        Some(b) => git::raw(&repo.primary, &["cat-file", "blob", b], &[], None)?.stdout,
+        None => String::new(),
+    };
+    let working = checkout.and_then(|w| fs::read_to_string(w.join(name)).ok());
+    let staged_blob = checkout.and_then(|w| {
+        git::opt(w, &["ls-files", "-s", "--", name])
+            .and_then(|l| l.split_whitespace().nth(1).map(String::from))
+    });
+    let staged = match (&staged_blob, &old_blob) {
+        (Some(s), o) if Some(s) != o.as_ref() => {
+            Some(git::raw(&repo.primary, &["cat-file", "blob", s], &[], None)?.stdout)
+        }
+        _ => None,
+    };
+    Ok(Copies {
+        name: name.to_string(),
+        old_blob,
+        committed,
+        working,
+        staged_blob,
+        staged,
+    })
+}
+
+/// Apply `op` to the queue (and its archive) and commit the result to the trunk
+/// as one commit that holds nothing else.
 ///
 /// `guard` sees the task as the *committed* queue has it, under the lock — state
 /// checks made against a working copy outside the lock can be stale or hand-made.
-/// `ids` are the tasks the op touches.
+/// `ids` are the tasks the op touches; the first is the one guarded.
 ///
-/// Three copies move together, all computed before anything is written:
-/// the committed file; the trunk checkout's staged entry, which gets the same
-/// edit on top of whatever is staged there (left as it was, a staged edit would
-/// sit against the new HEAD as a revert of this commit); and that checkout's
-/// working file.
+/// Three copies of each file move together, all computed before anything is
+/// written: the committed file; the trunk checkout's staged entry, which gets the
+/// same edit on top of whatever is staged there (left as it was, a staged edit
+/// would sit against the new HEAD as a revert of this commit); and that
+/// checkout's working file.
 pub fn transact(
     repo: &Repo,
     message: impl Fn(&Ctx) -> String,
     ids: &[u64],
     guard: impl Fn(Option<&queue::Task>) -> Res<()>,
-    op: impl Fn(&mut Doc, &Ctx) -> Res<()>,
+    op: impl Fn(&mut Files, &Ctx) -> Res<()>,
 ) -> Res<()> {
     let _lock = lock(repo)?;
-    let file = repo.cfg.file.as_str();
     let trunk_ref = format!("refs/heads/{}", repo.trunk);
     let Some(old) = git::rev(&repo.primary, &trunk_ref) else {
         bail!("no trunk branch {}", repo.trunk)
     };
-    let Some(committed) = repo.committed()? else {
+    let checkout = repo.trunk_checkout()?;
+    let q = copies(repo, checkout.as_deref(), &old, &repo.cfg.file)?;
+    if q.old_blob.is_none() {
         bail!(
-            "{file} is not committed on {} — run `{} init`",
+            "{} is not committed on {} — `{} init`",
+            repo.cfg.file,
             repo.trunk,
             repo.cfg.cmd_tasks
-        )
-    };
-    let checkout = repo.trunk_checkout()?;
-    let working = checkout
-        .as_ref()
-        .and_then(|w| fs::read_to_string(w.join(file)).ok());
-    let old_blob = git::opt(&repo.primary, &["rev-parse", &format!("{old}:{file}")]);
-    let staged_blob = checkout.as_ref().and_then(|w| {
-        git::opt(w, &["ls-files", "-s", "--", file])
-            .and_then(|l| l.split_whitespace().nth(1).map(String::from))
-    });
-    let staged = match (&staged_blob, &old_blob) {
-        (Some(s), Some(o)) if s != o => Some(git::git(&repo.primary, &["cat-file", "blob", s])?),
-        _ => None,
-    };
+        );
+    }
+    let a = copies(repo, checkout.as_deref(), &old, &repo.cfg.archive)?;
 
-    let ctx = Ctx {
-        next_id: [Some(&committed), working.as_ref(), staged.as_ref()]
+    let texts = [&q.committed, &a.committed].into_iter().chain(
+        [&q.working, &q.staged, &a.working, &a.staged]
             .into_iter()
-            .flatten()
-            .map(|t| queue::max_id(t))
-            .max()
-            .unwrap_or(0)
-            + 1,
+            .flatten(),
+    );
+    let ctx = Ctx {
+        next_id: texts.map(|t| queue::max_id(t)).max().unwrap_or(0) + 1,
     };
 
-    let carried = apply(repo, &committed, working.as_deref(), ids, &ctx, &|_, _| {
-        Ok(())
-    })?;
+    let carried = carry(repo, &q.committed, q.working.as_deref(), ids);
     if let Some(&id) = ids.first() {
-        let tasks = queue::parse(&carried);
+        let text = carried.text();
+        let tasks = queue::parse(&text);
         guard(tasks.iter().find(|t| t.id == id))?;
     }
-    let new_committed = apply(repo, &committed, working.as_deref(), ids, &ctx, &op)?;
-    let new_working = match &working {
-        Some(w) => Some(apply(repo, w, None, ids, &ctx, &op).map_err(|e| {
-            format!(
-                "the {file} working copy disagrees with {} ({e}) — nothing was written",
-                repo.trunk
-            )
-        })?),
+
+    // Committed.
+    let mut fc = Files {
+        queue: carried,
+        archive: Doc::new(&a.committed),
+    };
+    op(&mut fc, &ctx)?;
+    let (new_q, new_a) = (fc.queue.text(), fc.archive.text());
+
+    // Working, when the checkout has the queue file at all.
+    let working = match &q.working {
+        Some(w) => {
+            let mut fw = Files {
+                queue: carry(repo, w, None, &[]),
+                archive: Doc::new(a.working.as_deref().unwrap_or(&a.committed)),
+            };
+            op(&mut fw, &ctx).map_err(|e| {
+                format!(
+                    "{} working copy disagrees with {} ({e}); nothing written",
+                    repo.cfg.file, repo.trunk
+                )
+            })?;
+            Some((fw.queue.text(), fw.archive.text()))
+        }
         None => None,
     };
-    let new_staged = match &staged {
-        Some(s) => Some(apply(repo, s, working.as_deref(), ids, &ctx, &op).map_err(|e| {
-            format!("the staged {file} cannot take this change ({e}) — commit or unstage it; nothing was written")
-        })?),
-        None => None,
+
+    // Staged, only where something staged differs from the commit.
+    let staged = if q.staged.is_some() || a.staged.is_some() {
+        let mut fs_ = Files {
+            queue: carry(
+                repo,
+                q.staged.as_deref().unwrap_or(&q.committed),
+                q.working.as_deref(),
+                ids,
+            ),
+            archive: Doc::new(a.staged.as_deref().unwrap_or(&a.committed)),
+        };
+        op(&mut fs_, &ctx).map_err(|e| {
+            format!(
+                "staged {} cannot take this change ({e}); commit or unstage it",
+                repo.cfg.file
+            )
+        })?;
+        Some((fs_.queue.text(), fs_.archive.text()))
+    } else {
+        None
     };
 
     let message = message(&ctx);
-    if new_committed != committed {
-        // Commit with a private index, so no checkout's own index is read.
-        let blob = hash_blob(repo, &new_committed)?;
+    let changes: Vec<(&Copies, &String, Option<&String>, Option<&String>)> = [
+        (
+            &q,
+            &new_q,
+            working.as_ref().map(|w| &w.0),
+            staged.as_ref().map(|s| &s.0),
+        ),
+        (
+            &a,
+            &new_a,
+            working.as_ref().map(|w| &w.1),
+            staged.as_ref().map(|s| &s.1),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let changed = changes
+        .iter()
+        .any(|(c, new, _, _)| *new != &c.committed && !(c.old_blob.is_none() && new.is_empty()));
+    if changed {
         let index = repo.common.join(format!("5w-index-{}", std::process::id()));
         let idx = index.to_string_lossy().into_owned();
         let env = [("GIT_INDEX_FILE", idx.as_str())];
@@ -308,14 +398,23 @@ pub fn transact(
             }
             Ok(o.stdout.trim().to_string())
         };
+        let mut blobs = Vec::new();
         let result = (|| -> Res<String> {
             run(&["read-tree", &old])?;
-            run(&[
-                "update-index",
-                "--add",
-                "--cacheinfo",
-                &format!("100644,{blob},{file}"),
-            ])?;
+            for (c, new, _, _) in &changes {
+                if c.old_blob.is_none() && new.is_empty() {
+                    blobs.push(None);
+                    continue;
+                }
+                let b = hash_blob(repo, new)?;
+                run(&[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &format!("100644,{b},{}", c.name),
+                ])?;
+                blobs.push(Some(b));
+            }
             let tree = run(&["write-tree"])?;
             let o = git::raw(
                 &repo.primary,
@@ -336,32 +435,48 @@ pub fn transact(
         )
         .map_err(|e| {
             format!(
-                "{} moved while this ran; nothing was written. Retry. ({e})",
+                "{} moved while this ran; nothing written, retry ({e})",
                 repo.trunk
             )
         })?;
 
         if let Some(w) = &checkout {
-            let entry = match &new_staged {
-                Some(s) => Some(hash_blob(repo, s)?),
-                None if staged_blob.is_some() => Some(blob),
-                None => None,
-            };
-            if let Some(b) = entry {
+            for ((c, _, _, new_staged), blob) in changes.iter().zip(&blobs) {
+                let Some(blob) = blob else { continue };
+                // The index entry follows the commit — or, where something else was
+                // staged, becomes that staged text with this edit applied.
+                let entry = match (&c.staged, new_staged) {
+                    (Some(_), Some(ns)) => hash_blob(repo, ns)?,
+                    _ if c.staged_blob.is_some() || c.old_blob.is_none() => blob.clone(),
+                    _ => continue,
+                };
                 git::git(
                     w,
-                    &["update-index", "--cacheinfo", &format!("100644,{b},{file}")],
+                    &[
+                        "update-index",
+                        "--add",
+                        "--cacheinfo",
+                        &format!("100644,{entry},{}", c.name),
+                    ],
                 )?;
             }
         }
         println!("  committed: {message}");
+    } else if checkout.is_none() {
+        return Ok(());
     }
-    if let (Some(w), Some(nw)) = (&checkout, &new_working)
-        && Some(nw) != working.as_ref()
-    {
-        fs::write(w.join(file), nw).map_err(|e| format!("cannot write {file}: {e}"))?;
-    }
-    if checkout.is_none() && new_committed != committed {
+    if let Some(w) = &checkout {
+        for (c, new, new_working, _) in &changes {
+            if let Some(nw) = new_working
+                && Some(*nw) != c.working.as_ref()
+                && !(c.working.is_none() && nw.is_empty())
+            {
+                let _ = new;
+                fs::write(w.join(&c.name), nw)
+                    .map_err(|e| format!("cannot write {}: {e}", c.name))?;
+            }
+        }
+    } else {
         eprintln!(
             "  (no worktree has {} checked out; committed to the ref)",
             repo.trunk

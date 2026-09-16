@@ -115,6 +115,26 @@ is how a `reset --soft main` after main moved once deleted a row from the queue.
 
 `--force` overrides the review gate only, never a safety check.
 
+## Keeping context small
+
+The queue is read by agents, so every read is priced in tokens.
+
+- **`5w archive`** moves closed tasks to `DONE.md` in one commit. On a 900-task queue that took
+  `TASKS.md` from 649 KB to 52 KB. Archived ids stay taken, still satisfy `needs:`, still show under
+  `5w show`, and ship still reads their `branch:` and `reviewed:`.
+- **Titles are short; detail is body.** Text over `title_max` (120) is split at the first sentence
+  into a title and an indented body, by `add` and, for existing rows, by `5w split`. Lists print
+  titles; `show`, `next` and `delegate` print bodies.
+- **Output is compact off a terminal**, or with `FIVEW_AGENT=1`: one line per task
+  (`#14 !3 @faces title + [branch] >lane — note`, `+` marking a body), no headers, one-line
+  refusals naming the fix. `FIVEW_AGENT=0` or `--full` gives the human layout.
+- **`--json`**, **`--ids`**, **`--limit N`** on every list; **`5w next [filters]`** returns just the
+  first ready task with its body.
+- **The brief is the worker's only document.** `delegate` prints the task, the rework note, the
+  steps and the rules, and names the sections the text cites (`refs: client/FINDINGS.md #779`) so the
+  worker reads those rather than whole files. `review` prints its checklist once, on
+  `--checklist`.
+
 ## Worktrees
 
 ```bash
@@ -142,7 +162,8 @@ that keeps its own section, a custom brief footer and a review checklist.
 
 | Key | |
 |---|---|
-| `trunk`, `file`, `commit_prefix` | where the queue lives and how its commits read |
+| `trunk`, `file`, `archive`, `commit_prefix` | where the queue and its archive live, how commits read |
+| `title_max` | longest task line text before it is split into title and body (0: off) |
 | `perennial` | branches never shipped, rebased or deleted (git-town's list is honoured too) |
 | `require_task` | refuse to ship a branch no task names |
 | `[sections]` | `open`, `done` headings; created if missing |

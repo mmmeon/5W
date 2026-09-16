@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug)]
 pub enum Val {
     Str(String),
-    #[allow(dead_code)]
     Int(i64),
     Bool(bool),
     Arr(Vec<Val>),
@@ -276,6 +275,10 @@ pub struct Lane {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub file: String,
+    /// Where `archive` moves closed tasks.
+    pub archive: String,
+    /// Longest task line text; longer is split into title and body. 0: no limit.
+    pub title_max: usize,
     pub trunk: Option<String>,
     pub perennial: Vec<String>,
     pub commit_prefix: String,
@@ -317,6 +320,8 @@ impl Default for Config {
         local.note = Some("needs this machine, an account or a secret".into());
         Config {
             file: "TASKS.md".into(),
+            archive: "DONE.md".into(),
+            title_max: 120,
             trunk: None,
             perennial: vec![],
             commit_prefix: "chore(tasks)".into(),
@@ -377,6 +382,11 @@ impl Config {
         for (k, v) in &kv {
             match k.as_str() {
                 "file" => c.file = s(v, k)?,
+                "archive" => c.archive = s(v, k)?,
+                "title_max" => match v {
+                    Val::Int(n) if *n >= 0 => c.title_max = *n as usize,
+                    _ => bail!("config: title_max must be a non-negative integer"),
+                },
                 "trunk" => c.trunk = Some(s(v, k)?),
                 "perennial" => c.perennial = arr(v, k)?,
                 "commit_prefix" => c.commit_prefix = s(v, k)?,
