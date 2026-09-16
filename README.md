@@ -32,20 +32,19 @@ cd your-repo && 5w init       # writes .5w.toml and TASKS.md, commits them
 - [x] #13 read the spec  @faces !2 branch:faces/spec via:review reviewed:3f9c2a1b7d04
 ```
 
-| Field | Meaning |
-|---|---|
-| `@area` | groups the backlog; `delegate` lists the docs that exist under that directory |
-| `!1`–`!4` | complexity — the *decision content*, not the size. Picks which model can be trusted with it |
-| `>lane` | who can execute it at all. Lanes are configured; the default set is `agent`, `local`, `owner` |
-| `needs:#a,#b` | blocked until every one is `[x]` |
-| `branch:` | the branch doing the work; `ship` keys the gate on it |
-| `rework:"…"` | why the last attempt was rejected; `delegate` opens with it |
-| `via:` | how it closed — `review`, or the lane's close word (`self`, `decided`) |
-| `submitted:` `reviewed:` | the commits submit and accept saw; `accept` and `ship` check them |
+| Field                    | Meaning                                                                                       |
+| ------------------------ | --------------------------------------------------------------------------------------------- |
+| `@area`                  | groups the backlog; `delegate` lists the docs that exist under that directory                 |
+| `!1`–`!4`                | complexity — the _decision content_, not the size. Picks which model can be trusted with it   |
+| `>lane`                  | who can execute it at all. Lanes are configured; the default set is `agent`, `local`, `owner` |
+| `needs:#a,#b`            | blocked until every one is `[x]`                                                              |
+| `branch:`                | the branch doing the work; `ship` keys the gate on it                                         |
+| `rework:"…"`             | why the last attempt was rejected; `delegate` opens with it                                   |
+| `via:`                   | how it closed — `review`, or the lane's close word (`self`, `decided`)                        |
+| `submitted:` `reviewed:` | the commits submit and accept saw; `accept` and `ship` check them                             |
 
-`[ ]` open · `[~]` submitted · `[x]` closed. Lines inside ``` fences are never tasks. Ids are
-permanent. Fields are order-free, and the *last* token of a kind is the field — an earlier
-`>game` in the prose stays prose.
+`[ ]` open · `[~]` submitted · `[x]` closed. Lines inside ```fences are never tasks. Ids are
+permanent. Fields are order-free, and the *last* token of a kind is the field — an earlier`>game` in the prose stays prose.
 
 ## The loop
 
@@ -110,7 +109,7 @@ named in `worktrees.disposable` (default `node_modules`, `target`, `.next`) are 
 touched, so a fast-forward git refuses leaves everything exactly as it was.
 
 **`--squash` cannot revert the trunk.** The squash commit is built from the branch's own tree and
-parented on the trunk *sha* the branch was just verified against — never on the trunk by name, which
+parented on the trunk _sha_ the branch was just verified against — never on the trunk by name, which
 is how a `reset --soft main` after main moved once deleted a row from the queue.
 
 `--force` overrides the review gate only, never a safety check.
@@ -154,12 +153,12 @@ the same command runs under any CI, in a server hook, and by hand:
 
 A missing or all-zero `--base` means the merge-base with the trunk. The checkout needs full history.
 
-| Where | How |
-|---|---|
+| Where                                                                           | How                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Any git server you run — bare repo over SSH, Gitea, Forgejo, self-hosted GitLab | `5w hook install pre-receive` in the bare repo ([ci/pre-receive](ci/pre-receive)). A real gate: bad pushes are refused. Without `5w` on the server it refuses rather than waves through (`git config 5w.allowMissing true` to relax) |
-| GitHub, Forgejo, Gitea Actions | [ci/github-actions.yml](ci/github-actions.yml) |
-| GitLab CI | [ci/gitlab-ci.yml](ci/gitlab-ci.yml) |
-| Anything else | map its before/after SHAs, ref and change-request branch onto the flags |
+| GitHub, Forgejo, Gitea Actions                                                  | [ci/github-actions.yml](ci/github-actions.yml)                                                                                                                                                                                       |
+| GitLab CI                                                                       | [ci/gitlab-ci.yml](ci/gitlab-ci.yml)                                                                                                                                                                                                 |
+| Anything else                                                                   | map its before/after SHAs, ref and change-request branch onto the flags                                                                                                                                                              |
 
 The wrappers install `5w` from a prebuilt binary (`FIVEW_URL` + `FIVEW_SHA256`) or build it
 (`FIVEW_GIT`).
@@ -168,7 +167,7 @@ The wrappers install `5w` from a prebuilt binary (`FIVEW_URL` + `FIVEW_SHA256`) 
 push is accepted: there a bad queue edit turns the build red rather than being refused. For a hard
 gate on a hosted forge, protect the trunk, require change requests for people, and let only the
 account that runs `5w` push queue commits. The ship check runs on change requests; a push of
-unreviewed *code* straight to the trunk is linted for queue edits but not matched to a review — keep
+unreviewed _code_ straight to the trunk is linted for queue edits but not matched to a review — keep
 the trunk protected so code arrives by change request.
 
 ## Keeping context small
@@ -216,19 +215,19 @@ configures both.
 [examples/ara.toml](examples/ara.toml) for a full configuration with an extra non-delegable lane
 that keeps its own section, a custom brief footer and a review checklist.
 
-| Key | |
-|---|---|
-| `trunk`, `file`, `archive`, `commit_prefix` | where the queue and its archive live, how commits read |
-| `title_max` | longest task line text before it is split into title and body (0: off) |
-| `perennial` | branches never shipped, rebased or deleted (git-town's list is honoured too) |
-| `require_task` | refuse to ship a branch no task names |
-| `[sections]` | `open`, `done` headings; created if missing |
-| `[levels]` | the tier text per complexity |
-| `[lanes.<name>]` | `delegable`, `close`, `section`, `note`, `refuse` |
-| `[worktrees]` | `root`, `links_file`, `install`, `install_marker`, `disposable` |
-| `[delegate]` | `context`, `area_docs`, `conventions`, `footer` (`{tasks} {ship} {wt} {id} {branch}`) |
-| `[review]` | `checklist`, printed under `5w review` |
-| `[commands]` | how briefs spell the tools: `tasks`, `wt`, `ship` |
+| Key                                         |                                                                                       |
+| ------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `trunk`, `file`, `archive`, `commit_prefix` | where the queue and its archive live, how commits read                                |
+| `title_max`                                 | longest task line text before it is split into title and body (0: off)                |
+| `perennial`                                 | branches never shipped, rebased or deleted (git-town's list is honoured too)          |
+| `require_task`                              | refuse to ship a branch no task names                                                 |
+| `[sections]`                                | `open`, `done` headings; created if missing                                           |
+| `[levels]`                                  | the tier text per complexity                                                          |
+| `[lanes.<name>]`                            | `delegable`, `close`, `section`, `note`, `refuse`                                     |
+| `[worktrees]`                               | `root`, `links_file`, `install`, `install_marker`, `disposable`                       |
+| `[delegate]`                                | `context`, `area_docs`, `conventions`, `footer` (`{tasks} {ship} {wt} {id} {branch}`) |
+| `[review]`                                  | `checklist`, printed under `5w review`                                                |
+| `[commands]`                                | how briefs spell the tools: `tasks`, `wt`, `ship`                                     |
 
 Symlink the binary as `tasks`, `wt` or `ship` and it behaves as that tool, so a repo can keep its
 existing spellings.
