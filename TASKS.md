@@ -20,7 +20,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #4 CI for 5W itself: cargo fmt, clippy and test on every push and change request, and the 5w ci check @ci !2
 - [ ] #5 Split titles cut at a word boundary end in a misleading …: the rest is in the body, not lost @queue !1
 - [ ] #6 Normalize worktree paths: wt new prints /home/who/r/ara/../ara-wt/… @wt !1
-- [ ] #7 Test the panic hook: a crash records last-failure.md and says how to report it @report !2
+- [~] #7 Test the panic hook: a crash records last-failure.md and says how to report it @report !2 branch:report/task-7 submitted:cf6e3d7307ea
 - [ ] #8 Run the aarch64 release binary on real arm64 hardware @release !1 >manual
 - [ ] #9 self-update and version --latest: opt-in, the pinned version by default, checksums and signature verified @upkeep !2
 - [ ] #10 Forge events as queue transitions: a change request submits, an approving review accepts, from a CI job @ci !3
