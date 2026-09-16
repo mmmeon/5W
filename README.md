@@ -234,6 +234,52 @@ The queue is read by agents, so every read is priced in tokens.
   worker reads those rather than whole files. `review` prints its checklist once, on
   `--checklist`.
 
+### Measuring output
+
+`tests/bench.rs` prices what every read costs. It generates queues of 10, 100 and 1000 tasks — open,
+submitted and blocked tasks, bodies, rework notes, every lane kind, half as many again archived —
+runs `ready`, `next`, `ls`, `all`, `review` (each with and without `--json`), `show`, `delegate`,
+`doctor`, `lint` and four common refusals off a terminal, and records stdout+stderr bytes, estimated
+tokens and wall time:
+
+```
+tasks  case                          bytes  ~tokens  exact     ms
+ 1000  ready                         40884    10642      -   10.5
+ 1000  ready --json                 114758    31613      -   10.9
+ 1000  review                        16834     5078      -  384.4
+ 1000  delegate <id>                   488      143      -   11.2
+ 1000  refuse: done <id> (no flag)     118       40      -   11.3
+```
+
+Bytes and tokens are compared with [tests/bench.baseline](tests/bench.baseline); a row that grows
+more than 2% (and more than 2 bytes or tokens) fails `cargo test`, as does a case added or removed
+without the baseline. So output grows only as a deliberate change: rerun with
+`FIVEW_BENCH_UPDATE=1 cargo test --test bench` and the baseline's diff shows the cost in review. A
+row that shrank passes with a note, to be locked in the same way. Time is printed, never checked:
+it depends on the machine and the load, and a flaky check teaches people to ignore it. Every byte
+is deterministic — fixed identity and commit dates, so shas repeat, and the scratch path replaced by
+a fixed one.
+
+It is a test rather than a `5w bench` subcommand so that it ships nothing: the binary stays the tool,
+and the measurement runs wherever the tests do — `cargo test` locally and in CI, with no extra step,
+and against a release artifact with `FIVEW_TEST_BIN`. To see the table:
+`cargo test --release --test bench -- --nocapture`. `FIVEW_BENCH_TOLERANCE=<percent>` loosens the
+check.
+
+**Tokens are estimated** by [src/tokens.rs](src/tokens.rs), since no tokenizer can ship without a
+dependency and every model family has its own vocabulary. It prices the pieces a byte-pair encoder
+cuts text into: a run of letters 1 token per 7, digits 1 per 3, punctuation 1 per 3, a line break
+or a run of indentation 1, any other character 1, and a single space joins the piece after it.
+Against o200k_base and cl100k_base it is within 10% on both the benchmark's output and this
+repository's prose — good for comparing one output with another, not for billing. For exact
+counts, `FIVEW_TOKENIZER` names a command that reads text on stdin and prints a count; it fills the
+`exact` column and is never checked against the baseline:
+
+```
+FIVEW_TOKENIZER='uvx -q --with tiktoken python -c "import sys, tiktoken; print(len(tiktoken.get_encoding(\"o200k_base\").encode(sys.stdin.read())))"' \
+  cargo test --release --test bench -- --nocapture
+```
+
 ## Worktrees
 
 ```bash
@@ -337,5 +383,5 @@ Issues go to `mmmeon/5W`; `FIVEW_ISSUES=owner/repo` points them at a fork.
 ## Development
 
 ```
-cargo test        # unit tests + end-to-end tests against scratch git repos
+cargo test        # unit tests + end-to-end tests against scratch git repos, and the output benchmark
 ```

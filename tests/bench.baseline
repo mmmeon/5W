@@ -1,0 +1,59 @@
+# 5w output cost: tasks, case, bytes, estimated tokens. Tab-separated.
+# Checked by tests/bench.rs; FIVEW_BENCH_UPDATE=1 cargo test --test bench rewrites it.
+10	ready	388	105
+10	ready --json	962	266
+10	next	212	60
+10	next --json	380	104
+10	ls	788	212
+10	ls --json	1963	546
+10	all	773	216
+10	all --json	1963	546
+10	review	356	103
+10	review --json	356	103
+10	show <id>	195	56
+10	show <id> --json	366	102
+10	delegate <id>	480	144
+10	doctor	31	10
+10	lint HEAD	0	0
+10	refuse: show <missing>	19	9
+10	refuse: delegate <manual>	91	25
+10	refuse: accept <open>	93	33
+10	refuse: done <id> (no flag)	112	40
+100	ready	3869	1010
+100	ready --json	11233	3103
+100	next	113	35
+100	next --json	273	78
+100	ls	7641	2021
+100	ls --json	19630	5434
+100	all	7740	2134
+100	all --json	19630	5434
+100	review	1827	540
+100	review --json	1827	540
+100	show <id>	197	56
+100	show <id> --json	367	102
+100	delegate <id>	508	150
+100	doctor	33	10
+100	lint HEAD	0	0
+100	refuse: show <missing>	19	9
+100	refuse: delegate <manual>	91	25
+100	refuse: accept <open>	96	33
+100	refuse: done <id> (no flag)	115	40
+1000	ready	40884	10642
+1000	ready --json	114758	31613
+1000	next	227	63
+1000	next --json	393	107
+1000	ls	77562	20817
+1000	ls --json	197937	55123
+1000	all	78401	21861
+1000	all --json	197937	55123
+1000	review	16834	5078
+1000	review --json	16834	5078
+1000	show <id>	198	55
+1000	show <id> --json	367	101
+1000	delegate <id>	488	143
+1000	doctor	35	11
+1000	lint HEAD	0	0
+1000	refuse: show <missing>	19	9
+1000	refuse: delegate <manual>	92	25
+1000	refuse: accept <open>	99	33
+1000	refuse: done <id> (no flag)	118	40
