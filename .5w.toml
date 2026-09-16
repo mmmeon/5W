@@ -1,0 +1,66 @@
+# 5W — see https://github.com/<you>/5W for every key.
+
+# The oldest 5w this project works with; an older one refuses. `5w update-files --pin` raises it.
+requires = "0.1.2"
+trunk = "main"
+file = "TASKS.md"
+# `5w archive` moves closed tasks here; ids stay taken and ship still reads them.
+archive = "DONE.md"
+# Longer task text is split into a title and an indented body. 0 disables.
+title_max = 120
+commit_prefix = "chore(tasks)"
+# Branches never shipped, rebased or deleted.
+perennial = []
+# Refuse to ship a branch no task names.
+require_task = false
+default_lane = "agent"
+
+[sections]
+open = "## Open"
+done = "## Done"
+
+[levels]
+1 = "mechanical — a small fast model"
+2 = "standard implementation — a mid model"
+3 = "design judgement — the strongest model"
+4 = "open research — the strongest model, and review the reasoning"
+
+# Who can execute a task at all. A lane's name is this project's word; its kind
+# is what the work needs, and sets the behaviour:
+#   agent       anything can do it from the repository       delegable, done --self
+#   restricted  needs a machine, an account or a secret      delegable, done --self
+#   manual      a person doing it by hand, outside the repo  not delegable, done --self
+#   decision    a call only the owner makes                  not delegable, done --decided
+# `delegable`, `close`, `note`, `refuse` override the kind; `section` gives a lane
+# its own heading. Naming any lane here replaces the defaults.
+[lanes.agent]
+kind = "agent"
+
+[lanes.restricted]
+kind = "restricted"
+
+[lanes.manual]
+kind = "manual"
+
+[lanes.owner]
+kind = "decision"
+
+[worktrees]
+# root = "../myrepo-wt"
+links_file = ".worktree-links"
+# install = "pnpm install --prefer-offline"
+# install_marker = "pnpm-lock.yaml"
+# Gitignored names ship may delete with a worktree without asking.
+# disposable = ["node_modules", "target", ".next"]
+
+[delegate]
+context = []
+area_docs = ["README.md", "DESIGN.md"]
+conventions = []
+
+[review]
+checklist = [
+  "The diff does what the task says, and nothing it does not",
+  "Tests were run, and their output is in the report",
+  "Anything the change disproves is retracted where it was claimed",
+]
