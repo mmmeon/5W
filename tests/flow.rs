@@ -1226,3 +1226,61 @@ fn doctor_finds_stale_installed_files_and_update_files_refreshes_them() {
     );
     assert!(r.ok(&r.main, &["update-files"]).contains("up to date"));
 }
+
+#[test]
+fn queue_commits_are_signed_when_the_repository_signs() {
+    if Command::new("gpg").arg("--version").output().is_err() {
+        eprintln!("skipped: no gpg");
+        return;
+    }
+    let r = Repo::new("signed");
+    let home = r.root.join("gnupg");
+    std::fs::create_dir_all(&home).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let gpg = |args: &[&str]| {
+        Command::new("gpg")
+            .env("GNUPGHOME", &home)
+            .args(["--batch", "--pinentry-mode", "loopback", "--passphrase", ""])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(
+        gpg(&[
+            "--quick-generate-key",
+            "t <t@example.com>",
+            "ed25519",
+            "sign",
+            "never"
+        ])
+        .status
+        .success()
+    );
+    let fpr = String::from_utf8_lossy(&gpg(&["--with-colons", "--list-secret-keys"]).stdout)
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("fpr:")
+                .map(|f| f.trim_matches(':').to_string())
+        })
+        .unwrap();
+    r.git(&r.main, &["config", "commit.gpgsign", "true"]);
+    r.git(&r.main, &["config", "user.signingkey", &fpr]);
+
+    let mut c = Command::new(bin5w());
+    c.args(["add", "signed row"]).current_dir(&r.main);
+    env(&mut c, &r.root);
+    c.env("GNUPGHOME", &home);
+    let o = c.output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let mut v = Command::new("git");
+    v.args(["log", "-1", "--format=%G? %GF"])
+        .current_dir(&r.main);
+    env(&mut v, &r.root);
+    v.env("GNUPGHOME", &home);
+    let shown = String::from_utf8_lossy(&v.output().unwrap().stdout)
+        .trim()
+        .to_string();
+    assert!(shown.ends_with(&fpr) && !shown.starts_with('N'), "{shown}");
+}

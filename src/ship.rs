@@ -245,20 +245,17 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 who.next().unwrap_or(""),
             );
             let tree = git::git(p, &["rev-parse", &format!("{tip}^{{tree}}")])?;
-            let o = git::raw(
+            land = git::commit_tree(
                 p,
-                &["commit-tree", &tree, "-p", &trunk_sha, "-F", "-"],
+                &tree,
+                &trunk_sha,
+                &msg,
                 &[
                     ("GIT_AUTHOR_NAME", an),
                     ("GIT_AUTHOR_EMAIL", ae),
                     ("GIT_AUTHOR_DATE", ad),
                 ],
-                Some(&format!("{}\n", msg.trim_end())),
             )?;
-            if !o.ok {
-                bail!("git commit-tree: {}", o.stderr.trim());
-            }
-            land = o.stdout.trim().to_string();
         }
     }
 

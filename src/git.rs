@@ -189,3 +189,36 @@ pub fn has_git_town() -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
+
+/// `git commit-tree`, signed when the repository asks for signed commits.
+///
+/// Plumbing does not read `commit.gpgsign`, so without this every commit 5w
+/// writes — queue changes, squashes — would be the unsigned one in a history
+/// that is otherwise signed.
+pub fn commit_tree(
+    dir: &Path,
+    tree: &str,
+    parent: &str,
+    message: &str,
+    env: &[(&str, &str)],
+) -> Res<String> {
+    let mut args = vec![
+        "commit-tree".to_string(),
+        tree.to_string(),
+        "-p".into(),
+        parent.to_string(),
+    ];
+    if opt(dir, &["config", "--bool", "commit.gpgsign"]).as_deref() == Some("true") {
+        match opt(dir, &["config", "user.signingkey"]).filter(|k| !k.is_empty()) {
+            Some(k) => args.push(format!("-S{k}")),
+            None => args.push("-S".into()),
+        }
+    }
+    args.extend(["-F".to_string(), "-".to_string()]);
+    let refs: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
+    let o = raw(dir, &refs, env, Some(&format!("{}\n", message.trim_end())))?;
+    if !o.ok {
+        return Err(format!("git commit-tree: {}", o.stderr.trim()));
+    }
+    Ok(o.stdout.trim().to_string())
+}

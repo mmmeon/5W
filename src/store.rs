@@ -435,16 +435,7 @@ pub fn transact(
                 blobs.push(Some(b));
             }
             let tree = run(&["write-tree"])?;
-            let o = git::raw(
-                &repo.primary,
-                &["commit-tree", &tree, "-p", &old, "-F", "-"],
-                &[],
-                Some(&format!("{message}\n")),
-            )?;
-            if !o.ok {
-                bail!("git commit-tree: {}", o.stderr.trim());
-            }
-            Ok(o.stdout.trim().to_string())
+            git::commit_tree(&repo.primary, &tree, &old, &message, &[])
         })();
         let _ = fs::remove_file(&index);
         let commit = result?;
