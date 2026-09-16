@@ -46,5 +46,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #18 doctor: name a trunk checkout holding an exact copy of a branch's diff @doctor !1
   with a command that restores those files only on an exact match
   Found 2026-09-16: main held uncommitted src/wt.rs and tests/flow.rs identical to wt/task-6's diff, which blocks ship. Restoring must refuse unless the working changes equal the branch diff byte for byte.
+- [ ] #19 Batch accept (accept 4 5 6) and ship --accepted: land every accepted branch bottom of stack first @queue !2
+  stop at the first refusal
+  A supervisor round of 8 accepted tasks meant 8 accepts and 8 ships with the stack order (#12 before #13, #14 before #15) worked out by hand. Each accept keeps its own checks; ship --accepted keeps every ship refusal.
 
 ## Done
