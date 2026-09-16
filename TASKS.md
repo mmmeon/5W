@@ -49,5 +49,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #19 Batch accept (accept 4 5 6) and ship --accepted: land every accepted branch bottom of stack first @queue !2
   stop at the first refusal
   A supervisor round of 8 accepted tasks meant 8 accepts and 8 ships with the stack order (#12 before #13, #14 before #15) worked out by hand. Each accept keeps its own checks; ship --accepted keeps every ship refusal.
+- [ ] #20 Several queue edits in one signed commit: one signature per supervisor round @queue !2
+  Each queue edit is its own signed commit; with a hardware key that is a touch per edit. Design how a batch (accepts, adds) commits once while keeping the private-index, compare-and-swap update-ref guarantee and one-line commit subjects that still name each edit.
 
 ## Done
