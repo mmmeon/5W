@@ -1,18 +1,15 @@
-# 5W — see https://github.com/<you>/5W for every key.
+# 5W, managing its own development. The version is `requires`.
 
 # The oldest 5w this project works with; an older one refuses. `5w update-files --pin` raises it.
 requires = "0.1.2"
 trunk = "main"
 file = "TASKS.md"
-# `5w archive` moves closed tasks here; ids stay taken and ship still reads them.
 archive = "DONE.md"
-# Longer task text is split into a title and an indented body. 0 disables.
 title_max = 120
 commit_prefix = "chore(tasks)"
-# Branches never shipped, rebased or deleted.
 perennial = []
-# Refuse to ship a branch no task names.
-require_task = false
+# Everything that lands here is reviewed.
+require_task = true
 default_lane = "agent"
 
 [sections]
@@ -25,42 +22,51 @@ done = "## Done"
 3 = "design judgement — the strongest model"
 4 = "open research — the strongest model, and review the reasoning"
 
-# Who can execute a task at all. A lane's name is this project's word; its kind
-# is what the work needs, and sets the behaviour:
-#   agent       anything can do it from the repository       delegable, done --self
-#   restricted  needs a machine, an account or a secret      delegable, done --self
-#   manual      a person doing it by hand, outside the repo  not delegable, done --self
-#   decision    a call only the owner makes                  not delegable, done --decided
-# `delegable`, `close`, `note`, `refuse` override the kind; `section` gives a lane
-# its own heading. Naming any lane here replaces the defaults.
 [lanes.agent]
 kind = "agent"
 
 [lanes.restricted]
 kind = "restricted"
+note = "needs the mmmeon signing key, gh with release rights on mmmeon/5W, or network to GitHub"
 
 [lanes.manual]
 kind = "manual"
+note = "needs hardware or a person at a browser"
 
 [lanes.owner]
 kind = "decision"
 
 [worktrees]
-# root = "../myrepo-wt"
+root = "../5W-wt"
 links_file = ".worktree-links"
-# install = "pnpm install --prefer-offline"
-# install_marker = "pnpm-lock.yaml"
-# Gitignored names ship may delete with a worktree without asking.
-# disposable = ["node_modules", "target", ".next"]
+disposable = ["target", "dist"]
 
 [delegate]
-context = []
-area_docs = ["README.md", "DESIGN.md"]
-conventions = []
+context = ["CLAUDE.md", "README.md"]
+area_docs = []
+conventions = ["CLAUDE.md"]
+footer = """
+steps:
+  {setup}
+  cd "$({wt} path {branch})"
+  work; cargo fmt, cargo clippy --all-targets and cargo test clean; commit (signed), then:
+  {tasks} submit {id} {branch}
+rules: do not ship or close it. A fix starts as a test that fails without it. Docs that describe
+the change (README.md, PROTOCOL.md and templates/PROTOCOL.md) change with it. If 5w refuses, the
+refusal names the fix; a refusal that itself looks wrong: 5w report "<what happened>".
+"""
 
 [review]
 checklist = [
-  "The diff does what the task says, and nothing it does not",
-  "Tests were run, and their output is in the report",
-  "Anything the change disproves is retracted where it was claimed",
+  "cargo fmt, cargo clippy --all-targets and cargo test are clean; the report quotes them",
+  "Every fix and feature has a test, and a fix's test fails without the fix",
+  "README.md, PROTOCOL.md and templates/PROTOCOL.md describe the change; the two protocols differ only by the stamp line",
+  "No dependency added, and nothing project-specific (a lane name, a game, a forge) built into behaviour",
+  "Refusals stay one line naming the fix; output stays compact off a terminal",
+  "Commits are signed as mmmeon <si@mmmeon.com>",
 ]
+
+[commands]
+tasks = "5w"
+wt = "5w wt"
+ship = "5w ship"
