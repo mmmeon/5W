@@ -1,0 +1,48 @@
+# 5w — copy to .github/workflows/5w.yml. The same file runs on Forgejo and Gitea
+# Actions (.forgejo/workflows/ or .gitea/workflows/).
+#
+# Installing 5w, first match wins:
+#   repository variable FIVEW_URL (+ FIVEW_SHA256): a prebuilt static binary
+#   otherwise FIVEW_GIT: `cargo install --git`, which needs a Rust toolchain
+#
+# Make the `5w` check required on the trunk. A change request stays red until its
+# task is accepted; re-run the check after `5w accept`.
+name: 5w
+on:
+  push:
+  pull_request:
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: install 5w
+        env:
+          FIVEW_URL: ${{ vars.FIVEW_URL }}
+          FIVEW_SHA256: ${{ vars.FIVEW_SHA256 }}
+          FIVEW_GIT: ${{ vars.FIVEW_GIT }}
+        run: |
+          mkdir -p "$HOME/.local/bin" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if [ -n "$FIVEW_URL" ]; then
+            curl -fsSL "$FIVEW_URL" -o "$HOME/.local/bin/5w"
+            echo "$FIVEW_SHA256  $HOME/.local/bin/5w" | sha256sum -c -
+            chmod +x "$HOME/.local/bin/5w"
+          else
+            cargo install --locked --root "$HOME/.local" --git "$FIVEW_GIT" fivew
+          fi
+      - name: check
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          REF: ${{ github.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.head_ref }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            5w ci --base "$PR_BASE" --head "$PR_HEAD" --branch "$PR_BRANCH"
+          else
+            5w ci --base "$BEFORE" --head "$GITHUB_SHA" --ref "$REF"
+          fi

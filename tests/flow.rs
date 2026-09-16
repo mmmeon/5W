@@ -836,3 +836,142 @@ fn the_hook_blocks_a_bad_hand_edit_and_warns_without_the_binary() {
     );
     assert!(r.main.join("PROTOCOL.md").exists());
 }
+
+// --- ci: forge-neutral checks ---------------------------------------------------------
+
+fn path_with_5w() -> String {
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_5w"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+impl Repo {
+    fn git_path(&self, cwd: &Path, path: &str, args: &[&str]) -> Output {
+        let mut c = Command::new("git");
+        c.args(args).current_dir(cwd);
+        env(&mut c, &self.root);
+        c.env("PATH", path);
+        c.output().unwrap()
+    }
+}
+
+#[test]
+fn pre_receive_accepts_the_protocol_and_rejects_the_rest() {
+    let r = Repo::new("prereceive");
+    let server = r.root.join("server.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            server.to_str().unwrap(),
+        ],
+    );
+    r.ok(&server, &["hook", "install", "pre-receive"]);
+    r.git(
+        &r.main,
+        &["remote", "add", "origin", server.to_str().unwrap()],
+    );
+    let push = |args: &[&str]| {
+        r.git_path(
+            &r.main,
+            &path_with_5w(),
+            &[&["push", "-q", "origin"], args].concat(),
+        )
+    };
+
+    // Tool-made queue commits go through.
+    r.ok(&r.main, &["add", "one"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    assert!(push(&["main"]).status.success());
+
+    // A hand edit breaking the protocol is refused at the server.
+    let t = r
+        .tasks()
+        .replace("- [x] #1 one via:self", "- [ ] #1 one via:self");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    r.git(&r.main, &["commit", "-qam", "chore(tasks): bad"]);
+    let out = push(&["main"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("reopened, but still carries"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // A branch carrying a queue edit is refused; a clean branch is not.
+    r.git(&r.main, &["checkout", "-qb", "f/a"]);
+    std::fs::write(r.main.join("code"), "x\n").unwrap();
+    r.git(&r.main, &["add", "code"]);
+    r.git(&r.main, &["commit", "-qm", "code"]);
+    assert!(push(&["f/a"]).status.success());
+    let t = r.tasks().replace(
+        "- [x] #1 one via:self",
+        "- [x] #1 one via:self\n- [ ] #2 sneaked",
+    );
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    r.git(&r.main, &["commit", "-qam", "queue on a branch"]);
+    let out = push(&["f/a"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("queue edits go on main"));
+    assert!(!out.status.success());
+
+    // No 5w on the server: refused, not waved through.
+    let out = r.git_path(
+        &r.main,
+        "/usr/bin:/bin",
+        &["push", "-q", "origin", "HEAD~1:refs/heads/f/b"],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not installed on the server"));
+}
+
+#[test]
+fn ci_branch_mode_is_the_ship_check() {
+    let r = Repo::new("cibranch");
+    r.ok(&r.main, &["add", "x", "branch:a/x"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    let base = r.git(&r.main, &["merge-base", "main", "a/x"]);
+    let ci = |r: &Repo| {
+        r.cli(
+            &r.main,
+            &["ci", "--base", &base, "--head", "a/x", "--branch", "a/x"],
+        )
+    };
+    let text = |o: Output| {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        )
+    };
+
+    let o = ci(&r);
+    assert!(!o.status.success());
+    assert!(text(o).contains("not accepted yet"));
+
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    let o = ci(&r);
+    assert!(o.status.success(), "{}", text(o));
+
+    // Rebased onto the moved trunk: still the reviewed change.
+    r.git(&wt, &["rebase", "-q", "main"]);
+    let o = r.cli(&r.main, &["ci", "--head", "a/x", "--branch", "a/x"]);
+    assert!(o.status.success(), "{}", text(o));
+
+    r.commit_in(&wt, "f", "sneaky\n");
+    let o = r.cli(&r.main, &["ci", "--head", "a/x", "--branch", "a/x"]);
+    assert!(!o.status.success());
+    assert!(text(o).contains("not the change accepted"));
+}

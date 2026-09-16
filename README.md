@@ -136,6 +136,41 @@ Hand edits are checked, not trusted:
 A hook is a convenience, not a gate: `--no-verify` skips it. When adopting 5W on an existing queue,
 lint from the adoption commit onward — earlier rows predate `submitted:` and `reviewed:`.
 
+## CI and servers
+
+One command holds every check, and takes everything as arguments — no forge's variables are read, so
+the same command runs under any CI, in a server hook, and by hand:
+
+```
+5w ci --base <old> --head <new> --ref refs/heads/<name>   # a push
+5w ci --base <old> --head <new> --branch <name>           # a change request into the trunk
+```
+
+- **A push to the trunk:** every commit in the range is linted as landing on the trunk.
+- **A push to any other branch:** its commits carry no queue edits.
+- **A change request:** no queue edits, plus the ship check — an accepted task names the branch, and
+  what the branch adds is exactly what was reviewed (a clean rebase passes). The check is red until
+  the task is accepted; re-run it after `5w accept`.
+
+A missing or all-zero `--base` means the merge-base with the trunk. The checkout needs full history.
+
+| Where | How |
+|---|---|
+| Any git server you run — bare repo over SSH, Gitea, Forgejo, self-hosted GitLab | `5w hook install pre-receive` in the bare repo ([ci/pre-receive](ci/pre-receive)). A real gate: bad pushes are refused. Without `5w` on the server it refuses rather than waves through (`git config 5w.allowMissing true` to relax) |
+| GitHub, Forgejo, Gitea Actions | [ci/github-actions.yml](ci/github-actions.yml) |
+| GitLab CI | [ci/gitlab-ci.yml](ci/gitlab-ci.yml) |
+| Anything else | map its before/after SHAs, ref and change-request branch onto the flags |
+
+The wrappers install `5w` from a prebuilt binary (`FIVEW_URL` + `FIVEW_SHA256`) or build it
+(`FIVEW_GIT`).
+
+**What is and is not gated.** Queue commits land directly on the trunk, and hosted CI runs after a
+push is accepted: there a bad queue edit turns the build red rather than being refused. For a hard
+gate on a hosted forge, protect the trunk, require change requests for people, and let only the
+account that runs `5w` push queue commits. The ship check runs on change requests; a push of
+unreviewed *code* straight to the trunk is linted for queue edits but not matched to a review — keep
+the trunk protected so code arrives by change request.
+
 ## Keeping context small
 
 The queue is read by agents, so every read is priced in tokens.

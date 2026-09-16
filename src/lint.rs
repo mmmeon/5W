@@ -24,7 +24,7 @@ Checks rows against PROTOCOL.md: legal state changes and what each must carry,
 closed rows unchanged, no deletion or reused id, and that a queue edit is its
 own commit on the trunk.
 
-  5w hook install | uninstall    the pre-commit hook that runs `5w lint --staged`";
+  5w hook install | uninstall [pre-commit | pre-receive]";
 
 /// One snapshot: queue and archive text.
 struct Snap {
@@ -97,36 +97,14 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                     &["rev-parse", "--verify", &format!("{range}^{{commit}}")],
                 )?
             };
-            for c in commits.lines() {
-                let short = &c[..c.len().min(12)];
-                let files = git::git(
-                    &repo.cwd,
-                    &[
-                        "diff-tree",
-                        "--no-commit-id",
-                        "--name-only",
-                        "-r",
-                        "--root",
-                        c,
-                    ],
-                )?;
-                let files: Vec<&str> = files.lines().collect();
-                if !touches_queue(&repo.cfg, &files) {
-                    continue;
-                }
-                let on_trunk = git::ok(&repo.cwd, &["merge-base", "--is-ancestor", c, &repo.trunk]);
-                shape(
-                    repo,
-                    &files,
-                    on_trunk.then_some(repo.trunk.as_str()),
-                    short,
-                    &mut problems,
-                );
-                let parent = git::rev(&repo.cwd, &format!("{c}^"));
-                let old = at_rev(repo, parent.as_deref());
-                let new = at_rev(repo, Some(c));
-                check(&repo.cfg, repo, &old, &new, short, &mut problems);
-            }
+            let list: Vec<String> = commits.lines().map(String::from).collect();
+            let trunk = repo.trunk.clone();
+            commits_on(
+                repo,
+                &list,
+                &|c| git::ok(&repo.cwd, &["merge-base", "--is-ancestor", c, &trunk]),
+                &mut problems,
+            )?;
         }
     }
     if problems.is_empty() {
@@ -136,6 +114,48 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         eprintln!("  {p}");
     }
     bail!("{} protocol violation(s) — see PROTOCOL.md", problems.len())
+}
+
+/// Lint each commit against its parent. `on_trunk` says whether a commit is
+/// (or is landing) on the trunk — asked of git locally, told by the caller in CI
+/// and in a pre-receive hook, where the ref has not moved yet.
+pub fn commits_on(
+    repo: &Repo,
+    commits: &[String],
+    on_trunk: &dyn Fn(&str) -> bool,
+    problems: &mut Vec<String>,
+) -> Res<()> {
+    for c in commits {
+        let c = c.as_str();
+        let short = &c[..c.len().min(12)];
+        let files = git::git(
+            &repo.cwd,
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "--root",
+                c,
+            ],
+        )?;
+        let files: Vec<&str> = files.lines().collect();
+        if !touches_queue(&repo.cfg, &files) {
+            continue;
+        }
+        shape(
+            repo,
+            &files,
+            on_trunk(c).then_some(repo.trunk.as_str()),
+            short,
+            problems,
+        );
+        let parent = git::rev(&repo.cwd, &format!("{c}^"));
+        let old = at_rev(repo, parent.as_deref());
+        let new = at_rev(repo, Some(c));
+        check(&repo.cfg, repo, &old, &new, short, problems);
+    }
+    Ok(())
 }
 
 fn show_index(repo: &Repo, name: &str) -> String {
@@ -177,7 +197,7 @@ fn shape(repo: &Repo, files: &[&str], branch: Option<&str>, at: &str, out: &mut 
         out.push(format!(
             "{at}: queue edits go on {}, not {}",
             repo.trunk,
-            branch.unwrap_or("a detached HEAD")
+            branch.unwrap_or("a branch")
         ));
     }
 }
@@ -392,17 +412,23 @@ fn check(cfg: &Config, repo: &Repo, old: &Snap, new: &Snap, at: &str, out: &mut 
 
 const HOOK_MARK: &str = "# installed by 5w";
 
-fn hook_path(repo: &Repo) -> Res<std::path::PathBuf> {
+fn hook_path(repo: &Repo, kind: &str) -> Res<std::path::PathBuf> {
     let dir = git::opt(
         &repo.primary,
         &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
     )
     .ok_or("cannot find the hooks directory")?;
-    Ok(std::path::PathBuf::from(dir).join("pre-commit"))
+    Ok(std::path::PathBuf::from(dir).join(kind))
 }
 
+const PRE_RECEIVE: &str = include_str!("../ci/pre-receive");
+
 pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
-    let path = hook_path(repo)?;
+    let kind = args.get(1).map(|s| s.as_str()).unwrap_or("pre-commit");
+    if !matches!(kind, "pre-commit" | "pre-receive") {
+        bail!("usage: 5w hook install | uninstall [pre-commit | pre-receive]");
+    }
+    let path = hook_path(repo, kind)?;
     let ours = std::fs::read_to_string(&path).map(|s| s.contains(HOOK_MARK));
     match args.first().map(|s| s.as_str()) {
         Some("install") => {
@@ -412,7 +438,7 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
                     return Ok(());
                 }
                 Ok(false) => bail!(
-                    "{} exists and is not ours; add this line to it instead:\n  command -v 5w >/dev/null && 5w lint --staged",
+                    "{} exists and is not ours; call 5w from it instead (see `5w hook` in the README)",
                     path.display()
                 ),
                 Err(_) => {}
@@ -420,13 +446,17 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
             if let Some(d) = path.parent() {
                 std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
             }
-            let script = format!(
-                "#!/bin/sh\n{HOOK_MARK} — checks queue edits against PROTOCOL.md\n\
+            let script = if kind == "pre-receive" {
+                PRE_RECEIVE.to_string()
+            } else {
+                format!(
+                    "#!/bin/sh\n{HOOK_MARK} — checks queue edits against PROTOCOL.md\n\
                  if command -v 5w >/dev/null 2>&1; then\n  exec 5w lint --staged\nfi\n\
                  if git diff --cached --name-only | grep -qx -e '{}' -e '{}'; then\n  \
                  echo '5w is not installed: this queue edit is unchecked. Follow PROTOCOL.md.' >&2\nfi\nexit 0\n",
-                repo.cfg.file, repo.cfg.archive
-            );
+                    repo.cfg.file, repo.cfg.archive
+                )
+            };
             std::fs::write(&path, script).map_err(|e| e.to_string())?;
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
@@ -446,6 +476,6 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
                 Ok(())
             }
         },
-        _ => bail!("usage: 5w hook install | uninstall"),
+        _ => bail!("usage: 5w hook install | uninstall [pre-commit | pre-receive]"),
     }
 }

@@ -1,0 +1,32 @@
+# 5w — include in .gitlab-ci.yml (or copy the job). Set a CI/CD variable
+# FIVEW_URL + FIVEW_SHA256 for a prebuilt binary, or FIVEW_GIT to build it.
+# Make the pipeline required to merge; a merge request stays red until its task
+# is accepted — re-run the pipeline after `5w accept`.
+5w:
+  image: rust:1-slim
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
+  before_script:
+    - |
+      if [ -n "$FIVEW_URL" ]; then
+        apt-get update -qq && apt-get install -qq -y curl >/dev/null
+        curl -fsSL "$FIVEW_URL" -o /usr/local/bin/5w
+        echo "$FIVEW_SHA256  /usr/local/bin/5w" | sha256sum -c -
+        chmod +x /usr/local/bin/5w
+      else
+        apt-get update -qq && apt-get install -qq -y git >/dev/null
+        cargo install --locked --root /usr/local --git "$FIVEW_GIT" fivew
+      fi
+  script:
+    - |
+      if [ -n "$CI_MERGE_REQUEST_IID" ]; then
+        git fetch -q origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+        5w ci --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA" \
+              --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" \
+              --trunk "refs/remotes/origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+      else
+        5w ci --base "$CI_COMMIT_BEFORE_SHA" --head "$CI_COMMIT_SHA" --ref "refs/heads/$CI_COMMIT_BRANCH"
+      fi

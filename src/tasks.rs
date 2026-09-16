@@ -33,6 +33,7 @@ write (each commits itself to the trunk, and only itself)
 protocol (PROTOCOL.md — the rules, for editing without the tool)
   lint [--staged | <rev> | <a>..<b>]   check queue edits follow it
   hook install | uninstall             pre-commit hook running `lint --staged`
+  ci --base --head --ref|--branch      the forge-neutral check for CI and pre-receive
 
 branches
   wt <new|add|ls|path|rm|link|install|setup>

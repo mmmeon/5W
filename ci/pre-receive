@@ -1,0 +1,19 @@
+#!/bin/sh
+# installed by 5w — rejects pushes whose queue edits break PROTOCOL.md.
+# Server-side: install in the bare repository with `5w hook install pre-receive`,
+# or copy to hooks/pre-receive. Needs `5w` on the server's PATH; without it the
+# push is refused rather than let through unchecked (set 5w.allowMissing=true to
+# let it through).
+zero=0000000000000000000000000000000000000000
+if ! command -v 5w >/dev/null 2>&1; then
+  [ "$(git config --bool 5w.allowMissing)" = true ] && exit 0
+  echo "5w is not installed on the server; refusing the push unchecked." >&2
+  exit 1
+fi
+status=0
+while read -r old new ref; do
+  [ "$new" = "$zero" ] && continue          # a deletion carries no commits
+  case "$ref" in refs/heads/*) ;; *) continue ;; esac
+  5w ci --base "$old" --head "$new" --ref "$ref" || status=1
+done
+exit $status

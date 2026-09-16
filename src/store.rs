@@ -43,16 +43,25 @@ impl Repo {
         )
         .map_err(|_| "not inside a git repository".to_string())?;
         let common = PathBuf::from(common);
-        let primary = common
-            .parent()
-            .ok_or("git common dir has no parent")?
-            .to_path_buf();
+        // A bare repository — a git server running the pre-receive hook — has no
+        // working tree; the repository directory itself is where git runs.
+        let bare =
+            git::opt(&cwd, &["rev-parse", "--is-bare-repository"]).as_deref() == Some("true");
+        let primary = if bare {
+            common.clone()
+        } else {
+            common
+                .parent()
+                .ok_or("git common dir has no parent")?
+                .to_path_buf()
+        };
         // The config belongs to the trunk: read it from the trunk's checkout,
         // else the trunk's commit, else the primary (before `init` commits it).
         // The trunk's own name is needed to find it, so resolve that first from
         // git config, and let the config override it.
         let guess = std::env::var("FIVEW_TRUNK")
             .ok()
+            .or_else(|| git::opt(&primary, &["config", "5w.trunk"]).filter(|s| !s.is_empty()))
             .or_else(|| {
                 git::opt(&primary, &["config", "git-town.main-branch"]).filter(|s| !s.is_empty())
             })
@@ -66,6 +75,16 @@ impl Repo {
                 git::opt(
                     &primary,
                     &["show", &format!("refs/heads/{guess}:{CONFIG_FILE}")],
+                )
+            })
+            // A CI checkout often has the trunk only as a remote-tracking ref.
+            .or_else(|| {
+                git::opt(
+                    &primary,
+                    &[
+                        "show",
+                        &format!("refs/remotes/origin/{guess}:{CONFIG_FILE}"),
+                    ],
                 )
             })
             .or_else(|| fs::read_to_string(primary.join(CONFIG_FILE)).ok());

@@ -1,3 +1,4 @@
+mod ci;
 mod config;
 mod git;
 mod lint;
@@ -49,7 +50,11 @@ fn dispatch(args: Vec<String>) -> Res<()> {
     }
     // A help flag where an argument belongs is a request for help. Without this
     // `add --help` would have made a task called "--help".
-    if rest.first().is_some_and(|a| a == "-h" || a == "--help") && cmd != "wt" && cmd != "lint" {
+    if rest.first().is_some_and(|a| a == "-h" || a == "--help")
+        && cmd != "wt"
+        && cmd != "lint"
+        && cmd != "ci"
+    {
         println!(
             "{}",
             if cmd == "ship" {
@@ -66,6 +71,7 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         "ship" => ship::run(&repo, rest),
         "init" => init(&repo),
         "lint" => lint::run(&repo, rest),
+        "ci" => ci::run(&repo, rest),
         "hook" => lint::hook(&repo, rest),
         _ => tasks::run(&repo, &cmd, rest),
     }
