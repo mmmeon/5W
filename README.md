@@ -179,6 +179,10 @@ A missing or all-zero `--base` means the merge-base with the trunk. The checkout
 The wrappers install exactly the version the project pins (see *Staying current*), verified —
 [ci/install-5w.sh](ci/install-5w.sh), inlined.
 
+This repository's own [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `cargo fmt`, `cargo
+clippy` and `cargo test` on every push and change request, then the same `5w ci` check against 5W's
+own history — built from source rather than installed, since the commit under test is 5w itself.
+
 ### Release binaries
 
 ```

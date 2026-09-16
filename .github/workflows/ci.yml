@@ -1,0 +1,36 @@
+# 5W's own CI: fmt, clippy and test on every push and change request, plus the
+# 5w ci check against this repository's own history and queue, using the 5w
+# this same commit builds (ci/github-actions.yml is the same check, packaged
+# for a project that only depends on 5w — it installs a released version
+# instead of building one).
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --locked
+      - name: 5w ci
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          REF: ${{ github.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.head_ref }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            target/debug/5w ci --base "$PR_BASE" --head "$PR_HEAD" --branch "$PR_BRANCH"
+          else
+            target/debug/5w ci --base "$BEFORE" --head "$GITHUB_SHA" --ref "$REF"
+          fi
