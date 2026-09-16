@@ -60,6 +60,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 3.
 - [ ] #25 Per-subcommand --help prints that command's one-line usage, not the full global listing @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. add/submit/accept/reject --help print the ~40-line USAGE; wt/ship/lint/ci/report already have their own.
+- [ ] #26 ready and review: end the summary line with a next-step hint (5w delegate / 5w accept), as next does @output !1 needs:#13
+  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 9.
 
 ## Done
 
