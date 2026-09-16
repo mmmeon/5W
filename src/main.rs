@@ -16,7 +16,18 @@ const TEMPLATE_TASKS: &str = include_str!("../templates/TASKS.md");
 const TEMPLATE_CONFIG: &str = include_str!("../templates/5w.toml");
 const TEMPLATE_PROTOCOL: &str = include_str!("../templates/PROTOCOL.md");
 
+#[cfg(unix)]
+unsafe extern "C" {
+    fn signal(sig: i32, handler: usize) -> usize;
+}
+
 fn main() {
+    // Rust ignores SIGPIPE, so `5w ready | head` panics on the closed pipe. A
+    // command-line filter should just stop, as every Unix tool does.
+    #[cfg(unix)]
+    unsafe {
+        signal(13, 0); // SIGPIPE, SIG_DFL
+    }
     let argv: Vec<String> = std::env::args().collect();
     // Invoked through a symlink named `tasks`, `wt` or `ship`, behave as that
     // tool — so a repo can keep `bin/tasks` and friends as the spelling.

@@ -699,6 +699,25 @@ fn compact_json_ids_limit_and_next() {
 }
 
 #[test]
+fn a_closed_pipe_ends_quietly() {
+    let r = Repo::new("pipe");
+    for i in 0..30 {
+        r.ok(&r.main, &["add", &format!("task {i}")]);
+    }
+    let mut c = Command::new(bin5w());
+    c.args(["ls"])
+        .current_dir(&r.main)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    env(&mut c, &r.root);
+    let mut child = c.spawn().unwrap();
+    drop(child.stdout.take()); // the reader is gone, as after `| head` exits
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("panicked"), "{err}");
+}
+
+#[test]
 fn briefs_point_at_sections_and_carry_the_steps() {
     let r = Repo::new("brief");
     r.ok(
@@ -707,11 +726,14 @@ fn briefs_point_at_sections_and_carry_the_steps() {
             "add",
             "fix the parser",
             "--body",
-            "Evidence in client/FINDINGS.md #779 section 4 and PLAN.md.",
+            "Evidence in client/FINDINGS.md #779 section 4 and PLAN.md. See faces/SCHEMA.md sect4 and faces/FINDINGS.md #483 #509 #521.",
         ],
     );
     let b = r.ok(&r.main, &["delegate", "1"]);
-    assert!(b.contains("refs: client/FINDINGS.md #779, PLAN.md"), "{b}");
+    assert!(
+        b.contains("refs: client/FINDINGS.md #779, PLAN.md, faces/SCHEMA.md sect4, faces/FINDINGS.md #483 #509 #521"),
+        "{b}"
+    );
     assert!(
         b.contains("5w wt new work/task-1") && b.contains("5w submit 1 work/task-1"),
         "{b}"

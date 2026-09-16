@@ -641,21 +641,33 @@ fn refs(text: &str) -> Vec<String> {
             .trim_end_matches(['.', ',', ';', ':', ')'])
             .to_string()
     };
+    // `#12`, `§3`, `R7`, `sect4`, `section 4`'s `4`, `12.1`.
+    let is_section = |n: &str| {
+        let rest = n
+            .strip_prefix('#')
+            .or_else(|| n.strip_prefix('§'))
+            .or_else(|| n.strip_prefix("sect"))
+            .or_else(|| n.strip_prefix('R'))
+            .unwrap_or(n);
+        !rest.is_empty()
+            && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && rest.starts_with(|c: char| c.is_ascii_digit())
+    };
     let mut out: Vec<String> = Vec::new();
     for (i, w) in words.iter().enumerate() {
         let w = clean(w);
         if !w.ends_with(".md") {
             continue;
         }
-        let sec = words.get(i + 1).map(|n| clean(n)).filter(|n| {
-            let n = n.trim_end_matches('.');
-            (n.starts_with('#') || n.starts_with('§') || n.starts_with('R'))
-                && n.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
-                || n.chars().all(|c| c.is_ascii_digit() || c == '.') && !n.is_empty()
-        });
-        let r = match sec {
-            Some(s) => format!("{w} {}", s.trim_end_matches('.')),
-            None => w,
+        let secs: Vec<String> = words[i + 1..]
+            .iter()
+            .map(|n| clean(n))
+            .take_while(|n| is_section(n))
+            .collect();
+        let r = if secs.is_empty() {
+            w
+        } else {
+            format!("{w} {}", secs.join(" "))
         };
         if !out.contains(&r) {
             out.push(r);
