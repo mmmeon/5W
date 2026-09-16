@@ -4,6 +4,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static N: AtomicU32 = AtomicU32::new(0);
 
+/// The binary under test: the one cargo built, or a release artifact named by
+/// FIVEW_TEST_BIN (a file called `5w`), so a release is tested as shipped.
+fn bin5w() -> String {
+    std::env::var("FIVEW_TEST_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_5w").to_string())
+}
+
 struct Repo {
     root: PathBuf,
     main: PathBuf,
@@ -40,7 +46,7 @@ impl Repo {
     }
 
     fn cli(&self, cwd: &Path, args: &[&str]) -> Output {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_5w"));
+        let mut c = Command::new(bin5w());
         c.args(args).current_dir(cwd);
         env(&mut c, &self.root);
         c.output().unwrap()
@@ -335,7 +341,7 @@ fn concurrent_adds_mint_distinct_ids() {
     let r = Repo::new("concurrent");
     let handles: Vec<_> = (0..8)
         .map(|i| {
-            let mut c = Command::new(env!("CARGO_BIN_EXE_5w"));
+            let mut c = Command::new(bin5w());
             c.args(["add", &format!("task {i}")]).current_dir(&r.main);
             env(&mut c, &r.root);
             c.spawn().unwrap()
@@ -390,7 +396,7 @@ fn symlinked_as_tasks_wt_ship() {
     let r = Repo::new("argv0");
     let bin = r.root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_5w"), bin.join("wt")).unwrap();
+    std::os::unix::fs::symlink(bin5w(), bin.join("wt")).unwrap();
     let mut c = Command::new(bin.join("wt"));
     c.args(["new", "x/y"]).current_dir(&r.main);
     env(&mut c, &r.root);
@@ -812,7 +818,7 @@ fn the_hook_blocks_a_bad_hand_edit_and_warns_without_the_binary() {
     r.ok(&r.main, &["hook", "install"]);
     r.ok(&r.main, &["add", "x"]);
     hand_edit(&r, "- [ ] #1 x", "- [x] #1 x");
-    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_5w"))
+    let bin = std::path::Path::new(&bin5w())
         .parent()
         .unwrap()
         .to_path_buf();
@@ -840,7 +846,7 @@ fn the_hook_blocks_a_bad_hand_edit_and_warns_without_the_binary() {
 // --- ci: forge-neutral checks ---------------------------------------------------------
 
 fn path_with_5w() -> String {
-    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_5w"))
+    let bin = std::path::Path::new(&bin5w())
         .parent()
         .unwrap()
         .to_path_buf();

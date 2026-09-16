@@ -1,0 +1,29 @@
+# 5w release — copy to .github/workflows/release.yml in the 5W repository.
+# Push a tag v<version> matching Cargo.toml; this builds the static binaries with
+# ci/release.sh, tests the x86_64 one with the full suite, and publishes both with
+# SHA256SUMS. Forgejo/Gitea: same build steps; publish with their release action.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: tag matches Cargo.toml
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "tag $GITHUB_REF_NAME != v$v"; exit 1; }
+      - name: build and test
+        run: ci/release.sh
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/5w-* dist/SHA256SUMS \
+            --title "$GITHUB_REF_NAME" --notes "Static Linux binaries. Verify with: sha256sum -c SHA256SUMS"

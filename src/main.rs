@@ -45,7 +45,10 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         return Ok(());
     }
     if cmd == "--version" || cmd == "-V" {
-        println!("5w {}", env!("CARGO_PKG_VERSION"));
+        match option_env!("FIVEW_COMMIT") {
+            Some(c) => println!("5w {} ({c})", env!("CARGO_PKG_VERSION")),
+            None => println!("5w {}", env!("CARGO_PKG_VERSION")),
+        }
         return Ok(());
     }
     // A help flag where an argument belongs is a request for help. Without this

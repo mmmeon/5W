@@ -163,6 +163,23 @@ A missing or all-zero `--base` means the merge-base with the trunk. The checkout
 The wrappers install `5w` from a prebuilt binary (`FIVEW_URL` + `FIVEW_SHA256`) or build it
 (`FIVEW_GIT`).
 
+### Release binaries
+
+```
+ci/release.sh        # dist/5w-<version>-{x86_64,aarch64}-unknown-linux-musl + dist/SHA256SUMS
+```
+
+Static musl executables, about 1 MB, runnable on any Linux. The build runs in a pinned
+`rust:<version>-alpine` container (podman or docker), so the host needs no Rust toolchain, and it is
+reproducible: the same commit gives the same bytes on any machine (compiler pinned, paths remapped,
+`--locked`, commit timestamp). Before writing `SHA256SUMS` it runs the full test suite against the
+artifact the host can execute (`FIVEW_TEST_BIN`), so what ships is what was tested.
+`5w --version` names the commit. [ci/release-github.yml](ci/release-github.yml) runs it on a
+`v<version>` tag and publishes the binaries with their sums.
+
+For the CI wrappers: `FIVEW_URL` is the x86_64 asset's download URL, `FIVEW_SHA256` its hash from
+`SHA256SUMS`.
+
 **What is and is not gated.** Queue commits land directly on the trunk, and hosted CI runs after a
 push is accepted: there a bad queue edit turns the build red rather than being refused. For a hard
 gate on a hosted forge, protect the trunk, require change requests for people, and let only the
