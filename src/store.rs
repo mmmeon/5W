@@ -446,7 +446,8 @@ impl Repo {
     /// Why a ship of `tip` onto a trunk whose committed config does not parse is
     /// refused: what would land, `tip` merged onto the trunk, must commit a config
     /// that parses (or none) and keeps the queue names the trunk's gate reads.
-    /// None: the trunk reads, or `tip` lands such a repair.
+    /// A repair restoring names renamed in place (`restore_fix`) is refused too,
+    /// naming the admin's push. None: the trunk reads, or `tip` lands such a repair.
     pub fn unrepaired(&self, tip: &str) -> Option<String> {
         let e = self.broken.as_ref()?;
         let (p, t) = (&self.primary, &self.trunk);
@@ -487,6 +488,12 @@ impl Repo {
             None => Config::default(),
         };
         let was = &self.cfg;
+        // One restoring the names renamed in place (#113) keeps none of the broken
+        // names, and no landing covers it: its record would go in a file the trunk
+        // lacks. Refuse naming the admin's push past the hook, as reads do.
+        if let Some(restores) = crate::lint::restored_name(p, &trunk, was, &cfg) {
+            return restore_fix(p, t, &trunk, was, was.gate_trunk, e, restores[0].0);
+        }
         [
             ("file", &was.file, &cfg.file),
             ("archive", &was.archive, &cfg.archive),

@@ -7568,6 +7568,19 @@ fn a_break_mixing_a_moved_queue_and_an_archive_renamed_in_place_names_each_repai
         let o = commit(&named(file, archive, prefix), "repair the config");
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 
+        // Ship refuses that repair on a branch too, naming the admin's push rather
+        // than a rename in a later commit: no landing covers it.
+        r.git(&r.main, &["branch", "f/restore"]);
+        r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+        let before = r.git(&r.main, &["rev-parse", "main"]);
+        let err = r.refuses(&r.main, &["ship", "f/restore", "--sync"]);
+        assert!(
+            names(&err) && err.contains("past the server's hook") && !err.contains("later commit"),
+            "{err}"
+        );
+        assert_eq!(r.git(&r.main, &["rev-parse", "main"]), before);
+        r.git(&r.main, &["reset", "-q", "--hard", "f/restore"]);
+
         // The server refuses it naming the same names, pushed by an admin past its hook.
         let (ok, err) = push_to(&r, &["main"]);
         assert!(
