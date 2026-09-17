@@ -29,6 +29,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [~] #58 A queue commit whose index update fails (index.lock held) leaves the trunk moved but the checkout stale @queue !2 branch:queue/task-58 submitted:abb73b899a129d98ce8c92c6b5c575af283d3f57
   and the refusal doesn't say the commit landed
   Found reviewing #57: the trunk ref moves first, then the checkout's index/working copy is mirrored; if the index write fails (index.lock), 5w exits 1 with git's error, the commit is on main, and the checkout's staged copy now reads as a revert of it. Make the refusal say the commit landed and name the fix (retry mirroring: e.g. a 5w command or 'git restore --staged TASKS.md' guidance), or retry the lock briefly; test with a held index.lock.
+- [ ] #70 lint over a commit range skips merge commits: a conflict resolution that drops rows or unlinks the queue passes ci @queue !2
+  Found reviewing #68 (pre-existing; #63 added only the id-in-both-files check for merges): lint <rev>/<range> uses diff-tree without -m, so a merge lists no changed files and its queue changes are never judged. A merge whose resolution deletes rows, changes closed rows, or turns the queue into a file/link passes lint in ci and pre-receive (only the pre-commit hook sees it). Judge a merge's queue against its first parent (the trunk's view), with the same rules as a normal commit; check this repo's and merge-heavy scratch histories stay clean (ordinary merges carry identical queue files). Test a row-dropping merge fails lint HEAD and range.
 
 ## Done
 
