@@ -38,6 +38,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #79: (1) with 5w.trunk unset (admin removed it or hook installed by hand), HEAD gives master and a committed trunk = "x" still ungates master; making HEAD a pin is unsafe (stale HEAD refuses every push). Have ci/pre-receive refuse trunk-changing pushes, or warn on every push, while gate_trunk is on and no pin is set, naming 'git config 5w.trunk <HEAD branch>'. (2) when the pin is FIVEW_TRUNK, the mismatch refusal suggests git config 5w.trunk, which can't take effect while the env var is set; name the env var instead. Tests for both.
 - [ ] #83 A server whose trunk holds an unparsable .5w.toml refuses every push with only 'config line N', naming no fix @ci !1
   Found reviewing #82 (pre-existing): if a broken .5w.toml reaches the trunk (hook off, older history), Repo::open fails on every later push and the admin sees only the parse error. Name the fix in one line (e.g. the commit that broke it and that pushing a fix to .5w.toml is allowed / how to bypass with FIVEW_TRUNK and a pinned trunk), and let a push that repairs .5w.toml be judged; test it.
+- [ ] #84 Duplicate requires keys: the version check reads the first, the config stores the last @upkeep !1
+  self-update's pinned() and update-files --pin use the first
+  Found by #82's worker: src/config.rs Config::from_toml checks the version pin against the first requires but stores the last; src/upkeep.rs pinned() (self-update) reads the first requires line; update-files --pin rewrites only the first. Make every reader agree with the parser (last wins) — or better, refuse duplicate keys in .5w.toml at parse time with one line naming the key and lines — and make update-files --pin rewrite consistently; test duplicate requires.
 
 ## Done
 
