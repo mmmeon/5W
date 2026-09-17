@@ -260,6 +260,35 @@ fn commits_after_submit_block_accept_until_reviewed() {
 }
 
 #[test]
+fn review_json_is_one_object_per_submitted_task() {
+    let r = Repo::new("reviewjson");
+    assert_eq!(r.ok(&r.main, &["review", "--json"]), "");
+    r.ok(&r.main, &["add", "x"]);
+    r.ok(&r.main, &["add", "y"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.commit_in(&wt, "f", "2\n");
+    let tip = r.git(&wt, &["rev-parse", "HEAD"]);
+    let out = r.ok(&r.main, &["review", "--json"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 1, "{out}");
+    let j = lines[0];
+    assert!(
+        j.starts_with("{\"id\":1,\"state\":\"review\",")
+            && j.ends_with('}')
+            && j.contains("\"branch\":\"a/x\"")
+            && j.contains(&format!("\"tip\":\"{}\"", tip.trim()))
+            && j.contains("\"moved\":1,")
+            && j.contains("\"diff\":\"1 file changed, 1 insertion(+)\"")
+            && j.contains("\"behind\":1}"),
+        "{j}"
+    );
+    assert_eq!(r.ok(&r.main, &["review", "--ids"]), "1\n");
+}
+
+#[test]
 fn a_change_after_accept_blocks_ship() {
     let r = Repo::new("postaccept");
     r.ok(&r.main, &["add", "x"]);

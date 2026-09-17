@@ -228,7 +228,8 @@ The queue is read by agents, so every read is priced in tokens.
   (`#14 !3 @faces title + [branch] >lane — note`, `+` marking a body), no headers, one-line
   refusals naming the fix. `FIVEW_AGENT=0` or `--full` gives the human layout.
 - **`--json`**, **`--ids`**, **`--limit N`** on every list; **`5w next [filters]`** returns just the
-  first ready task with its body.
+  first ready task with its body. `review --json` adds each submitted task's `tip`, `moved` (commits
+  since submit), `diff` (shortstat against the trunk) and `behind`.
 - **The brief is the worker's only document.** `delegate` prints the task, the rework note, the
   steps and the rules, and names the sections the text cites (`refs: client/FINDINGS.md #779`) so the
   worker reads those rather than whole files. `review` prints its checklist once, on

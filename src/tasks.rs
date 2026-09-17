@@ -16,7 +16,7 @@ read
   blocked | levels | all  what waits on what · counts · every queued task
   show <id> [--json]      one task, archived ones included
   delegate <id>           the brief for whoever does it
-  review [--checklist]    submitted work, with drift since submit
+  review [--checklist] [--json|--ids]   submitted work, with drift since submit
   doctor                  check the file
   audit [--since <rev|date>] [--json]   how this repository has used 5W, from its history
 
@@ -1231,39 +1231,70 @@ fn review(repo: &Repo, args: &[String]) -> Res<()> {
     let mut found = false;
     for t in q.tasks.iter().filter(|t| t.state == State::Review) {
         found = true;
+        if o.ids {
+            println!("{}", t.id);
+            continue;
+        }
         let mut notes = Vec::new();
         let b = t.branch.as_deref();
         let tip = b.and_then(|b| git::rev(&repo.primary, &format!("refs/heads/{b}")));
         if b.is_some() && tip.is_none() {
             notes.push("branch is gone".to_string());
         }
-        if let (Some(tip), Some(sub)) = (&tip, &t.submitted)
-            && !tip.starts_with(sub.as_str())
-        {
-            let n = git::opt(
+        let mut moved = None;
+        if let (Some(tip), Some(sub)) = (&tip, &t.submitted) {
+            moved = Some("0".to_string());
+            if !tip.starts_with(sub.as_str()) {
+                let n = git::opt(
+                    &repo.primary,
+                    &["rev-list", "--count", &format!("{sub}..{tip}")],
+                );
+                notes.push(format!(
+                    "moved since submit (+{} commits)",
+                    n.as_deref().unwrap_or("?")
+                ));
+                moved = n;
+            }
+        }
+        let (mut stat, mut behind) = (None, None);
+        if let (Some(b), Some(_)) = (b, &tip) {
+            let range = format!("{}...{b}", repo.trunk);
+            stat = git::opt(&repo.primary, &["diff", "--shortstat", &range]);
+            behind = git::opt(
                 &repo.primary,
-                &["rev-list", "--count", &format!("{sub}..{tip}")],
-            )
-            .unwrap_or("?".into());
-            notes.push(format!("moved since submit (+{n} commits)"));
+                &["rev-list", "--count", &format!("{b}..{}", repo.trunk)],
+            );
+        }
+        if o.json {
+            let num = |v: &Option<String>| v.clone().unwrap_or("null".into());
+            let j = q.json(t, true);
+            println!(
+                "{},\"tip\":{},\"moved\":{},\"diff\":{},\"behind\":{}}}",
+                &j[..j.len() - 1],
+                tip.as_deref().map(js).unwrap_or("null".into()),
+                num(&moved),
+                stat.as_deref()
+                    .map(|s| js(s.trim()))
+                    .unwrap_or("null".into()),
+                num(&behind),
+            );
+            continue;
         }
         q.row(t, &notes.join(", "), &o);
         if let (Some(b), Some(_)) = (b, &tip) {
             let range = format!("{}...{b}", repo.trunk);
-            let stat =
-                git::opt(&repo.primary, &["diff", "--shortstat", &range]).unwrap_or_default();
-            let behind = git::opt(
-                &repo.primary,
-                &["rev-list", "--count", &format!("{b}..{}", repo.trunk)],
-            )
-            .unwrap_or_default();
-            let behind = if behind != "0" && !behind.is_empty() {
-                format!(" · {behind} behind")
-            } else {
-                String::new()
+            let behind = match behind.as_deref() {
+                Some(n) if n != "0" && !n.is_empty() => format!(" · {n} behind"),
+                _ => String::new(),
             };
-            println!("    {} · git diff {range}{behind}", stat.trim());
+            println!(
+                "    {} · git diff {range}{behind}",
+                stat.as_deref().unwrap_or_default().trim()
+            );
         }
+    }
+    if o.json || o.ids {
+        return Ok(());
     }
     if !found {
         println!("(nothing submitted)");
