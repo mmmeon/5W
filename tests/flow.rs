@@ -5747,6 +5747,68 @@ fn a_server_whose_trunk_config_broke_takes_only_the_push_that_repairs_it() {
 }
 
 #[test]
+fn a_server_cloned_after_the_trunk_config_broke_installs_the_hook_that_takes_the_repair() {
+    for (name, broken_key) in [("installs-key", true), ("installs-syntax", false)] {
+        let r = Repo::new(name);
+        let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+        let commit = |file: &str, text: &str, msg: &str| {
+            std::fs::write(r.main.join(file), text).unwrap();
+            r.git(&r.main, &["add", file]);
+            r.git(&r.main, &["commit", "-qm", msg]);
+        };
+        let broken = if broken_key {
+            cfg.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n")
+        } else {
+            cfg.replace("title_max = 120", "title_max = = 1")
+        };
+        commit(".5w.toml", &broken, "break the config");
+        let server = r.root.join("server.git");
+        r.git(
+            &r.root,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                r.main.to_str().unwrap(),
+                server.to_str().unwrap(),
+            ],
+        );
+
+        // A pre-commit install still refuses: the checkout can fix the file itself.
+        r.fails(&r.main, &["hook", "install", "pre-commit"]);
+
+        let out = r.ok(&server, &["hook", "install", "pre-receive"]);
+        assert!(
+            out.contains(".5w.toml on main is broken")
+                && out.contains("accepts only a push to main that repairs it")
+                && out.contains("hook: 5w.trunk = main")
+                && out.contains("hook: installed"),
+            "{out}"
+        );
+        assert_eq!(r.git(&server, &["config", "5w.trunk"]), "main");
+        r.git(
+            &r.main,
+            &["remote", "add", "origin", server.to_str().unwrap()],
+        );
+
+        commit("code.txt", "x\n", "code");
+        let (ok, err) = push_to(&r, &["main"]);
+        assert!(
+            !ok && err.contains("push a commit that fixes .5w.toml to main"),
+            "{err}"
+        );
+        r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+        commit(".5w.toml", &cfg, "repair the config");
+        let (ok, err) = push_to(&r, &["main"]);
+        assert!(ok, "{err}");
+        assert_eq!(
+            r.git(&server, &["rev-parse", "main"]),
+            r.git(&r.main, &["rev-parse", "HEAD"])
+        );
+    }
+}
+
+#[test]
 fn a_trunk_config_broken_past_parsing_is_read_as_the_last_one_that_parsed() {
     let r = Repo::new("config-syntax");
     let server = server_of(&r);

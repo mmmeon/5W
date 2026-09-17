@@ -1151,6 +1151,13 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
     if !matches!(kind, "pre-commit" | "pre-receive") {
         bail!("usage: 5w hook install | uninstall [pre-commit | pre-receive]");
     }
+    // Opened leniently only for pre-receive: a server takes its repair by push,
+    // a checkout fixes the file in place.
+    if let Some(e) = &repo.broken
+        && !(kind == "pre-receive" && repo.bare)
+    {
+        return Err(e.clone());
+    }
     let path = hook_path(repo, kind)?;
     let ours = std::fs::read_to_string(&path).map(|s| s.contains(HOOK_MARK));
     match args.first().map(|s| s.as_str()) {
@@ -1188,6 +1195,13 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                 .map_err(|e| e.to_string())?;
+            if let Some(e) = &repo.broken {
+                println!(
+                    "hook: {} on {t} is broken ({e}); the hook accepts only a push to {t} that repairs it",
+                    crate::store::CONFIG_FILE,
+                    t = repo.trunk
+                );
+            }
             println!("hook: installed {}", path.display());
             Ok(())
         }

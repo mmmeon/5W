@@ -424,7 +424,9 @@ config on the trunk's first-parent line that parses (defaults, gated, when none 
 gated before the break stays gated. A config the parser reads but rejects counts as gated unless it
 says `gate_trunk = false`. Under the gate the repair needs a landing record like any code. A
 broken config naming a trunk an unpinned server has no branch for names the pin instead:
-`git config 5w.trunk <HEAD's branch>`, then the repair.
+`git config 5w.trunk <HEAD's branch>`, then the repair. A server cloned after the break still installs
+the hook: `5w hook install pre-receive` notes the broken config and that only the repair will be
+accepted (`5w hook install` in a checkout still refuses — fix the file there).
 
 The wrappers install exactly the version the project pins (see *Staying current*), verified —
 [ci/install-5w.sh](ci/install-5w.sh), inlined.

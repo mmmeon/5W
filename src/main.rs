@@ -144,8 +144,10 @@ fn dispatch(args: Vec<String>) -> Res<()> {
     }
     git::check_env()?;
     // `ci` judges pushes on a server: one whose trunk config broke must still
-    // take the push that repairs it.
-    let repo = if cmd == "ci" {
+    // take the push that repairs it, and install the hook that does.
+    let repo = if cmd == "ci"
+        || (cmd == "hook" && rest.get(1).map(|s| s.as_str()) == Some("pre-receive"))
+    {
         Repo::open_lenient()?
     } else {
         Repo::open()?
