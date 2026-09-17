@@ -52,6 +52,21 @@ pub fn head_branch(dir: &Path) -> Option<String> {
         .map(String::from)
 }
 
+/// The newest `.5w.toml` that parses on `commit`'s first-parent line, from the
+/// commit itself back: "" where that line deleted it. None: no such commit.
+pub fn last_readable_config(dir: &Path, commit: &str) -> Option<String> {
+    let line = git::opt(
+        dir,
+        &["rev-list", "--first-parent", commit, "--", CONFIG_FILE],
+    )?;
+    line.lines().find_map(
+        |c| match git::opt(dir, &["show", &format!("{c}:{CONFIG_FILE}")]) {
+            Some(text) => crate::config::parse_toml(&text).is_ok().then_some(text),
+            None => Some(String::new()),
+        },
+    )
+}
+
 /// Resolve `.` and `..` components without touching the filesystem.
 fn normalize(p: &Path) -> PathBuf {
     use std::path::Component;
@@ -156,7 +171,21 @@ impl Repo {
                     // What the text says where it can be read, as the config reads
                     // it (the last key winning): the trunk, and the names the gate
                     // tells queue edits and landings by. A repair must not rename them.
-                    let kv = crate::config::parse_toml(&s).unwrap_or_default();
+                    // Text that does not parse says nothing: the trunk's last config
+                    // that does, else the defaults.
+                    let kv = crate::config::parse_toml(&s)
+                        .ok()
+                        .or_else(|| {
+                            [
+                                format!("refs/heads/{guess}"),
+                                format!("refs/remotes/origin/{guess}"),
+                            ]
+                            .iter()
+                            .find_map(|r| git::rev(&primary, r))
+                            .and_then(|t| last_readable_config(&primary, &t))
+                            .and_then(|text| crate::config::parse_toml(&text).ok())
+                        })
+                        .unwrap_or_default();
                     let said = |key: &str| {
                         kv.iter().rev().find_map(|(k, v)| match v {
                             crate::config::Val::Str(t) if k == key => Some(t.clone()),

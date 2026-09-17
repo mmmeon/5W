@@ -5692,6 +5692,100 @@ fn a_server_whose_trunk_config_broke_takes_only_the_push_that_repairs_it() {
 }
 
 #[test]
+fn a_trunk_config_broken_past_parsing_is_read_as_the_last_one_that_parsed() {
+    let r = Repo::new("config-syntax");
+    let server = server_of(&r);
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("title_max = 120"), "{cfg}");
+    let hook = server.join("hooks/pre-receive");
+    let unhooked = |msg: &str, text: &str| {
+        std::fs::write(r.main.join(".5w.toml"), text).unwrap();
+        r.git(&r.main, &["commit", "-qam", msg]);
+        std::fs::rename(&hook, server.join("hook-off")).unwrap();
+        assert!(push_to(&r, &["main"]).0);
+        std::fs::rename(server.join("hook-off"), &hook).unwrap();
+    };
+    let broken = |text: &str| text.replace("title_max = 120", "title_max = = 1");
+
+    // Ungated before the break: the repair is plain code, and lands.
+    unhooked("break the syntax", &broken(&cfg));
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "repair"]);
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(ok, "{err}");
+
+    // Gated before the break: still gated, the repair needs a landing.
+    let gated = cfg.replace("gate_trunk = false", "gate_trunk = true");
+    std::fs::write(r.main.join(".5w.toml"), &gated).unwrap();
+    r.git(&r.main, &["commit", "-qam", "gate"]);
+    assert!(push_to(&r, &["main"]).0);
+    unhooked("break the gated syntax", &broken(&gated));
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "repair and ungate"]);
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+}
+
+#[test]
+fn a_landing_repairing_a_config_broken_past_parsing_is_told_by_the_trunks_queue_names() {
+    let r = Repo::new("config-syntax-names");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let cfg = cfg
+        .replace("file = \"TASKS.md\"", "file = \"QUEUE.md\"")
+        .replace("archive = \"DONE.md\"", "archive = \"ARCH.md\"")
+        .replace("gate_trunk = false", "gate_trunk = true");
+    assert!(
+        cfg.contains("QUEUE.md") && cfg.contains("ARCH.md") && cfg.contains("gate_trunk = true")
+    );
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["mv", "TASKS.md", "QUEUE.md"]);
+    r.git(&r.main, &["commit", "-qam", "queue elsewhere, gated"]);
+    let server = server_of(&r);
+    r.ok(&r.main, &["add", "fix the config"]);
+    r.ok(&r.main, &["wt", "new", "f/fix"]);
+    let fix = r.wt("f/fix");
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(ok, "{err}");
+
+    // The break lands with the hook off.
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace("title_max = 120", "title_max = = 1"),
+    )
+    .unwrap();
+    r.git(&r.main, &["commit", "-qam", "break the syntax"]);
+    let hook = server.join("hooks/pre-receive");
+    std::fs::rename(&hook, server.join("hook-off")).unwrap();
+    assert!(push_to(&r, &["main"]).0);
+    std::fs::rename(server.join("hook-off"), &hook).unwrap();
+
+    // The fix is reviewed and landed as ship would: its record names QUEUE.md's row.
+    r.git(&fix, &["merge", "-q", "--ff-only", "main"]);
+    r.commit_in(&fix, ".5w.toml", &cfg);
+    let reviewed = r.git(&fix, &["rev-parse", "HEAD"]);
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.ok(&r.main, &["submit", "1", "f/fix"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.git(&r.main, &["checkout", "--", ".5w.toml"]);
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    let accepted = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(&r.main, &["cherry-pick", &reviewed]);
+    let tip = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(
+        &r.main,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("chore(tasks): land #1\n\nLanded: {accepted}..{tip}"),
+        ],
+    );
+    let (ok, err) = push_to(&r, &["main", &format!("{reviewed}:refs/5w/reviewed/1")]);
+    assert!(ok, "{err}");
+}
+
+#[test]
 fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
     let r = Repo::new("config-bricked-x");
     let server = server_of(&r);

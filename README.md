@@ -254,7 +254,9 @@ commits; merge instead, or ship again.
   commits a merge brings in are judged themselves, under the merge's setting.
 - **Which commits:** every one a push brings when the trunk it moves has `gate_trunk = true`, and
   in a push that enables it, those whose first parent's `.5w.toml` has it (a config that does not
-  parse counts as on, and so does one the config rejects unless it says `gate_trunk = false`). History from before the enabling commit, and that commit, pass as they are;
+  parse is read as the newest one on its first-parent line that does, and as on when none does; one
+  the config rejects counts as on unless it says `gate_trunk = false`). History from before the
+  enabling commit, and that commit, pass as they are;
   a branch from before it is still new to the trunk, and turning the gate off is a gated change.
 - **The reviewed commit must be on the server.** Shipped as reviewed, it is what landed. After
   `--sync` or `--squash` it is not on the trunk: keep its branch pushed, or push it with the trunk
@@ -264,7 +266,7 @@ commits; merge instead, or ship again.
 - **The trunk cannot be deleted or rewound** under the gate: a push re-creating it would have no
   trunk to be judged against, and a force push to an older commit judges nothing, drops landings the
   server has, and can reset to before the gate was on. A trunk update whose old tip is not below the
-  new one is refused when the old tip has `gate_trunk` on (or a config that does not parse). Turn
+  new one is refused when the old tip has `gate_trunk` on (read as above). Turn
   the gate off through a shipped change first.
 - **What it does not check.** Who reviewed: the accept may arrive in the same push as the landing,
   and who may push one is the queue's own trust (see *Forge events*). A forge's merge button records no landing; its
@@ -414,9 +416,11 @@ lock the server: `5w ci` refuses every push naming the error and the fix — pus
 `.5w.toml` to the trunk, or upgrade the server's 5w when the config `requires` a newer one. A push to
 the trunk whose new tip commits a config that parses (or none) is the repair, judged under that
 config — except the queue file, archive and commit prefix, which the gate tells queue edits and
-landings by: those come from the broken config where it says them (defaults where it cannot be
-read), so a repair cannot call its code the queue. The gate reads the broken config as on unless it
-says `gate_trunk = false`, so under the gate the repair needs a landing record like any code. A
+landings by: those come from the broken config where it says them, so a repair cannot call its
+code the queue. Broken past parsing, it says nothing: they and `gate_trunk` come from the newest
+config on the trunk's first-parent line that parses (defaults, gated, when none does), so a trunk
+gated before the break stays gated. A config the parser reads but rejects counts as gated unless it
+says `gate_trunk = false`. Under the gate the repair needs a landing record like any code. A
 broken config naming a trunk an unpinned server has no branch for names the pin instead:
 `git config 5w.trunk <HEAD's branch>`, then the repair.
 

@@ -523,8 +523,9 @@ fn trunk_gate(
 }
 
 /// Whether `gate_trunk` is on in each commit's `.5w.toml`. A config that does not
-/// parse counts as on: a gate is not lifted by breaking its file. Nor by a key the
-/// config rejects: then only a written `gate_trunk = false` is off.
+/// parse is read as the newest one on its first-parent line that does, and counts
+/// as on when there is none: a gate is not lifted by breaking its file. Nor by a
+/// key the config rejects: then only a written `gate_trunk = false` is off.
 fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> {
     let p = &repo.primary;
     let mut on = HashMap::new();
@@ -541,28 +542,40 @@ fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> 
         &[],
         Some(&input),
     )?;
-    let mut blobs: HashMap<String, bool> = HashMap::new();
+    // None: the text does not parse.
+    let read = |text: &str| -> Option<bool> {
+        let kv = crate::config::parse_toml(text).ok()?;
+        let says = |b: bool| {
+            kv.iter().any(|(k, v)| {
+                k == "gate_trunk" && matches!(v, crate::config::Val::Bool(x) if *x == b)
+            })
+        };
+        Some(if crate::config::Config::from_toml(text).is_ok() {
+            says(true)
+        } else {
+            !says(false)
+        })
+    };
+    let mut blobs: HashMap<String, Option<bool>> = HashMap::new();
     for (c, l) in commits.iter().zip(o.stdout.lines()) {
         let setting = match l.split_once(' ') {
-            Some((oid, "blob")) => match blobs.get(oid) {
-                Some(b) => *b,
-                None => {
-                    let text = git::git(p, &["cat-file", "blob", oid]).unwrap_or_default();
-                    let b = match crate::config::parse_toml(&text) {
-                        Ok(kv) if crate::config::Config::from_toml(&text).is_ok() => {
-                            kv.iter().any(|(k, v)| {
-                                k == "gate_trunk" && matches!(v, crate::config::Val::Bool(true))
-                            })
-                        }
-                        Ok(kv) => !kv.iter().any(|(k, v)| {
-                            k == "gate_trunk" && matches!(v, crate::config::Val::Bool(false))
-                        }),
-                        Err(_) => true,
-                    };
-                    blobs.insert(oid.to_string(), b);
-                    b
+            Some((oid, "blob")) => {
+                let b = match blobs.get(oid) {
+                    Some(b) => *b,
+                    None => {
+                        let text = git::git(p, &["cat-file", "blob", oid]).unwrap_or_default();
+                        let b = read(&text);
+                        blobs.insert(oid.to_string(), b);
+                        b
+                    }
+                };
+                match b {
+                    Some(b) => b,
+                    None => crate::store::last_readable_config(p, c)
+                        .and_then(|text| read(&text))
+                        .unwrap_or(true),
                 }
-            },
+            }
             _ => false,
         };
         on.insert(c.clone(), setting);
