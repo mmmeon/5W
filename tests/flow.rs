@@ -982,6 +982,66 @@ fn stacks_ship_bottom_first_and_children_reparent() {
 }
 
 #[test]
+fn a_stack_recorded_on_the_trunk_is_flagged_by_doctor_and_wt_ls() {
+    let r = Repo::new("misstack");
+    r.ok(&r.main, &["wt", "new", "s/a"]);
+    let a = r.wt("s/a");
+    r.commit_in(&a, "a", "a\n");
+    // Made from inside s/a's worktree: stacked on s/a, and nothing to flag.
+    r.ok(&a, &["wt", "new", "s/b"]);
+    assert_eq!(
+        r.git(&r.main, &["config", "git-town-branch.s/b.parent"]),
+        "s/a"
+    );
+    r.commit_in(&r.wt("s/b"), "b", "b\n");
+    assert!(!r.ok(&r.main, &["doctor"]).contains("records main"));
+    // Made from the trunk's checkout, then moved onto s/a's work by hand.
+    r.ok(&r.main, &["wt", "new", "s/c"]);
+    let c = r.wt("s/c");
+    r.git(&c, &["reset", "-q", "--hard", "s/b"]);
+    r.commit_in(&c, "c", "c\n");
+    let fix = "s/c holds s/b's unshipped commits but records main as its parent — `git config git-town-branch.s/c.parent s/b`";
+    let out = r.ok(&r.main, &["doctor"]);
+    assert!(out.contains(fix), "{out}");
+    assert!(!out.contains("s/b holds"), "{out}");
+    let out = r.ok(&r.main, &["wt", "ls"]);
+    assert!(out.contains(fix), "{out}");
+    r.git(&r.main, &["config", "git-town-branch.s/c.parent", "s/b"]);
+    assert!(!r.ok(&r.main, &["wt", "ls"]).contains("note:"));
+}
+
+#[test]
+fn sync_after_a_squashed_parent_replays_only_the_childs_commits() {
+    let r = Repo::new("squashstack");
+    r.ok(&r.main, &["add", "bottom"]);
+    r.ok(&r.main, &["add", "top"]);
+    r.ok(&r.main, &["wt", "new", "s/a"]);
+    let a = r.wt("s/a");
+    r.commit_in(&a, "a", "one\n");
+    r.commit_in(&a, "a", "two\n");
+    r.ok(&a, &["submit", "1"]);
+    r.ok(&a, &["wt", "new", "s/b"]);
+    let b = r.wt("s/b");
+    r.commit_in(&b, "b", "b\n");
+    r.ok(&b, &["submit", "2"]);
+    r.ok(&r.main, &["accept", "1", "2"]);
+    r.ok(&r.main, &["ship", "s/a", "--sync", "--squash"]);
+    // s/a's two commits are not on main, only the squash of them: replaying
+    // them onto it conflicts on `a`.
+    let out = r.ok(&r.main, &["ship", "s/b", "--sync"]);
+    assert!(
+        out.contains("authorised by #2") && out.contains("which landed; same change"),
+        "{out}"
+    );
+    assert_eq!(std::fs::read_to_string(r.main.join("a")).unwrap(), "two\n");
+    assert!(r.main.join("b").exists());
+    assert_eq!(
+        r.git(&r.main, &["rev-list", "--count", "main", "--", "a"]),
+        "1"
+    );
+}
+
+#[test]
 fn an_unreviewed_ship_says_so_only_once_it_lands() {
     let r = Repo::new("unreviewed");
     r.ok(&r.main, &["wt", "new", "u/x"]);

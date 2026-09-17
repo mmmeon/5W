@@ -25,7 +25,7 @@ pub const USAGE: &str = "\
 usage: 5w ship [<branch> | --accepted] [--sync] [--squash] [-m <message>] [--discard-ignored] [--force]
 
   --accepted every accepted task's branch, bottom of each stack first; stops at the first refusal
-  --sync     rebase the branch onto the trunk first, in its worktree
+  --sync     rebase the branch's own commits onto the trunk first, in its worktree
   --squash   land one commit (message from -m, or composed from the branch's commits)
   --discard-ignored   delete gitignored files in the branch's worktree with it
   --force    override the review gate only — never the safety checks";
@@ -311,8 +311,19 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
             )
         };
         let before = git::rev(p, &format!("refs/heads/{branch}")).ok_or("cannot resolve branch")?;
-        println!("ship: rebasing {branch} onto {trunk}");
-        let o = git::raw(w, &["rebase", trunk], &[], None)?;
+        let o = match sync_upstream(repo, &all, &before)? {
+            Some(up) => {
+                println!(
+                    "ship: rebasing {branch}'s own commits ({}..) onto {trunk}",
+                    short(&up)
+                );
+                git::raw(w, &["rebase", "--onto", trunk, &up], &[], None)?
+            }
+            None => {
+                println!("ship: rebasing {branch} onto {trunk}");
+                git::raw(w, &["rebase", trunk], &[], None)?
+            }
+        };
         if !o.ok {
             let _ = git::raw(w, &["rebase", "--abort"], &[], None);
             bail!(
@@ -557,7 +568,7 @@ fn verify_reviewed(
                         "ship: authorised by #{} via:review at {r} (rebased since; same change)",
                         t.id
                     );
-                } else if let Some(under) = landed_under(repo, all, t.id, &reviewed, &now)? {
+                } else if let Some(under) = landed_under(repo, all, &reviewed, &now)? {
                     say!(
                         "ship: authorised by #{} via:review at {r} (on #{under}, which landed; same change)",
                         t.id
@@ -588,16 +599,24 @@ fn verify_reviewed(
 /// branch is gone, and the trunk holds that commit's version of every path the
 /// parent changed, the change to compare is what the branch added on top of it.
 /// Returns the parent task's id when that change is `now`.
-fn landed_under(
-    repo: &Repo,
-    all: &[queue::Task],
-    id: u64,
-    reviewed: &str,
-    now: &str,
-) -> Res<Option<u64>> {
+fn landed_under(repo: &Repo, all: &[queue::Task], reviewed: &str, now: &str) -> Res<Option<u64>> {
+    for (id, base) in landed_parents(repo, all, reviewed)? {
+        if git::change_id(&repo.primary, &base, reviewed)? == now {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+/// Accepted parents of `commit` that have landed: (task id, reviewed commit) for
+/// each accepted row whose branch is gone, whose reviewed commit is below
+/// `commit` but not on the trunk, and whose every changed path the trunk holds
+/// at that commit's version.
+fn landed_parents(repo: &Repo, all: &[queue::Task], commit: &str) -> Res<Vec<(u64, String)>> {
     let p = &repo.primary;
     let trunk = &repo.trunk;
-    for t in all.iter().filter(|t| t.id != id && t.state == State::Done) {
+    let mut found = Vec::new();
+    for t in all.iter().filter(|t| t.state == State::Done) {
         let (Some(r), Some(b)) = (&t.reviewed, &t.branch) else {
             continue;
         };
@@ -605,8 +624,8 @@ fn landed_under(
             continue;
         }
         let Some(base) = git::rev(p, r) else { continue };
-        if base == reviewed
-            || !git::ok(p, &["merge-base", "--is-ancestor", &base, reviewed])
+        if base == commit
+            || !git::ok(p, &["merge-base", "--is-ancestor", &base, commit])
             || git::ok(p, &["merge-base", "--is-ancestor", &base, trunk])
         {
             continue;
@@ -628,9 +647,34 @@ fn landed_under(
         if !changed.is_empty() && !names(&base, trunk)?.is_disjoint(&changed) {
             continue;
         }
-        if git::change_id(p, &base, reviewed)? == now {
-            return Ok(Some(t.id));
-        }
+        found.push((t.id, base));
     }
-    Ok(None)
+    Ok(found)
+}
+
+/// Where `--sync` rebases `branch` from: the reviewed commit of the nearest
+/// accepted parent that has landed (`landed_parents`), so only the branch's own
+/// commits are replayed — a parent landed by `--squash`, or rebased as it
+/// shipped, is not on the trunk as the commits the branch holds, and replaying
+/// those conflicts with itself. None: rebase as plain `git rebase <trunk>` does.
+///
+/// The reviewed commit, not a remembered tip or a merge-base: it is in the
+/// committed queue rather than local config, it is the very commit the gate
+/// compares the branch's change against, and a merge-base with a branch that is
+/// gone cannot be computed. A parent that did not land is never cut away here.
+fn sync_upstream(repo: &Repo, all: &[queue::Task], tip: &str) -> Res<Option<String>> {
+    let p = &repo.primary;
+    let bases: Vec<String> = landed_parents(repo, all, tip)?
+        .into_iter()
+        .map(|(_, b)| b)
+        .collect();
+    // The nearest: no other landed parent sits above it.
+    Ok(bases
+        .iter()
+        .find(|b| {
+            !bases
+                .iter()
+                .any(|o| o != *b && git::ok(p, &["merge-base", "--is-ancestor", b.as_str(), o]))
+        })
+        .cloned())
 }

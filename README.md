@@ -169,6 +169,15 @@ touched, so a fast-forward git refuses leaves everything exactly as it was.
 parented on the trunk _sha_ the branch was just verified against — never on the trunk by name, which
 is how a `reset --soft main` after main moved once deleted a row from the queue.
 
+**`--sync` replays only the branch's own commits.** A child of a parent that landed by `--squash`,
+or was rebased as it shipped, still holds the parent's old commits, which are not on the trunk;
+replaying them onto the trunk that has their change conflicts with itself. So when an accepted
+parent has landed (by the rule above: its branch gone, the trunk holding its version of every path
+it changed), `--sync` runs `git rebase --onto <trunk> <parent's reviewed commit>`. The reviewed
+commit is the parent's last known tip that the queue itself records, and the one the gate compares
+the child against; with no such parent the rebase is a plain `git rebase <trunk>`. The gate runs
+after the rebase as before, so cutting away a parent can never land less, or more, than was reviewed.
+
 `--force` overrides the review gate only, never a safety check.
 
 ## Without the tool
@@ -415,7 +424,12 @@ set `worktrees.install` to run a real install per worktree.
 
 Stacking records the parent in git-town's own config keys, so `git town sync` and friends work on
 these branches when git-town is installed, and nothing requires it when it is not. `5w wt setup`
-configures both.
+configures both. `wt new` records the branch checked out where you run it, so stack from inside the
+parent's worktree (or name it with `--from`). A branch made from the trunk and then moved onto
+another branch's work by hand still records the trunk, and ship would take it for the bottom of its
+stack: `5w wt ls` and `5w doctor` note each branch whose commits include another unshipped branch's
+tip while its recorded parent is the trunk, with the `git config git-town-branch.<b>.parent` that
+fixes it.
 
 `5w wt prune` lists the branches safe to drop, with their worktrees: no commits past the recorded
 parent (the trunk when none is recorded), no task in the queue or archive naming the branch — nor

@@ -258,7 +258,65 @@ fn ls(repo: &Repo) -> Res<()> {
             None => println!("{:<32} {p}", "(detached)"),
         }
     }
+    for n in stack_notes(repo) {
+        println!("note: {n}");
+    }
     Ok(())
+}
+
+/// Branches stacked on another unshipped branch while recording the trunk as
+/// their parent: their commits include that branch's tip. Ship would then take
+/// the child for bottom-of-stack, and compare its review against the trunk with
+/// the parent's change in it. Nearest such branch named; errors mean no note.
+pub fn stack_notes(repo: &Repo) -> Vec<String> {
+    let p = &repo.primary;
+    let trunk = &repo.trunk;
+    let refs = |filter: &str| -> Vec<(String, String)> {
+        git::opt(
+            p,
+            &[
+                "for-each-ref",
+                "--format=%(objectname) %(refname)",
+                filter,
+                "refs/heads",
+            ],
+        )
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .filter_map(|(sha, r)| Some((r.strip_prefix("refs/heads/")?.to_string(), sha.to_string())))
+        .filter(|(b, _)| b != trunk && !repo.is_perennial(b))
+        .collect()
+    };
+    if !git::branch_exists(p, trunk) {
+        return Vec::new();
+    }
+    let unshipped = refs(&format!("--no-merged=refs/heads/{trunk}"));
+    let mut notes = Vec::new();
+    for (b, tip) in &unshipped {
+        if git::parent_of(p, b).is_some_and(|par| &par != trunk) {
+            continue;
+        }
+        let under: Vec<&(String, String)> = refs(&format!("--merged=refs/heads/{b}"))
+            .iter()
+            .filter_map(|(o, _)| unshipped.iter().find(|(u, t)| u == o && u != b && t != tip))
+            .collect();
+        // The nearest: the one furthest from the trunk.
+        let count = |sha: &str| -> usize {
+            git::opt(
+                p,
+                &["rev-list", "--count", &format!("refs/heads/{trunk}..{sha}")],
+            )
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0)
+        };
+        if let Some((o, _)) = under.iter().max_by_key(|(_, t)| count(t)) {
+            notes.push(format!(
+                "{b} holds {o}'s unshipped commits but records {trunk} as its parent — `git config git-town-branch.{b}.parent {o}`"
+            ));
+        }
+    }
+    notes
 }
 
 /// Branches safe to drop: no commits past the recorded parent (else the trunk), no
