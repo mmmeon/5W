@@ -300,43 +300,100 @@ fn submit_and_accept_record_full_shas_and_short_ones_still_read() {
     assert!(r.main.join("x.txt").exists() && r.main.join("y.txt").exists());
 }
 
+/// SHA-1 of `data`: enough to find colliding commit ids without asking git to
+/// write hundreds of thousands of objects.
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for block in msg.chunks(64) {
+        let mut w = [0u32; 80];
+        for (i, word) in block.chunks(4).enumerate() {
+            w[i] = u32::from_be_bytes(word.try_into().unwrap());
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (i, wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let t = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*wi);
+            (e, d, c, b, a) = (d, c, b.rotate_left(30), a, t);
+        }
+        for (x, y) in h.iter_mut().zip([a, b, c, d, e]) {
+            *x = x.wrapping_add(y);
+        }
+    }
+    let mut out = [0u8; 20];
+    for (i, x) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&x.to_be_bytes());
+    }
+    out
+}
+
 /// Two children of `parent` with its tree, whose shas share their first 7 hex
-/// digits: a birthday search over commits that differ only in their message.
+/// digits: a birthday search over commits that differ only in their message,
+/// hashed here, so git writes just the two that collide.
 fn commits_sharing_a_prefix(r: &Repo, parent: &str) -> (String, String) {
     use std::io::Write;
-    let marks = r.root.join("grind-marks");
-    let mut seen = std::collections::HashMap::new();
-    for batch in 0..10 {
-        let mut stream = String::new();
-        for i in 1..=40000 {
-            let m = format!("grind {batch} {i}");
-            stream.push_str(&format!(
-                "commit refs/grind\nmark :{i}\ncommitter t <t@example.com> 0 +0000\ndata {}\n{m}\nfrom {parent}\n\n",
-                m.len()
-            ));
-        }
+    assert_eq!(parent.len(), 40, "the search hashes SHA-1 commit ids");
+    let tree = r.git(&r.main, &["rev-parse", &format!("{parent}^{{tree}}")]);
+    let body = |i: u32| {
+        format!(
+            "tree {tree}\nparent {parent}\nauthor t <t@example.com> 0 +0000\n\
+             committer t <t@example.com> 0 +0000\n\ngrind {i}\n"
+        )
+    };
+    let write = |i: u32| {
         let mut c = Command::new("git");
-        c.args(["fast-import", "--quiet"])
-            .arg(format!("--export-marks={}", marks.display()))
+        c.args(["hash-object", "-t", "commit", "-w", "--stdin"])
             .current_dir(&r.main)
-            .stdin(std::process::Stdio::piped());
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
         env(&mut c, &r.root);
         let mut child = c.spawn().unwrap();
         child
             .stdin
             .take()
             .unwrap()
-            .write_all(stream.as_bytes())
+            .write_all(body(i).as_bytes())
             .unwrap();
-        assert!(child.wait().unwrap().success());
-        for line in std::fs::read_to_string(&marks).unwrap().lines() {
-            let sha = line.split(' ').nth(1).unwrap().to_string();
-            if let Some(other) = seen.insert(sha[..7].to_string(), sha.clone()) {
-                return (other, sha);
-            }
+        let o = child.wait_with_output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap().trim().to_string()
+    };
+    let mut seen = std::collections::HashMap::new();
+    // Expected near 2^14.5 tries; the odds of none among 2^21 are nil.
+    for i in 0..1u32 << 21 {
+        let content = body(i);
+        let mut object = format!("commit {}\0", content.len()).into_bytes();
+        object.extend_from_slice(content.as_bytes());
+        let id = sha1(&object);
+        // The first 7 hex digits: 28 bits.
+        let key = u32::from_be_bytes(id[..4].try_into().unwrap()) >> 4;
+        if let Some(j) = seen.insert(key, i) {
+            let (a, b) = (write(j), write(i));
+            assert_eq!(a[..7], b[..7], "hashed ids differ from git's: {a} {b}");
+            assert_ne!(a, b);
+            return (a, b);
         }
     }
-    panic!("no two of 400000 commits share 7 hex digits");
+    panic!("no two of 2^21 commits share 7 hex digits");
 }
 
 #[test]
