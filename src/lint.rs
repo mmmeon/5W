@@ -1146,6 +1146,16 @@ fn judge_row(
 
 use crate::upkeep::{HOOK_MARK, hook_path, hook_script};
 
+/// A server installing its hook over a broken trunk config: say what it will take.
+fn broken_note(repo: &Repo, trunk: &str) {
+    if let Some(e) = &repo.broken {
+        println!(
+            "hook: {} on {trunk} is broken ({e}); the hook accepts only a push to {trunk} that repairs it",
+            crate::store::CONFIG_FILE
+        );
+    }
+}
+
 pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
     let kind = args.get(1).map(|s| s.as_str()).unwrap_or("pre-commit");
     if !matches!(kind, "pre-commit" | "pre-receive") {
@@ -1167,6 +1177,7 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
                     if std::fs::read_to_string(&path).ok().as_deref()
                         == Some(hook_script(repo, kind).as_str()) =>
                 {
+                    broken_note(repo, &repo.trunk);
                     println!("hook: already installed at {}", path.display());
                     return Ok(());
                 }
@@ -1184,6 +1195,7 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
             std::fs::write(&path, script).map_err(|e| e.to_string())?;
             // The server's trunk, pinned: a guess that finds no such branch judges no
             // push as landing on it.
+            let mut trunk = repo.trunk.clone();
             if kind == "pre-receive"
                 && repo.bare
                 && git::opt(&repo.primary, &["config", "5w.trunk"]).is_none()
@@ -1191,17 +1203,14 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
             {
                 git::git(&repo.primary, &["config", "5w.trunk", &b])?;
                 println!("hook: 5w.trunk = {b} (the trunk pushes are judged against; from HEAD)");
+                trunk = b;
             }
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                 .map_err(|e| e.to_string())?;
-            if let Some(e) = &repo.broken {
-                println!(
-                    "hook: {} on {t} is broken ({e}); the hook accepts only a push to {t} that repairs it",
-                    crate::store::CONFIG_FILE,
-                    t = repo.trunk
-                );
-            }
+            // Named by the trunk the hook judges: the pin just written wins over
+            // what the broken config says.
+            broken_note(repo, &trunk);
             println!("hook: installed {}", path.display());
             Ok(())
         }

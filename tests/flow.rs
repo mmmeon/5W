@@ -5748,7 +5748,13 @@ fn a_server_whose_trunk_config_broke_takes_only_the_push_that_repairs_it() {
 
 #[test]
 fn a_server_cloned_after_the_trunk_config_broke_installs_the_hook_that_takes_the_repair() {
-    for (name, broken_key) in [("installs-key", true), ("installs-syntax", false)] {
+    // An unknown key, a syntax error, and a broken config naming a trunk HEAD does not:
+    // the hook judges the trunk it pins, so the note names that one.
+    for (name, how) in [
+        ("installs-key", 0),
+        ("installs-syntax", 1),
+        ("installs-other-trunk", 2),
+    ] {
         let r = Repo::new(name);
         let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
         let commit = |file: &str, text: &str, msg: &str| {
@@ -5756,11 +5762,14 @@ fn a_server_cloned_after_the_trunk_config_broke_installs_the_hook_that_takes_the
             r.git(&r.main, &["add", file]);
             r.git(&r.main, &["commit", "-qm", msg]);
         };
-        let broken = if broken_key {
-            cfg.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n")
-        } else {
-            cfg.replace("title_max = 120", "title_max = = 1")
+        let broken = match how {
+            0 => cfg.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n"),
+            1 => cfg.replace("title_max = 120", "title_max = = 1"),
+            _ => cfg
+                .replace("trunk = \"main\"", "trunk = \"develop\"")
+                .replace("[sections]\n", "[sections]\nbogus = 1\n"),
         };
+        assert_ne!(broken, cfg);
         commit(".5w.toml", &broken, "break the config");
         let server = r.root.join("server.git");
         r.git(
@@ -5786,6 +5795,12 @@ fn a_server_cloned_after_the_trunk_config_broke_installs_the_hook_that_takes_the
             "{out}"
         );
         assert_eq!(r.git(&server, &["config", "5w.trunk"]), "main");
+        let again = r.ok(&server, &["hook", "install", "pre-receive"]);
+        assert!(
+            again.contains("accepts only a push to main that repairs it")
+                && again.contains("already installed"),
+            "{again}"
+        );
         r.git(
             &r.main,
             &["remote", "add", "origin", server.to_str().unwrap()],
