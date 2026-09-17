@@ -268,49 +268,120 @@ fn ls(repo: &Repo) -> Res<()> {
 /// their parent: their commits include that branch's tip. Ship would then take
 /// the child for bottom-of-stack, and compare its review against the trunk with
 /// the parent's change in it. Nearest such branch named; errors mean no note.
+///
+/// Both sides must be stack branches (a recorded parent), so a backup made with
+/// `git branch` is never named, nor flagged; a branch recorded anywhere below the
+/// flagged one is its child, not its parent. Three git processes whatever the
+/// number of branches: refs, config, and one walk of every unshipped commit.
 pub fn stack_notes(repo: &Repo) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
     let p = &repo.primary;
     let trunk = &repo.trunk;
-    let refs = |filter: &str| -> Vec<(String, String)> {
-        git::opt(
-            p,
-            &[
-                "for-each-ref",
-                "--format=%(objectname) %(refname)",
-                filter,
-                "refs/heads",
-            ],
-        )
-        .unwrap_or_default()
+    let Some(refs) = git::opt(
+        p,
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/heads",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    let tips: HashMap<&str, &str> = refs
         .lines()
         .filter_map(|l| l.split_once(' '))
-        .filter_map(|(sha, r)| Some((r.strip_prefix("refs/heads/")?.to_string(), sha.to_string())))
-        .filter(|(b, _)| b != trunk && !repo.is_perennial(b))
-        .collect()
-    };
-    if !git::branch_exists(p, trunk) {
+        .filter_map(|(sha, r)| Some((r.strip_prefix("refs/heads/")?, sha)))
+        .collect();
+    if !tips.contains_key(trunk.as_str()) {
         return Vec::new();
     }
-    let unshipped = refs(&format!("--no-merged=refs/heads/{trunk}"));
+    let config = git::opt(
+        p,
+        &[
+            "config",
+            "--get-regexp",
+            r"^git-town(-branch\..*\.(parent|branchtype)|\.perennial-branches)$",
+        ],
+    )
+    .unwrap_or_default();
+    let mut parent: HashMap<&str, &str> = HashMap::new();
+    let mut perennial: HashSet<&str> = repo.cfg.perennial.iter().map(|s| s.as_str()).collect();
+    for (key, val) in config.lines().filter_map(|l| l.split_once(' ')) {
+        if key == "git-town.perennial-branches" {
+            perennial.extend(val.split_whitespace());
+        } else if let Some(b) = key.strip_prefix("git-town-branch.") {
+            if let Some(b) = b.strip_suffix(".parent") {
+                parent.insert(b, val);
+            } else if let Some(b) = b.strip_suffix(".branchtype")
+                && val == "perennial"
+            {
+                perennial.insert(b);
+            }
+        }
+    }
+    // Every commit on a branch and not on the trunk, with its parents.
+    let walk = git::opt(
+        p,
+        &[
+            "rev-list",
+            "--parents",
+            "--branches",
+            "--not",
+            &format!("refs/heads/{trunk}"),
+        ],
+    )
+    .unwrap_or_default();
+    let graph: HashMap<&str, Vec<&str>> = walk
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split(' ');
+            Some((it.next()?, it.collect()))
+        })
+        .collect();
+    let reach = |tip: &str| -> HashSet<&str> {
+        let mut seen = HashSet::new();
+        let mut todo = vec![tip];
+        while let Some(c) = todo.pop() {
+            if let Some((c, ps)) = graph.get_key_value(c)
+                && seen.insert(*c)
+            {
+                todo.extend(ps);
+            }
+        }
+        seen
+    };
+    // Is `b` recorded anywhere up `o`'s chain of parents?
+    let below = |o: &str, b: &str| {
+        let mut cur = o;
+        for _ in 0..=parent.len() {
+            match parent.get(cur) {
+                Some(&up) if up == b => return true,
+                Some(&up) => cur = up,
+                None => break,
+            }
+        }
+        false
+    };
+    let stacked = |b: &str| b != trunk && !perennial.contains(b) && parent.contains_key(b);
+    let mut names: Vec<&str> = tips.keys().copied().collect();
+    names.sort();
+    let mut at: HashMap<&str, Vec<&str>> = HashMap::new();
+    for &b in &names {
+        at.entry(tips[b]).or_default().push(b);
+    }
     let mut notes = Vec::new();
-    for (b, tip) in &unshipped {
-        if git::parent_of(p, b).is_some_and(|par| &par != trunk) {
+    for &b in &names {
+        let tip = tips[b];
+        if !stacked(b) || parent[b] != trunk || !graph.contains_key(tip) {
             continue;
         }
-        let under: Vec<&(String, String)> = refs(&format!("--merged=refs/heads/{b}"))
-            .iter()
-            .filter_map(|(o, _)| unshipped.iter().find(|(u, t)| u == o && u != b && t != tip))
-            .collect();
-        // The nearest: the one furthest from the trunk.
-        let count = |sha: &str| -> usize {
-            git::opt(
-                p,
-                &["rev-list", "--count", &format!("refs/heads/{trunk}..{sha}")],
-            )
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(0)
-        };
-        if let Some((o, _)) = under.iter().max_by_key(|(_, t)| count(t)) {
+        let nearest = reach(tip)
+            .into_iter()
+            .filter(|c| *c != tip)
+            .flat_map(|c| at.get(c).into_iter().flatten().copied())
+            .filter(|&o| o != b && stacked(o) && !below(o, b))
+            .max_by_key(|&o| (reach(tips[o]).len(), std::cmp::Reverse(o)));
+        if let Some(o) = nearest {
             notes.push(format!(
                 "{b} holds {o}'s unshipped commits but records {trunk} as its parent — `git config git-town-branch.{b}.parent {o}`"
             ));

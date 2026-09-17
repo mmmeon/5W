@@ -429,7 +429,8 @@ parent's worktree (or name it with `--from`). A branch made from the trunk and t
 another branch's work by hand still records the trunk, and ship would take it for the bottom of its
 stack: `5w wt ls` and `5w doctor` note each branch whose commits include another unshipped branch's
 tip while its recorded parent is the trunk, with the `git config git-town-branch.<b>.parent` that
-fixes it.
+fixes it. Only branches with a recorded parent count on either side, so a backup made with
+`git branch` is never named, and a branch recorded as stacked on the flagged one is its child.
 
 `5w wt prune` lists the branches safe to drop, with their worktrees: no commits past the recorded
 parent (the trunk when none is recorded), no task in the queue or archive naming the branch — nor

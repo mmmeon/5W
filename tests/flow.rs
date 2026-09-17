@@ -1011,6 +1011,25 @@ fn a_stack_recorded_on_the_trunk_is_flagged_by_doctor_and_wt_ls() {
 }
 
 #[test]
+fn a_stack_note_never_names_a_backup_or_a_child() {
+    let r = Repo::new("misstackfp");
+    r.ok(&r.main, &["wt", "new", "s/b"]);
+    let b = r.wt("s/b");
+    r.commit_in(&b, "b", "one\n");
+    r.commit_in(&b, "b", "two\n");
+    // A backup made with git: s/b holds it, and it is no parent.
+    r.git(&r.main, &["branch", "backup", "s/b~1"]);
+    let out = r.ok(&r.main, &["doctor"]);
+    assert!(!out.contains("holds"), "{out}");
+    // A child made on s/b, which then moves on: s/b holds the child's tip.
+    r.ok(&b, &["wt", "new", "s/c"]);
+    r.commit_in(&b, "b", "three\n");
+    let out = r.ok(&r.main, &["doctor"]);
+    assert!(!out.contains("holds"), "{out}");
+    assert!(!r.ok(&r.main, &["wt", "ls"]).contains("note:"));
+}
+
+#[test]
 fn sync_after_a_squashed_parent_replays_only_the_childs_commits() {
     let r = Repo::new("squashstack");
     r.ok(&r.main, &["add", "bottom"]);
