@@ -21,7 +21,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4
 - [ ] #16 Move git calls behind named operations in src/git.rs: no raw git argv outside it, output unchanged @vcs !3
   About 50 call sites in 10 modules pass raw git arguments (ship 12, wt 11, lint 5, queue 4, store 3). Move each into a named function in src/git.rs. No behaviour change: tests/flow.rs and the #14 bench baseline prove it. Groundwork for the admin commands and a version-control shim.
-- [ ] #20 Several queue edits in one signed commit: one signature per supervisor round @queue !2
+- [~] #20 Several queue edits in one signed commit: one signature per supervisor round @queue !2 branch:queue/task-20 submitted:edff9ccadbcb
   Each queue edit is its own signed commit; with a hardware key that is a touch per edit. Design how a batch (accepts, adds) commits once while keeping the private-index, compare-and-swap update-ref guarantee and one-line commit subjects that still name each edit.
 - [ ] #21 Decide on a version-control shim over the git operations from #16 @vcs !4 >owner needs:#16
   Whether to put an interface over #16's named operations (trunk tip, queue commit + CAS ref update, worktree add/rm/ls, rebase onto, diff fingerprint, parent record, dirty, ref validation, signing), which system is second (jj the obvious candidate), and whether git-town's config keys stay the parent record.
