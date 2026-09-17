@@ -305,6 +305,7 @@ fn review_json_is_one_object_per_submitted_task() {
             && j.contains("\"moved\":1,")
             && j.contains("\"diff\":\"1 file changed, 1 insertion(+)\"")
             && j.contains("\"behind\":1}")
+            && j.contains("\"unmet\":[],\"rework\":null,\"tip\"")
             && !j.contains("\"lane\"")
             && !j.contains("\"body\""),
         "{j}"
@@ -970,12 +971,12 @@ fn compact_json_ids_limit_and_next() {
     assert!(hint.ends_with("→ 5w delegate 1\n"), "{hint}");
     let none = r.ok(&r.main, &["ready", "area:nowhere"]);
     assert!(!none.contains('→'), "{none}");
-    // A list's JSON row carries what picks a task; --full adds the rest.
+    // A list's JSON row carries what the text row shows; --full adds the rest.
     let json = r.ok(&r.main, &["ready", "--json"]);
     assert_eq!(
         json.lines().next(),
         Some(
-            "{\"id\":2,\"state\":\"open\",\"level\":1,\"area\":null,\"title\":\"easy one\",\"branch\":null}"
+            "{\"id\":2,\"state\":\"open\",\"level\":1,\"area\":null,\"title\":\"easy one\",\"branch\":null,\"unmet\":[],\"rework\":null}"
         ),
         "{json}"
     );
@@ -989,6 +990,12 @@ fn compact_json_ids_limit_and_next() {
             && full.contains("\"kind\":")
             && full.contains("\"needs\":[],\"unmet\":[],\"rework\":null}"),
         "{full}"
+    );
+    // A blocked row names what blocks it.
+    r.ok(&r.main, &["add", "waits", "needs:#1"]);
+    assert_eq!(
+        r.ok(&r.main, &["blocked", "--json"]),
+        "{\"id\":4,\"state\":\"open\",\"level\":null,\"area\":null,\"title\":\"waits\",\"branch\":null,\"unmet\":[1],\"rework\":null}\n"
     );
     // next and show print one task: always every field, body included.
     assert!(

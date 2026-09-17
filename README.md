@@ -239,10 +239,12 @@ The queue is read by agents, so every read is priced in tokens.
   line ends with the next step (`→ 5w delegate 14`) and `review` closes with `→ 5w accept 14`, as
   `next` does; `--json` and `--ids` carry no hint.
 - **`--json`**, **`--ids`**, **`--limit N`** on every list; **`5w next [filters]`** returns just the
-  first ready task with its body. A list's `--json` prints one object per line with what picks a
-  task — `id`, `state`, `level`, `area`, `title`, `branch`; `--full` adds `lane`, `kind`, `needs`,
-  `unmet` and `rework`. `show --json` and `next --json` print one task, so always every field, with
-  `body`, `via`, `submitted`, `reviewed` and `archived`. `review --json` adds each submitted task's
+  first ready task with its body. A list's `--json` prints one object per line with what its text
+  row shows — `id`, `state`, `level`, `area`, `title`, `branch`, `unmet` (what blocks it) and
+  `rework` (null when absent); `--full` adds `lane`, `kind` and `needs`. Changed after 0.1.3: the
+  default row carried every field, so a reader of `lane`, `kind` or `needs` now passes `--full`.
+  `show --json` and `next --json` print one task, so always every field, with `body`, `via`,
+  `submitted`, `reviewed` and `archived`. `review --json` adds each submitted task's
   `tip`, `moved` (commits since submit), `diff` (shortstat against the trunk) and `behind` to the
   short row, and to every field with `--full`.
 - **A flag a command does not take is refused** (`unknown flag --jsn for ready (5w ready --help)`),
@@ -273,7 +275,7 @@ tokens and wall time:
 ```
 tasks  case                          bytes  ~tokens  exact     ms
  1000  ready                         40884    10642      -   10.5
- 1000  ready --json                  74111    20625      -   10.9
+ 1000  ready --json                  89611    24897      -   10.9
  1000  review                        16834     5078      -  384.4
  1000  delegate <id>                   488      143      -   11.2
  1000  refuse: done <id> (no flag)     118       40      -   11.3

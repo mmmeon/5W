@@ -50,7 +50,8 @@ the 12-task queue, dropping to 4 fields cuts a JSON array of these rows from 783
 (cl100k_base) — see the TOON section for the full table. This is a same-day change with the tools
 5w already has (`--full` already exists); it does not need a new format. **Done (#22):** list
 rows (`ready`, `ls`, `blocked`, `all`, and `review`, which keeps its `tip`/`moved`/`diff`/`behind`)
-carry the six fields; `--full` restores the rest. `show` and `next` print one task and stay full.
+carry those six plus `unmet` and `rework`, what the text row shows as "blocked by" and "sent back";
+`--full` restores `lane`, `kind` and `needs`. `show` and `next` print one task and stay full.
 
 ### 3. Content truncation (truncate with a size hint, e.g. `--full` to see the rest)
 

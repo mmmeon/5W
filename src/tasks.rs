@@ -317,26 +317,11 @@ impl<'a> Q<'a> {
         println!("{out}");
     }
 
-    /// One task as a JSON object. A list row (`full` false) carries what picks a
-    /// task — id, state, level, area, title, branch; `full` adds lane, kind,
-    /// needs, unmet and rework, and `body` the body and the review fields.
+    /// One task as a JSON object. A list row (`full` false) carries what the
+    /// text row shows — id, state, level, area, title, branch, unmet, rework;
+    /// `full` adds lane, kind and needs, and `body` the body and the review fields.
     fn json(&self, t: &Task, full: bool, body: bool) -> String {
         let opt = |v: &Option<String>| v.as_ref().map(|s| js(s)).unwrap_or("null".into());
-        let state = match t.state {
-            State::Open => "open",
-            State::Review => "review",
-            State::Done => "done",
-        };
-        let level = t.level.map(|l| l.to_string()).unwrap_or("null".into());
-        if !full {
-            return format!(
-                "{{\"id\":{},\"state\":\"{state}\",\"level\":{level},\"area\":{},\"title\":{},\"branch\":{}}}",
-                t.id,
-                opt(&t.area),
-                js(&t.text),
-                opt(&t.branch),
-            );
-        }
         let ids = |v: &[u64]| {
             format!(
                 "[{}]",
@@ -346,6 +331,23 @@ impl<'a> Q<'a> {
                     .join(",")
             )
         };
+        let state = match t.state {
+            State::Open => "open",
+            State::Review => "review",
+            State::Done => "done",
+        };
+        let level = t.level.map(|l| l.to_string()).unwrap_or("null".into());
+        if !full {
+            return format!(
+                "{{\"id\":{},\"state\":\"{state}\",\"level\":{level},\"area\":{},\"title\":{},\"branch\":{},\"unmet\":{},\"rework\":{}}}",
+                t.id,
+                opt(&t.area),
+                js(&t.text),
+                opt(&t.branch),
+                ids(&self.unmet(t)),
+                opt(&t.rework),
+            );
+        }
         let mut out = format!(
             "{{\"id\":{},\"state\":\"{state}\",\"level\":{level},\"area\":{},\"lane\":{},\"kind\":{},\"title\":{},\"branch\":{},\"needs\":{},\"unmet\":{},\"rework\":{}",
             t.id,
