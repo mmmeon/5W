@@ -52,6 +52,37 @@ pub fn head_branch(dir: &Path) -> Option<String> {
         .map(String::from)
 }
 
+/// The trunk a committed `.5w.toml` names, for a checkout with no pin and no
+/// file: the branch `origin/HEAD` names first, then `main` and `master`, local
+/// then remote. Counts only a `trunk` naming a branch that exists.
+fn committed_trunk(dir: &Path) -> Option<String> {
+    let exists = |b: &str| {
+        [
+            format!("refs/heads/{b}"),
+            format!("refs/remotes/origin/{b}"),
+        ]
+        .iter()
+        .find(|r| git::rev(dir, r).is_some())
+        .cloned()
+    };
+    let head = git::opt(dir, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])
+        .and_then(|r| r.strip_prefix("refs/remotes/origin/").map(String::from))
+        .filter(|b| !b.is_empty())
+        .and_then(|b| exists(&b));
+    let refs = head.into_iter().chain(
+        [
+            "refs/heads/main",
+            "refs/heads/master",
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/master",
+        ]
+        .map(String::from),
+    );
+    refs.filter_map(|r| git::opt(dir, &["show", &format!("{r}:{CONFIG_FILE}")]))
+        .filter_map(|text| Config::from_toml(&text).ok()?.trunk)
+        .find(|t| exists(t).is_some())
+}
+
 /// The newest `.5w.toml` that parses on `commit`'s first-parent line, from the
 /// commit itself back: "" where that line deleted it. None: no such commit.
 pub fn last_readable_config(dir: &Path, commit: &str) -> Option<String> {
@@ -131,7 +162,7 @@ impl Repo {
                     .filter(|s| !s.is_empty())
                     .map(|t| (t.clone(), format!("5w.trunk = {t}")))
             });
-        let guess = pin
+        let mut guess = pin
             .as_ref()
             .map(|(t, _)| t.clone())
             // A server has no checkout to ask; its HEAD names the default branch.
@@ -140,28 +171,37 @@ impl Repo {
                 git::opt(&primary, &["config", "git-town.main-branch"]).filter(|s| !s.is_empty())
             })
             .unwrap_or_else(|| "main".into());
-        let from_checkout = git::worktree_of(&primary, &guess)
-            .ok()
-            .flatten()
-            .and_then(|w| fs::read_to_string(w.join(CONFIG_FILE)).ok());
-        let src = from_checkout
-            .or_else(|| {
-                git::opt(
-                    &primary,
-                    &["show", &format!("refs/heads/{guess}:{CONFIG_FILE}")],
-                )
-            })
-            // A CI checkout often has the trunk only as a remote-tracking ref.
-            .or_else(|| {
-                git::opt(
-                    &primary,
-                    &[
-                        "show",
-                        &format!("refs/remotes/origin/{guess}:{CONFIG_FILE}"),
-                    ],
-                )
-            })
-            .or_else(|| fs::read_to_string(primary.join(CONFIG_FILE)).ok());
+        let on_trunk = |t: &str| {
+            git::worktree_of(&primary, t)
+                .ok()
+                .flatten()
+                .and_then(|w| fs::read_to_string(w.join(CONFIG_FILE)).ok())
+                .or_else(|| {
+                    git::opt(
+                        &primary,
+                        &["show", &format!("refs/heads/{t}:{CONFIG_FILE}")],
+                    )
+                })
+                // A CI checkout often has the trunk only as a remote-tracking ref.
+                .or_else(|| {
+                    git::opt(
+                        &primary,
+                        &["show", &format!("refs/remotes/origin/{t}:{CONFIG_FILE}")],
+                    )
+                })
+        };
+        let mut src =
+            on_trunk(&guess).or_else(|| fs::read_to_string(primary.join(CONFIG_FILE)).ok());
+        // `5w.trunk` is local: a clone has no pin, and its primary checkout may
+        // be on a branch without the file. The committed config names the trunk.
+        if src.is_none()
+            && !bare
+            && pin.is_none()
+            && let Some(t) = committed_trunk(&primary)
+        {
+            src = on_trunk(&t);
+            guess = t;
+        }
         let mut broken = None;
         let cfg = match src {
             Some(s) => match Config::from_toml(&s) {

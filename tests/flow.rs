@@ -1076,6 +1076,61 @@ fn init_takes_the_checked_out_branch_as_the_trunk() {
 }
 
 #[test]
+fn a_clone_finds_a_non_main_trunk_from_committed_config() {
+    // `5w.trunk` is local: a clone has no pin, and its primary checkout is on a
+    // branch without .5w.toml. The committed config names the trunk.
+    let origin = Repo::uninit("clone-trunk", "master");
+    origin.ok(&origin.main, &["init"]);
+    origin.ok(&origin.main, &["add", "x"]);
+    let first = origin.git(&origin.main, &["rev-list", "--max-parents=0", "HEAD"]);
+    let clone = |name: &str| {
+        let c = origin.root.join(name);
+        origin.git(
+            &origin.root,
+            &[
+                "clone",
+                "-q",
+                origin.main.to_str().unwrap(),
+                c.to_str().unwrap(),
+            ],
+        );
+        origin.git(&c, &["switch", "-q", "-c", "old", &first]);
+        assert!(!c.join(".5w.toml").exists());
+        c
+    };
+    // Through origin/HEAD.
+    let c = clone("via-head");
+    assert_eq!(
+        origin.git(&c, &["config", "--default", "-", "5w.trunk"]),
+        "-"
+    );
+    assert!(origin.ok(&c, &["ready"]).contains("x"));
+    origin.ok(&c, &["add", "y"]);
+    assert!(origin.git(&c, &["show", "master:TASKS.md"]).contains("y"));
+    assert!(origin.git(&c, &["branch", "--list", "main"]).is_empty());
+    // Without origin/HEAD: the local master carries the config.
+    let c = clone("no-head");
+    origin.git(&c, &["symbolic-ref", "-d", "refs/remotes/origin/HEAD"]);
+    assert!(origin.ok(&c, &["ready"]).contains("x"));
+    origin.ok(&c, &["add", "z"]);
+    assert!(origin.git(&c, &["show", "master:TASKS.md"]).contains("z"));
+
+    // A main trunk is unchanged.
+    let m = Repo::uninit("clone-main", "main");
+    m.ok(&m.main, &["init"]);
+    m.ok(&m.main, &["add", "x"]);
+    let first = m.git(&m.main, &["rev-list", "--max-parents=0", "HEAD"]);
+    let c = m.root.join("clone");
+    m.git(
+        &m.root,
+        &["clone", "-q", m.main.to_str().unwrap(), c.to_str().unwrap()],
+    );
+    m.git(&c, &["switch", "-q", "-c", "old", &first]);
+    m.ok(&c, &["add", "y"]);
+    assert!(m.git(&c, &["show", "main:TASKS.md"]).contains("y"));
+}
+
+#[test]
 fn init_off_a_branch_takes_origin_head_and_refuses_a_feature_branch() {
     let origin = Repo::uninit("init-origin", "master");
     let clone = origin.root.join("clone");

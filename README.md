@@ -24,8 +24,10 @@ names (then `git-town.main-branch`, then `main`) when it is detached. `origin/HE
 `origin/HEAD` stale). On a branch they contradict it refuses, naming `git switch <trunk>` — the queue
 does not live on a feature branch — unless that trunk is checked out in another worktree, where it
 commits. A trunk other than `main` is also recorded as `git config 5w.trunk <trunk>` (init prints
-it): commands find `.5w.toml` on `main` or in the primary checkout, so without it they would lose the
-trunk once the primary checkout is on a branch without the file.
+it): commands find `.5w.toml` on `main` or in the primary checkout. The pin is local, so where
+neither has the file (a clone whose primary checkout is on another branch) they read `trunk` from the
+`.5w.toml` committed on the branch `origin/HEAD` names, then on `main` or `master`, local then
+`origin/`, counting only a `trunk` that names an existing branch.
 
 To uninstall: `cargo uninstall fivew` (the package is `fivew`, the binary `5w`), or delete the release
 binary from wherever you put it. A repository keeps its committed `.5w.toml`, `TASKS.md`,
