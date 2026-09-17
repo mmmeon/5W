@@ -255,6 +255,8 @@ The queue is read by agents, so every read is priced in tokens.
   `TERM=dumb`, and with `--no-color`. That flag is global — any command, any position — except where
   it is text: a `--body`, `--expected` or `-m` value, `reject`'s reason and `report`'s text once
   they begin, and anything after `--`.
+  A refusal (`5w: <error>`) is red by the same rules, judged on stderr: coloured only when stderr is
+  a terminal, byte-identical otherwise.
 - **The brief is the worker's only document.** `delegate` prints the task, the rework note, the
   steps and the rules, and names the sections the text cites (`refs: client/FINDINGS.md #779`) so the
   worker reads those rather than whole files. `review` prints its checklist once, on

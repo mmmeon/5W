@@ -10,14 +10,22 @@ macro_rules! bail {
 /// Set by `--no-color`, which main strips from the arguments before dispatch.
 pub static NO_COLOR_FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// ANSI styling, off when stdout is not a terminal, NO_COLOR is set, TERM is
-/// `dumb` or `--no-color` was given.
+/// ANSI styling, off when the stream is not a terminal, NO_COLOR is set, TERM
+/// is `dumb` or `--no-color` was given.
 pub struct Sty(pub bool);
 
 impl Sty {
+    /// Styling for stdout.
     pub fn new() -> Self {
+        Self::on(std::io::stdout().is_terminal())
+    }
+    /// Styling for stderr, where refusals go: its own terminal test, not stdout's.
+    pub fn stderr() -> Self {
+        Self::on(std::io::stderr().is_terminal())
+    }
+    fn on(tty: bool) -> Self {
         Sty(colour(
-            std::io::stdout().is_terminal(),
+            tty,
             std::env::var_os("NO_COLOR").is_some(),
             std::env::var_os("TERM").as_deref(),
             NO_COLOR_FLAG.load(std::sync::atomic::Ordering::Relaxed),
@@ -38,6 +46,10 @@ impl Sty {
     }
     pub fn red(&self, s: &str) -> String {
         self.wrap("31", s)
+    }
+    /// The one-line refusal, `5w: <error>`, red when styled.
+    pub fn refusal(&self, e: &str) -> String {
+        self.red(&format!("5w: {e}"))
     }
 }
 
@@ -70,7 +82,7 @@ pub fn truncate(s: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::colour;
+    use super::{Sty, colour};
     use std::ffi::OsStr;
 
     #[test]
@@ -82,5 +94,24 @@ mod tests {
         assert!(!colour(true, true, xterm, false));
         assert!(!colour(true, false, Some(OsStr::new("dumb")), false));
         assert!(!colour(true, false, xterm, true));
+    }
+
+    #[test]
+    fn refusal_is_red_only_on_a_colour_terminal_and_otherwise_unchanged() {
+        let xterm = Some(OsStr::new("xterm-256color"));
+        let line = |tty, env, term, flag| Sty(colour(tty, env, term, flag)).refusal("no task #9");
+        assert_eq!(
+            line(true, false, xterm, false),
+            "\x1b[31m5w: no task #9\x1b[0m"
+        );
+        for off in [
+            line(false, false, xterm, false),
+            line(true, true, xterm, false),
+            line(true, false, Some(OsStr::new("dumb")), false),
+            line(true, false, xterm, true),
+            line(false, true, Some(OsStr::new("dumb")), true),
+        ] {
+            assert_eq!(off, "5w: no task #9");
+        }
     }
 }

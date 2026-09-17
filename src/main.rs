@@ -61,7 +61,7 @@ fn main() {
         if !reporting {
             report::record_failure(&args, &e);
         }
-        eprintln!("5w: {e}");
+        eprintln!("{}", util::Sty::stderr().refusal(&e));
         std::process::exit(1);
     }
 }
