@@ -524,6 +524,35 @@ fn a_flag_wt_report_init_or_lint_does_not_take_is_refused() {
 }
 
 #[test]
+fn lint_refuses_a_dash_flag_or_a_second_argument_in_one_line() {
+    let r = Repo::new("lint-args");
+    r.ok(&r.main, &["add", "x"]);
+    let flag = "5w: unknown flag -x for lint (5w lint --help)\n";
+    let usage = "5w: lint takes one of --staged | <rev> | <from>..<to> (5w lint --help)\n";
+    for (args, want) in [
+        (&["lint", "-x"][..], flag),
+        (&["lint", "HEAD", "-x"], flag),
+        (&["lint", "HEAD", "--staged"], usage),
+        (&["lint", "--staged", "HEAD"], usage),
+        (&["lint", "HEAD", "extra"], usage),
+        (&["lint", "HEAD~1..HEAD", "HEAD"], usage),
+    ] {
+        assert_eq!(r.fails(&r.main, args), want, "{args:?}");
+    }
+    for args in [
+        &["lint"][..],
+        &["lint", "--staged"],
+        &["lint", "HEAD"],
+        &["lint", "HEAD~1..HEAD"],
+        &["lint", "help"],
+        &["lint", "--help"],
+        &["lint", "-h"],
+    ] {
+        r.ok(&r.main, args);
+    }
+}
+
+#[test]
 fn no_color_is_global_but_never_eats_text() {
     let r = Repo::new("nocolor");
     // Before, after or among a command's arguments, on every tool.

@@ -65,11 +65,14 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         println!("{USAGE}");
         return Ok(());
     }
-    if let Some(f) = args
-        .iter()
-        .find(|a| a.starts_with("--") && *a != "--staged")
-    {
+    if let Some(f) = args.iter().find(|a| a.starts_with('-') && *a != "--staged") {
         return Err(crate::tasks::unknown_flag(repo, "lint", f));
+    }
+    if args.len() > 1 {
+        return Err(format!(
+            "lint takes one of --staged | <rev> | <from>..<to> ({} lint --help)",
+            repo.cfg.cmd_tasks
+        ));
     }
     let arg = args.first().map(|s| s.as_str()).unwrap_or("--staged");
     let mut problems = Vec::new();

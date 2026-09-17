@@ -138,7 +138,8 @@ unscoped output" — and 5w currently does the silent-nothing thing. Contrast wi
 does refuse unknown fields (`validate_field()` bails with `not a field: ...`). **Adopt**: make
 `opts()` reject flags a given command doesn't understand (exit 1 is enough; a dedicated exit 2 is
 optional polish, not the fix that matters). **Done (#23, #43):** the queue commands, then `wt`,
-`report`, `init` and `lint`, refuse a flag they do not take.
+`report`, `init` and `lint`, refuse a flag they do not take; `lint` also refuses a single-dash
+token and a second argument (#45).
 
 ### 7. Ambient context (install into session hooks so state is visible before the agent acts)
 
@@ -496,11 +497,10 @@ wraps another interactive program (no SSH/tmux-style embedding). The one item th
 
 ### Subcommands
 
-**Consistent across subcommands — mostly met, one small inconsistency found.** `--json`/`--force`/
-`--full` behave the same wherever they appear, parsed by the shared `opts()` scanner. Exception:
-`wt rm <branch> [--force]` checks `rest.get(1) == "--force"` positionally (`src/wt.rs` line 55)
-rather than scanning args the way `tasks::opts()` does, so `5w wt rm --force <branch>` doesn't work
-the way `5w ready --limit 3 --json` (any order) does. Minor; **adopt**, low priority.
+**Consistent across subcommands — met.** `--json`/`--force`/
+`--full` behave the same wherever they appear, parsed by the shared `opts()` scanner. The one
+exception found, `wt rm <branch> [--force]` checking `--force` positionally so that
+`5w wt rm --force <branch>` did not work, is fixed: **Done (#30)**, `--force` goes in any position.
 
 **Noun-verb consistency across subcommand groups — already met.** `wt <new|add|ls|path|rm|link|
 install|setup>` and `report <list|show|send|rm>` are both noun-first with their own verb sets,
