@@ -1752,30 +1752,18 @@ pub const ARCHIVE_HEADER: &str = "# Archive\n\nClosed tasks moved out of the que
 /// the checkout moves there, and with none closed on the trunk nothing is committed.
 fn archive(repo: &Repo) -> Res<()> {
     let q = Q::load(repo)?;
-    if !q.tasks.iter().any(|t| t.state == State::Done) {
-        // Rows closed on the trunk but open in the checkout were reopened by
-        // hand: archiving them would move rows the checkout says are open.
-        let closed = queue::parse(&repo.committed()?.unwrap_or_default())
+    let closed = |t: &Task| t.state == State::Done;
+    if !q.tasks.iter().any(closed)
+        && !queue::parse(&repo.committed()?.unwrap_or_default())
             .iter()
-            .filter(|t| t.state == State::Done)
-            .count();
-        if closed > 0 {
-            bail!(
-                "{} has {closed} closed row{} the checkout shows open; `{} reopen <id>` to reopen on {}, or `git checkout {} -- {}` to take its copy",
-                repo.trunk,
-                if closed == 1 { "" } else { "s" },
-                repo.cfg.cmd_tasks,
-                repo.trunk,
-                repo.trunk,
-                repo.cfg.file
-            );
-        }
+            .any(closed)
+    {
         println!("  nothing closed to archive");
         return Ok(());
     }
     // Counted where the op first runs, on the committed copy under the lock:
     // a row closed on the trunk after any earlier read is still counted.
-    let moved = std::cell::Cell::new(None);
+    let moved: std::cell::RefCell<Option<Vec<u64>>> = std::cell::RefCell::new(None);
     let done = repo.cfg.done_section.clone();
     store::transact(
         repo,
@@ -1783,16 +1771,21 @@ fn archive(repo: &Repo) -> Res<()> {
             format!(
                 "{}: archive {} closed tasks",
                 repo.cfg.commit_prefix,
-                moved.get().unwrap_or(0)
+                moved.borrow().as_ref().map_or(0, Vec::len)
             )
         },
         &[],
         |_| Ok(()),
         |f, _| {
-            let blocks = f.queue.take(|t| t.state == State::Done);
-            if moved.get().is_none() {
-                moved.set(Some(blocks.len()));
+            if moved.borrow().is_none() {
+                let ids = queue::parse(&f.queue.text())
+                    .iter()
+                    .filter(|t| closed(t))
+                    .map(|t| t.id)
+                    .collect();
+                *moved.borrow_mut() = Some(ids);
             }
+            let blocks = f.queue.take(|t| t.state == State::Done);
             if !blocks.is_empty() && f.archive.lines.iter().all(|l| l.trim().is_empty()) {
                 f.archive = queue::Doc::new(ARCHIVE_HEADER);
             }
@@ -1802,7 +1795,36 @@ fn archive(repo: &Repo) -> Res<()> {
             Ok(())
         },
     )?;
-    match moved.get().unwrap_or(0) {
+    let moved = moved.into_inner().unwrap_or_default();
+    // A row closed on the trunk but open in the checkout was reopened by hand:
+    // it is archived on the trunk and the checkout keeps its copy.
+    let reopened: Vec<u64> = moved
+        .iter()
+        .copied()
+        .filter(|id| {
+            q.tasks
+                .iter()
+                .any(|t| t.id == *id && t.state != State::Done)
+        })
+        .collect();
+    match reopened.as_slice() {
+        [] => {}
+        [id] => println!(
+            "  note: #{id} is closed on {} but open in the checkout — `{} reopen {id}` to reopen it on {}",
+            repo.trunk, repo.cfg.cmd_tasks, repo.trunk
+        ),
+        ids => println!(
+            "  note: {} are closed on {} but open in the checkout — `{} reopen <id>` to reopen them on {}",
+            ids.iter()
+                .map(|id| format!("#{id}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            repo.trunk,
+            repo.cfg.cmd_tasks,
+            repo.trunk
+        ),
+    }
+    match moved.len() {
         0 => println!("  nothing closed on {} to archive", repo.trunk),
         n => println!("  archived {n} → {}", repo.cfg.archive),
     }

@@ -666,17 +666,19 @@ fn plan(
         let sa = fs_.archive.text();
         // An archive file on neither the trunk nor the index is staged new with
         // the staged copy's rows (see `mirror_index`) — never over an untracked
-        // file of the user's own, whose content that would leave half-tracked.
+        // one that has rows, which that would leave half-tracked.
         if a.old_blob.is_none()
             && a.staged_blob.is_none()
             && !sa.is_empty()
             && sa != new_a
-            && a.working.as_deref().is_some_and(|w| !w.trim().is_empty())
+            && a.working
+                .as_deref()
+                .is_some_and(|w| !queue::parse(w).is_empty())
         {
             bail!(
-                "{} is untracked and not on {}; `git add {}` or move it aside, then retry",
+                "untracked {} has rows; stage it with the queue (`git add -f {} {}`) or move it aside, then retry",
                 repo.cfg.archive,
-                repo.trunk,
+                repo.cfg.file,
                 repo.cfg.archive
             );
         }

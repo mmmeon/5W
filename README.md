@@ -359,8 +359,9 @@ The queue is read by agents, so every read is priced in tokens.
 
 - **`5w archive`** moves closed tasks to `DONE.md` in one commit — the tasks closed on the trunk; a
   row closed only in the checkout moves there uncommitted, in the staged copy too (a `DONE.md` the
-  trunk lacks is staged new with just those rows; an untracked one of your own is refused). Rows
-  closed on the trunk but reopened by hand in the checkout are refused, not skipped. On a 900-task
+  trunk lacks is staged new with just those rows; an untracked one that already has rows is refused
+  until staged with `TASKS.md`). A row closed on the trunk but reopened by hand in the checkout is
+  archived on the trunk, the checkout keeps its open copy, and a note names it. On a 900-task
   queue that took `TASKS.md` from 649 KB to 52 KB. Archived ids stay taken, still satisfy `needs:`,
   still show under `5w show`, and ship still reads their `branch:` and `reviewed:`.
 - **Titles are short; detail is body.** Text over `title_max` (120) is split at the first sentence
