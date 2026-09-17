@@ -1446,6 +1446,55 @@ fn pre_receive_accepts_the_protocol_and_rejects_the_rest() {
 }
 
 #[test]
+fn pre_receive_takes_sha256_zeros_as_a_new_or_deleted_ref() {
+    // SHA-256 names are 64 hex digits: a create or delete carries 64 zeros, not 40.
+    let r = Repo::new("prereceive-sha256");
+    let src = r.root.join("sha256");
+    std::fs::create_dir_all(&src).unwrap();
+    r.git(
+        &src,
+        &["init", "-q", "-b", "main", "--object-format=sha256"],
+    );
+    std::fs::write(src.join("README"), "hi\n").unwrap();
+    r.git(&src, &["add", "README"]);
+    r.git(&src, &["commit", "-qm", "init"]);
+    r.ok(&src, &["init"]);
+    let server = r.root.join("server256.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            src.to_str().unwrap(),
+            server.to_str().unwrap(),
+        ],
+    );
+    r.ok(&server, &["hook", "install", "pre-receive"]);
+    r.git(&src, &["remote", "add", "origin", server.to_str().unwrap()]);
+    let push = |args: &[&str]| {
+        let out = r.git_path(
+            &src,
+            &path_with_5w(),
+            &[&["push", "-q", "origin"], args].concat(),
+        );
+        assert!(
+            out.status.success(),
+            "push {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    // A new branch (old sha all zeros), then its deletion (new sha all zeros).
+    r.git(&src, &["checkout", "-qb", "f/a"]);
+    std::fs::write(src.join("code"), "x\n").unwrap();
+    r.git(&src, &["add", "code"]);
+    r.git(&src, &["commit", "-qm", "code"]);
+    push(&["f/a"]);
+    push(&[":f/a"]);
+}
+
+#[test]
 fn ci_refuses_a_revision_that_is_not_a_commit_in_one_line() {
     let r = Repo::new("ci-revs");
     r.ok(&r.main, &["add", "x"]);
