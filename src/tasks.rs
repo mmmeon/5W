@@ -1048,7 +1048,14 @@ pub fn doctor_findings(repo: &Repo) -> Res<Doctor> {
     }
     // After a missed first archive the checkout's index lacks the archive too:
     // an ordinary commit there would take it off the trunk.
-    if cross && let Some(fix) = store::missed_commit_fix(repo) {
+    // After a later one only the marker a missed commit leaves tells; read, it
+    // also goes once the checkout's index has moved on.
+    let marker = store::missed_marker_fix(repo);
+    let fix = match cross {
+        true => store::missed_commit_fix(repo).or(marker),
+        false => marker,
+    };
+    if let Some(fix) = fix {
         say(format!(
             "the trunk checkout missed a commit to {} (a commit there would undo it) — `{fix}` catches it up",
             repo.trunk

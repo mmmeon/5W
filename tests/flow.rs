@@ -3803,6 +3803,73 @@ fn a_commit_over_a_missed_later_archive_is_refused_by_the_hook() {
 }
 
 #[test]
+fn a_checkout_fixed_by_hand_after_a_missed_archive_can_unarchive() {
+    let r = Repo::new("missed-archive-fixed-by-hand");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["archive"]);
+    r.ok(&r.main, &["done", "2", "--self"]);
+    r.ok(&r.main, &["hook", "install"]);
+    std::fs::write(r.main.join(".git/index.lock"), "").unwrap();
+    r.refuses(&r.main, &["archive"]);
+    std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
+    let marker = r.main.join(".git/5w-missed-main");
+    let left = std::fs::read_to_string(&marker).unwrap();
+
+    // Doctor names the fix while the checkout is behind, and keeps the marker.
+    let out = r.fails(&r.main, &["doctor"]);
+    assert!(
+        out.contains("missed a commit to main") && out.contains("apply --cached"),
+        "{out}"
+    );
+    assert!(marker.exists());
+
+    // The checkout fixed by hand: the marker no longer stands for its index.
+    r.git(
+        &r.main,
+        &[
+            "restore",
+            "--staged",
+            "--worktree",
+            "--source=HEAD",
+            "--",
+            "TASKS.md",
+            "DONE.md",
+        ],
+    );
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    let out = r.ok(&r.main, &["doctor"]);
+    assert!(!out.contains("missed a commit"), "{out}");
+    assert!(!marker.exists());
+
+    // With no read between the fix and a hand unarchive staged over it, the
+    // hook passes the unarchive and removes the marker.
+    std::fs::write(&marker, left).unwrap();
+    let row = "- [x] #1 first via:self";
+    let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
+    assert!(done.contains(row), "{done}");
+    std::fs::write(
+        r.main.join("DONE.md"),
+        done.replace(&format!("{row}\n"), ""),
+    )
+    .unwrap();
+    let tasks = r
+        .tasks()
+        .replace("## Done\n\n", &format!("## Done\n\n{row}\n"));
+    std::fs::write(r.main.join("TASKS.md"), tasks).unwrap();
+    r.git(&r.main, &["add", "TASKS.md", "DONE.md"]);
+    let mut c = Command::new("git");
+    c.args(["commit", "-qm", "chore(tasks): unarchive #1"])
+        .current_dir(&r.main);
+    env(&mut c, &r.root);
+    let o = c.output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!marker.exists());
+    r.ok(&r.main, &["lint", "HEAD"]);
+}
+
+#[test]
 fn a_checkout_index_update_that_fails_changes_neither_queue_entry() {
     let r = Repo::new("index-both-or-neither");
     r.ok(&r.main, &["add", "first"]);
