@@ -10,6 +10,7 @@ use crate::lint;
 use crate::queue::{self, State, Task};
 use crate::store::Repo;
 use crate::util::{Res, parse_id, short};
+use std::collections::{HashMap, HashSet};
 
 pub const USAGE: &str = "\
 usage: 5w ci [--base <rev>] [--head <rev>] [--ref <refname> | --branch <name>] [--trunk <ref>]
@@ -19,7 +20,8 @@ usage: 5w ci [--base <rev>] [--head <rev>] [--ref <refname> | --branch <name>] [
   --base <rev>       the old tip; commits in base..head are checked. Omitted, or
                      all zeros (a new ref): the merge-base with the trunk
   --ref <refname>    a push to this ref. refs/heads/<trunk>: the commits land on
-                     the trunk. Any other branch: they carry no queue edits
+                     the trunk (under gate_trunk, code needs a landing
+                     record). Any other branch: they carry no queue edits
                      (commits the trunk holds are not judged)
   --branch <name>    a change request from this branch into the trunk: no queue
                      edits, and the ship check — an accepted task names the
@@ -140,6 +142,9 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
 
     let mut problems = Vec::new();
     lint::commits_on(repo, &range, &|_| onto_trunk, &mut problems)?;
+    if onto_trunk {
+        trunk_gate(repo, base.as_deref(), &span, &range, &mut problems)?;
+    }
 
     if let Some(b) = &branch {
         let Some(t) = &trunk_ref else {
@@ -164,6 +169,254 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         eprintln!("  {pr}");
     }
     bail!("{} finding(s) — {what}", problems.len())
+}
+
+/// A commit of the pushed span: its tree, parents and subject.
+struct Commit {
+    tree: String,
+    parents: Vec<String>,
+    subject: String,
+}
+
+/// `gate_trunk`: every commit a push brings to the trunk that adds code is covered
+/// by a landing record `5w ship` wrote (README: *What the gate guarantees*). A
+/// record is recomputed here from the objects, never trusted: it covers its range
+/// only when that range adds what its accepted task's `reviewed:` commit added.
+fn trunk_gate(
+    repo: &Repo,
+    base: Option<&str>,
+    span: &str,
+    range: &[String],
+    out: &mut Vec<String>,
+) -> Res<()> {
+    let p = &repo.primary;
+    if range.is_empty() {
+        return Ok(());
+    }
+    // One line a commit: a subject holds no newline, and the pusher's text comes
+    // after the tab, where it cannot pose as another commit.
+    let log = git::git(p, &["rev-list", "--format=%H %T %P%x09%s", span])?;
+    let mut commits: HashMap<String, Commit> = HashMap::new();
+    for l in log.lines().filter(|l| !l.starts_with("commit ")) {
+        let (head, subject) = l.split_once('\t').unwrap_or((l, ""));
+        let mut w = head.split(' ').filter(|x| !x.is_empty());
+        let (Some(sha), Some(tree)) = (w.next(), w.next()) else {
+            continue;
+        };
+        commits.entry(sha.to_string()).or_insert(Commit {
+            tree: tree.to_string(),
+            parents: w.map(String::from).collect(),
+            subject: subject.to_string(),
+        });
+    }
+    let first_parents = |c: &str| commits.get(c).and_then(|c| c.parents.first().cloned());
+
+    // Which commits the gate judges: all of them when the trunk had it on before
+    // the push. Else the first-parent line under the setting its first parent's
+    // config holds, and what a merge on that line brings in, under the merge's —
+    // so the push that enables it is judged from that commit on.
+    let line = git::git(p, &["rev-list", "--first-parent", span])?;
+    let line: Vec<&str> = line.lines().collect();
+    let mut parents: Vec<String> = line.iter().filter_map(|c| first_parents(c)).collect();
+    parents.extend(base.map(String::from));
+    let on = gate_settings(repo, &parents)?;
+    let before = base.is_some_and(|b| on.get(b).copied().unwrap_or(false));
+    let in_range: HashSet<&str> = range.iter().map(String::as_str).collect();
+    let mut judged: Vec<String> = Vec::new();
+    if before {
+        judged = range.to_vec();
+    }
+    for f in line.iter().filter(|_| !before) {
+        let Some(fp) = first_parents(f) else { continue };
+        if !on.get(&fp).copied().unwrap_or(false) {
+            continue;
+        }
+        judged.push(f.to_string());
+        if commits.get(*f).is_some_and(|c| c.parents.len() > 1) {
+            let side = git::git(p, &["rev-list", &format!("{fp}..{f}")])?;
+            judged.extend(
+                side.lines()
+                    .filter(|c| c != f && in_range.contains(c))
+                    .map(String::from),
+            );
+        }
+    }
+    if judged.is_empty() {
+        return Ok(());
+    }
+
+    let queue_only = |from: &str, to: &str| -> Res<bool> {
+        let o = git::git(p, &git::pinned_diff(&["--name-only", "-z", from, to]))?;
+        Ok(o.split('\0')
+            .filter(|n| !n.is_empty())
+            .all(|n| n == repo.cfg.file || n == repo.cfg.archive))
+    };
+    let prefix = format!("{}: land #", repo.cfg.commit_prefix);
+    let mut covered: HashSet<String> = HashSet::new();
+    let mut need: Vec<&String> = Vec::new();
+    for c in &judged {
+        let Some(k) = commits.get(c) else { continue };
+        if let Some(id) = k
+            .subject
+            .strip_prefix(&prefix)
+            .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        {
+            match landing(repo, c, k, id, &commits) {
+                Ok((base, tip)) => covered.extend(
+                    git::git(p, &["rev-list", &format!("{base}..{tip}")])?
+                        .lines()
+                        .map(String::from),
+                ),
+                Err(why) => out.push(format!("{}: land #{id} covers nothing — {why}", short(c))),
+            }
+        }
+        let adds_code = match k.parents.as_slice() {
+            [] => true,
+            [one] => !queue_only(one, c)?,
+            [a, b] => {
+                // The tree git would make, conflicts left in: a merge that differs
+                // from it only in the queue resolved nothing but the queue.
+                let m = git::raw(p, &["merge-tree", "--write-tree", a, b], &[], None)?;
+                let tree = m.stdout.lines().next().unwrap_or("");
+                let tree_ok =
+                    matches!(tree.len(), 40 | 64) && tree.bytes().all(|b| b.is_ascii_hexdigit());
+                !tree_ok || !queue_only(tree, c)?
+            }
+            _ => true,
+        };
+        if adds_code {
+            need.push(c);
+        }
+    }
+    for c in need.into_iter().filter(|c| !covered.contains(*c)) {
+        out.push(format!(
+            "{}: code on {} that no landing record covers — ship it from an accepted branch (gate_trunk)",
+            short(c),
+            repo.trunk
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `gate_trunk` is on in each commit's `.5w.toml`. A config that does not
+/// parse counts as on: a gate is not lifted by breaking its file.
+fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> {
+    let p = &repo.primary;
+    let mut on = HashMap::new();
+    if commits.is_empty() {
+        return Ok(on);
+    }
+    let input: String = commits
+        .iter()
+        .map(|c| format!("{c}:{}\n", crate::store::CONFIG_FILE))
+        .collect();
+    let o = git::raw(
+        p,
+        &["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        &[],
+        Some(&input),
+    )?;
+    let mut blobs: HashMap<String, bool> = HashMap::new();
+    for (c, l) in commits.iter().zip(o.stdout.lines()) {
+        let setting = match l.split_once(' ') {
+            Some((oid, "blob")) => match blobs.get(oid) {
+                Some(b) => *b,
+                None => {
+                    let text = git::git(p, &["cat-file", "blob", oid]).unwrap_or_default();
+                    let b = match crate::config::parse_toml(&text) {
+                        Ok(kv) => kv.iter().any(|(k, v)| {
+                            k == "gate_trunk" && matches!(v, crate::config::Val::Bool(true))
+                        }),
+                        Err(_) => true,
+                    };
+                    blobs.insert(oid.to_string(), b);
+                    b
+                }
+            },
+            _ => false,
+        };
+        on.insert(c.clone(), setting);
+    }
+    Ok(on)
+}
+
+/// A landing record's range, `(base, tip)`, when the record holds: see `trunk_gate`.
+fn landing(
+    repo: &Repo,
+    sha: &str,
+    k: &Commit,
+    id: &str,
+    commits: &HashMap<String, Commit>,
+) -> Result<(String, String), String> {
+    let p = &repo.primary;
+    let raw = git::git(p, &["cat-file", "commit", sha])?;
+    let body = raw.split_once("\n\n").map(|(_, b)| b).unwrap_or("");
+    let landed: Vec<&str> = body
+        .lines()
+        .filter_map(|l| l.strip_prefix("Landed: "))
+        .collect();
+    let [range] = landed.as_slice() else {
+        return Err("it needs one `Landed: <base>..<tip>` line".into());
+    };
+    let full = |s: &str| matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let Some((base, tip)) = range
+        .trim()
+        .split_once("..")
+        .filter(|(b, t)| full(b) && full(t))
+    else {
+        return Err(format!("Landed: {range} is not <full sha>..<full sha>"));
+    };
+    if k.parents.as_slice() != [tip] {
+        return Err(format!("its parent is not {}", short(tip)));
+    }
+    let tip_tree = match commits.get(tip) {
+        Some(t) => t.tree.clone(),
+        None => git::git(p, &["rev-parse", &format!("{tip}^{{tree}}")])?,
+    };
+    if k.tree != tip_tree {
+        return Err("it changes files".into());
+    }
+    if git::rev(p, base).as_deref() != Some(base)
+        || base == tip
+        || !git::ok(p, &["merge-base", "--is-ancestor", base, tip])
+    {
+        return Err(format!("{} is not below {}", short(base), short(tip)));
+    }
+    let show = |f: &str| git::opt(p, &["show", &format!("{sha}:{f}")]).unwrap_or_default();
+    let all: Vec<Task> = queue::parse(&show(&repo.cfg.file))
+        .into_iter()
+        .chain(queue::parse(&show(&repo.cfg.archive)))
+        .collect();
+    let id_n = parse_id(id)?;
+    let Some(t) = all.iter().find(|t| t.id == id_n) else {
+        return Err(format!("#{id} is not in the queue"));
+    };
+    let (State::Done, Some("review"), Some(r)) = (t.state, t.via.as_deref(), t.reviewed.as_deref())
+    else {
+        return Err(format!("#{id} is not accepted via:review"));
+    };
+    let reviewed = match git::recorded(p, r) {
+        git::Recorded::Commit(c) => c,
+        other => {
+            return Err(format!(
+                "#{id}'s reviewed:{} {} — push it with the trunk (`git push <remote> <sha>:refs/5w/reviewed/{id}`)",
+                short(r),
+                recorded_problem(&other)
+            ));
+        }
+    };
+    let now = git::change_id(p, base, tip)?;
+    if git::change_id(p, base, &reviewed)? == now
+        || crate::ship::landed_under(repo, &all, &reviewed, &now, base, false)?.is_some()
+    {
+        return Ok((base.to_string(), tip.to_string()));
+    }
+    Err(format!(
+        "{}..{} is not the change #{id} accepted at {}",
+        short(base),
+        short(tip),
+        short(r)
+    ))
 }
 
 /// What `5w ship` checks locally, against the trunk as the forge has it.

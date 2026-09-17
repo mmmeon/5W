@@ -4802,6 +4802,160 @@ fn pre_receive_checks_pushes_to(name: &str) {
 }
 
 #[test]
+fn gate_trunk_lets_only_recorded_landings_of_reviewed_changes_onto_the_trunk() {
+    let r = Repo::new("gate-trunk");
+    let server = r.root.join("server.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            server.to_str().unwrap(),
+        ],
+    );
+    r.ok(&server, &["hook", "install", "pre-receive"]);
+    r.git(
+        &r.main,
+        &["remote", "add", "origin", server.to_str().unwrap()],
+    );
+    let push = |args: &[&str]| {
+        let o = r.git_path(
+            &r.main,
+            &path_with_5w(),
+            &[&["push", "-q", "origin"], args].concat(),
+        );
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+    let code = |file: &str| {
+        std::fs::write(r.main.join(file), "x\n").unwrap();
+        r.git(&r.main, &["add", file]);
+        r.git(&r.main, &["commit", "-qm", &format!("code {file}")]);
+    };
+
+    // History from before the gate, and the commit that enables it, pass as they are.
+    r.git(&r.main, &["branch", "early"]);
+    code("before.txt");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("gate_trunk = false"), "{cfg}");
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace("gate_trunk = false", "gate_trunk = true"),
+    )
+    .unwrap();
+    r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+    let (ok, err) = push(&["main"]);
+    assert!(ok, "{err}");
+
+    // Code pushed straight to the trunk is refused; so is turning the gate off.
+    code("straight.txt");
+    let (ok, err) = push(&["main"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "ungate"]);
+    let (ok, err) = push(&["main"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    // A branch from before the gate that merged the trunk is still new to the trunk.
+    r.git(&r.main, &["checkout", "-q", "early"]);
+    code("early.txt");
+    r.git(&r.main, &["merge", "-q", "--no-edit", "main"]);
+    let (ok, err) = push(&["early:main"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+    r.git(&r.main, &["checkout", "-q", "main"]);
+
+    // Two tasks shipped, one rebased and one squashed, pushed at once with their accepts.
+    r.ok(&r.main, &["add", "one"]);
+    r.ok(&r.main, &["add", "two"]);
+    r.ok(&r.main, &["wt", "new", "f/one"]);
+    r.commit_in(&r.wt("f/one"), "one.txt", "1\n");
+    r.ok(&r.main, &["wt", "new", "f/two"]);
+    let two = r.wt("f/two");
+    r.commit_in(&two, "two.txt", "2\n");
+    r.commit_in(&two, "two-more.txt", "2\n");
+    // Pushed for review: the server has its reviewed commit.
+    let (ok, err) = push(&["main"]);
+    assert!(ok, "{err}");
+    let (ok, err) = push(&["f/two"]);
+    assert!(ok, "{err}");
+    r.ok(&r.main, &["submit", "1", "f/one"]);
+    r.ok(&r.main, &["submit", "2", "f/two"]);
+    r.ok(&r.main, &["accept", "1", "2"]);
+    let out = r.ok(&r.main, &["ship", "f/one", "--sync"]);
+    assert!(out.contains("landing of #1 recorded"), "{out}");
+    assert!(out.contains("refs/5w/reviewed/1"), "{out}");
+    let out = r.ok(&r.main, &["ship", "f/two", "--sync", "--squash"]);
+    assert!(out.contains("landing of #2 recorded"), "{out}");
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    r.lint_history();
+
+    // #1 was rebased and never pushed: the server cannot recompute its review.
+    let (ok, err) = push(&["main"]);
+    assert!(!ok && err.contains("refs/5w/reviewed/1"), "{err}");
+    let reviewed = r
+        .line(1)
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("reviewed:"))
+        .unwrap()
+        .to_string();
+    let (ok, err) = push(&["main", &format!("{reviewed}:refs/5w/reviewed/1")]);
+    assert!(ok, "{err}");
+
+    // A record naming an accepted task over code it did not accept covers nothing.
+    let base = r.git(&r.main, &["rev-parse", "HEAD"]);
+    code("forged.txt");
+    let tip = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(
+        &r.main,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("chore(tasks): land #1\n\nLanded: {base}..{tip}"),
+        ],
+    );
+    let (ok, err) = push(&["main"]);
+    assert!(
+        !ok && err.contains("land #1 covers nothing") && err.contains("no landing record covers"),
+        "{err}"
+    );
+    r.git(&r.main, &["reset", "-q", "--hard", &base]);
+
+    // A merge that adds nothing of its own passes when what it brings in is covered.
+    r.ok(&r.main, &["add", "three"]);
+    r.ok(&r.main, &["wt", "new", "f/three"]);
+    r.commit_in(&r.wt("f/three"), "three.txt", "3\n");
+    let (ok, err) = push(&["main"]);
+    assert!(ok, "{err}");
+    let (ok, err) = push(&["f/three"]);
+    assert!(ok, "{err}");
+    r.ok(&r.main, &["submit", "3", "f/three"]);
+    r.ok(&r.main, &["accept", "3"]);
+    let accepted = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.ok(&r.main, &["ship", "f/three", "--sync"]);
+    let landed = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(&r.main, &["reset", "-q", "--hard", &accepted]);
+    r.ok(&r.main, &["add", "four"]);
+    r.git(&r.main, &["merge", "-q", "--no-edit", &landed]);
+    let (ok, err) = push(&["main"]);
+    assert!(ok, "{err}");
+
+    // A merge of an unreviewed branch brings code no record covers.
+    r.git(&r.main, &["checkout", "-qb", "side"]);
+    code("side.txt");
+    r.git(&r.main, &["checkout", "-q", "main"]);
+    r.git(&r.main, &["merge", "-q", "--no-ff", "--no-edit", "side"]);
+    let (ok, err) = push(&["main"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+}
+
+#[test]
 fn pre_receive_does_not_let_a_branch_land_on_a_trunk_update_git_refuses() {
     // git runs pre-receive before its own per-ref checks, and a push that is not
     // atomic applies the refs that pass: judged against the pushed trunk, a branch

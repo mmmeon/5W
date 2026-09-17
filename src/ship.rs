@@ -287,7 +287,7 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
 
     // Before anything rewrites the branch, and again after a rebase has.
     let behind = !git::ok(p, &["merge-base", "--is-ancestor", trunk, &branch]);
-    verify_reviewed(
+    let mut authorised = verify_reviewed(
         repo,
         &all,
         &rows,
@@ -331,13 +331,16 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
                 w.display()
             );
         }
-        if let Err(e) = verify_reviewed(repo, &all, &rows, &branch, force, false, &mut notices) {
-            // The rebase bought nothing; do not leave the branch rewritten.
-            let _ = git::raw(w, &["reset", "--hard", "--quiet", &before], &[], None);
-            bail!(
-                "{e}; {branch} is back at {} as it was before the rebase",
-                short(&before)
-            );
+        match verify_reviewed(repo, &all, &rows, &branch, force, false, &mut notices) {
+            Ok(a) => authorised = a,
+            Err(e) => {
+                // The rebase bought nothing; do not leave the branch rewritten.
+                let _ = git::raw(w, &["reset", "--hard", "--quiet", &before], &[], None);
+                bail!(
+                    "{e}; {branch} is back at {} as it was before the rebase",
+                    short(&before)
+                );
+            }
         }
     }
 
@@ -422,6 +425,28 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
     if land != tip {
         println!("ship: squashed into {}", short(&land));
     }
+    let mut landed = land.clone();
+    if repo.cfg.gate_trunk {
+        match &authorised {
+            Some((id, reviewed)) => match record_landing(repo, *id, &trunk_sha, &land) {
+                Ok(r) => {
+                    landed = r;
+                    println!("ship: landing of #{id} recorded ({})", short(&landed));
+                    if !git::ok(p, &["merge-base", "--is-ancestor", reviewed, &land]) {
+                        println!(
+                            "ship: the server needs #{id}'s reviewed commit: keep its branch pushed, or `git push <remote> {trunk} {reviewed}:refs/5w/reviewed/{id}`"
+                        );
+                    }
+                }
+                Err(e) => eprintln!(
+                    "ship: {branch} landed, but its landing record did not commit ({e}); a push of {trunk} is refused until one does (README: gate_trunk)"
+                ),
+            },
+            None => eprintln!(
+                "ship: no review authorised {branch}, so no landing is recorded; gate_trunk refuses a push of {trunk}"
+            ),
+        }
+    }
 
     // --- landed. Now tidy: the worktree, then the branch. ---------------------------------
     if branch_wt.is_some()
@@ -464,9 +489,35 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
     println!(
         "\nship: {branch} is on {trunk} ({}..{})",
         short(&trunk_sha),
-        short(&land)
+        short(&landed)
     );
     Ok(())
+}
+
+/// The landing record `gate_trunk` asks for: an empty commit on the landed tip
+/// naming the task, the range and its change id, moved onto the trunk only if
+/// the trunk is still at `land`.
+fn record_landing(repo: &Repo, id: u64, base: &str, land: &str) -> Res<String> {
+    let p = &repo.primary;
+    let change = git::change_id(p, base, land)?;
+    let tree = git::git(p, &["rev-parse", &format!("{land}^{{tree}}")])?;
+    let msg = format!(
+        "{}: land #{id}\n\nLanded: {base}..{land}\nChange: {change}",
+        repo.cfg.commit_prefix
+    );
+    let r = git::commit_tree(p, &tree, land, &msg, &[])?;
+    git::git(
+        p,
+        &[
+            "update-ref",
+            "-m",
+            &format!("5w ship: land #{id}"),
+            &format!("refs/heads/{}", repo.trunk),
+            &r,
+            land,
+        ],
+    )?;
+    Ok(r)
 }
 
 fn compose(p: &std::path::Path, base: &str, tip: &str) -> Res<String> {
@@ -518,6 +569,7 @@ pub fn ignored_files(repo: &Repo, w: &std::path::Path) -> Res<Vec<String>> {
 /// The reviewed change is the change that lands: compare what the branch adds
 /// now with what it added at the reviewed commit (`git::change_id`), so a clean
 /// rebase passes and anything added or altered after the review does not.
+/// Returns the task and reviewed commit a review authorised the branch by, if any.
 fn verify_reviewed(
     repo: &Repo,
     all: &[queue::Task],
@@ -526,7 +578,7 @@ fn verify_reviewed(
     force: bool,
     quiet: bool,
     notices: &mut Vec<String>,
-) -> Res<()> {
+) -> Res<Option<(u64, String)>> {
     let p = &repo.primary;
     let trunk = &repo.trunk;
     let tasks = &repo.cfg.cmd_tasks;
@@ -534,6 +586,7 @@ fn verify_reviewed(
     macro_rules! say { ($($t:tt)*) => { if !quiet { println!($($t)*) } } }
     // A --force notice waits for the ship to land, and is said once across the
     // checks before and after a rebase.
+    let mut authorised = None;
     let mut note = |n: String| {
         if !notices.contains(&n) {
             notices.push(n);
@@ -550,6 +603,7 @@ fn verify_reviewed(
                 let why = match git::recorded(p, r) {
                     git::Recorded::Commit(c) if c == tip => {
                         say!("ship: authorised by #{} via:review at {}", t.id, short(r));
+                        authorised.get_or_insert((t.id, c));
                         continue;
                     }
                     git::Recorded::Commit(c) => Ok(c),
@@ -579,12 +633,14 @@ fn verify_reviewed(
                 let now = git::change_id(p, trunk, &tip)?;
                 let then = git::change_id(p, trunk, &reviewed)?;
                 if now == then {
+                    authorised.get_or_insert((t.id, reviewed.clone()));
                     say!(
                         "ship: authorised by #{} via:review at {} (rebased since; same change)",
                         t.id,
                         short(r)
                     );
-                } else if let Some(under) = landed_under(repo, all, &reviewed, &now)? {
+                } else if let Some(under) = landed_under(repo, all, &reviewed, &now, trunk, true)? {
+                    authorised.get_or_insert((t.id, reviewed.clone()));
                     say!(
                         "ship: authorised by #{} via:review at {} (on #{under}, which landed; same change)",
                         t.id,
@@ -608,7 +664,7 @@ fn verify_reviewed(
         }
     }
 
-    Ok(())
+    Ok(authorised)
 }
 
 /// A stacked branch was reviewed on top of its parent, so what it added then
@@ -617,9 +673,18 @@ fn verify_reviewed(
 /// commit reviewed under it: when that commit is below the reviewed one, its
 /// branch is gone, and the trunk holds that commit's version of every path the
 /// parent changed, the change to compare is what the branch added on top of it.
-/// Returns the parent task's id when that change is `now`.
-fn landed_under(repo: &Repo, all: &[queue::Task], reviewed: &str, now: &str) -> Res<Option<u64>> {
-    for (id, base) in landed_parents(repo, all, reviewed)? {
+/// Returns the parent task's id when that change is `now`. `trunk` is where the
+/// parent must have landed; `gone`: its branch must be gone too (a server that
+/// judges a push keeps branches, and relies on the paths alone).
+pub fn landed_under(
+    repo: &Repo,
+    all: &[queue::Task],
+    reviewed: &str,
+    now: &str,
+    trunk: &str,
+    gone: bool,
+) -> Res<Option<u64>> {
+    for (id, base) in landed_parents(repo, all, reviewed, trunk, gone)? {
         if git::change_id(&repo.primary, &base, reviewed)? == now {
             return Ok(Some(id));
         }
@@ -631,15 +696,20 @@ fn landed_under(repo: &Repo, all: &[queue::Task], reviewed: &str, now: &str) -> 
 /// each accepted row whose branch is gone, whose reviewed commit is below
 /// `commit` but not on the trunk, and whose every changed path the trunk holds
 /// at that commit's version.
-fn landed_parents(repo: &Repo, all: &[queue::Task], commit: &str) -> Res<Vec<(u64, String)>> {
+fn landed_parents(
+    repo: &Repo,
+    all: &[queue::Task],
+    commit: &str,
+    trunk: &str,
+    gone: bool,
+) -> Res<Vec<(u64, String)>> {
     let p = &repo.primary;
-    let trunk = &repo.trunk;
     let mut found = Vec::new();
     for t in all.iter().filter(|t| t.state == State::Done) {
         let (Some(r), Some(b)) = (&t.reviewed, &t.branch) else {
             continue;
         };
-        if git::branch_exists(p, b) {
+        if gone && git::branch_exists(p, b) {
             continue;
         }
         let git::Recorded::Commit(base) = git::recorded(p, r) else {
@@ -685,7 +755,7 @@ fn landed_parents(repo: &Repo, all: &[queue::Task], commit: &str) -> Res<Vec<(u6
 /// gone cannot be computed. A parent that did not land is never cut away here.
 fn sync_upstream(repo: &Repo, all: &[queue::Task], tip: &str) -> Res<Option<String>> {
     let p = &repo.primary;
-    let bases: Vec<String> = landed_parents(repo, all, tip)?
+    let bases: Vec<String> = landed_parents(repo, all, tip, &repo.trunk, true)?
         .into_iter()
         .map(|(_, b)| b)
         .collect();

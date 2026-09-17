@@ -64,6 +64,10 @@ Never:
 - A branch lands only after its row is `[x] via:review`, by fast-forward, and only if what it adds
   is still exactly what was reviewed at `reviewed:`. Anything added after review needs a fresh
   submit and accept.
+- With `gate_trunk = true`, a landing is followed on the trunk by an empty commit
+  `chore(tasks): land #<id>` whose body is `Landed: <trunk before>..<landed tip>` (full shas) and
+  `Change: <change id>`. Its task is `[x] via:review`, and the range adds exactly what `reviewed:`
+  added. A push to the trunk is refused when it brings code no such record covers.
 - A CI job may make the submit and accept edits for a change request (`5w ci --event`): the same
   edits, pushed to the trunk, from a job that runs nothing from the change request. Accept is then
   the forge's approval of the change request's tip, and the forge decides whose approval counts.

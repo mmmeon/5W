@@ -201,6 +201,47 @@ stacked branch was reviewed on top of its parent; once the parent has landed, th
 what the branch added on top of the parent's reviewed commit — allowed only when that parent's
 branch is gone and the trunk holds the parent's version of every path the parent changed.
 
+**With `gate_trunk`, code reaches the trunk only as a recorded landing.** Ship's check runs where
+ship runs; a plain `git push origin main` of commits nobody shipped skips it. So with `gate_trunk =
+true`, ship follows each fast-forward with a *landing record*, an empty commit on the trunk:
+
+```
+chore(tasks): land #11
+
+Landed: <trunk before>..<what landed>
+Change: <the change id ship compared>
+```
+
+and `5w ci --ref refs/heads/<trunk>` — the pre-receive hook, a push job — reports every commit the
+push brings to the trunk that no record in the push covers. The record is where to look, not
+evidence: the server recomputes everything from the pushed objects, and `Change:` is for a reader.
+A record covers every commit in its `Landed:` range only when its one parent is the range's end and
+its tree that parent's (it adds nothing), the range's start is an ancestor of its end, the queue at
+the record holds its task `[x] via:review` with a `reviewed:` commit the server has, and the range
+adds exactly what that commit added over the range's start — or, for a stacked branch, over a
+landed parent's reviewed commit, by the rule above (the parent's branch may still be on the
+server). So a record naming another task, a wider or narrower range, or a change nobody accepted
+covers nothing; a hand-written one (`git commit --allow-empty`), for a landing made without ship,
+passes on the same terms. `--sync` and `--squash` change nothing here: the range is what landed,
+compared with the review as ship compared it, and several ships pushed at once are several records.
+
+- **Needs no record:** a commit that changes only the queue and archive, or nothing; a two-parent
+  merge whose tree is the clean merge of its parents (`git merge-tree`) outside those files. The
+  commits a merge brings in are judged themselves, under the merge's setting.
+- **Which commits:** every one a push brings when the trunk it moves has `gate_trunk = true`, and
+  in a push that enables it, those whose first parent's `.5w.toml` has it (a config that does not
+  parse counts as on). History from before the enabling commit, and that commit, pass as they are;
+  a branch from before it is still new to the trunk, and turning the gate off is a gated change.
+- **The reviewed commit must be on the server.** Shipped as reviewed, it is what landed. After
+  `--sync` or `--squash` it is not on the trunk: keep its branch pushed, or push it with the trunk
+  (`git push origin main <sha>:refs/5w/reviewed/11`) — ship names it.
+- **Only a review lands under the gate.** `--force`, or a task closed without review, records no
+  landing, and the push is refused.
+- **What it does not check.** Who accepted: the accept may arrive in the same push, and who may push
+  one is the queue's own trust (see *Forge events*). A forge's merge button records no landing; its
+  push job goes red after the fact, which only a server hook prevents. Coverage is of the range's
+  net change, as ship's check is, and one accepted change may land more than once.
+
 **Ship refuses before it acts**, naming the fix: trunk or perennial branch; not accepted; stacked on
 an unshipped parent (ship the bottom first; children are reparented after); behind the trunk (use
 `--sync`); a dirty branch worktree; tracked changes in the trunk's checkout (uncommitted queue rows
@@ -293,7 +334,8 @@ the same command runs under any CI, in a server hook, and by hand:
 5w ci --base <old> --head <new> --branch <name>           # a change request into the trunk
 ```
 
-- **A push to the trunk:** every commit in the range is linted as landing on the trunk.
+- **A push to the trunk:** every commit in the range is linted as landing on the trunk, and under
+  `gate_trunk` each one that adds code is covered by a landing record (*What the gate guarantees*).
 - **A push to any other branch:** its commits carry no queue edits. Commits the trunk already holds —
   brought in by `git merge <trunk>` — are the trunk's and are not judged again. The trunk they are
   judged against is the server's before the push: a hook cannot know whether git will apply a trunk
@@ -645,6 +687,7 @@ that keeps its own section, a custom brief footer and a review checklist.
 | `title_max`                                 | longest task line text before it is split into title and body (0: off)                |
 | `perennial`                                 | branches never shipped, rebased or deleted (git-town's list is honoured too)          |
 | `require_task`                              | refuse to ship a branch no task names                                                 |
+| `gate_trunk`                                | ship records each landing; a trunk push's code needs a record matching a review       |
 | `[sections]`                                | `open`, `done` headings; created if missing                                           |
 | `[levels]`                                  | the tier text per complexity                                                          |
 | `[lanes.<name>]`                            | `kind`, `section`; `delegable`, `close`, `note`, `refuse` override the kind            |

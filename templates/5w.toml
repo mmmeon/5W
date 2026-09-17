@@ -13,6 +13,8 @@ commit_prefix = "chore(tasks)"
 perennial = []
 # Refuse to ship a branch no task names.
 require_task = false
+# Ship records each landing; a push to the trunk whose code no reviewed landing covers is refused.
+gate_trunk = false
 default_lane = "agent"
 
 [sections]
