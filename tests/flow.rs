@@ -1747,6 +1747,25 @@ fn wt_prune_keeps_the_suggested_branch_of_a_task_not_closed() {
 }
 
 #[test]
+fn wt_prune_keeps_a_task_branch_after_the_area_changes() {
+    let r = Repo::new("wt-prune-area");
+    r.ok(&r.main, &["add", "open work", "area:a"]);
+    r.ok(&r.main, &["wt", "new", "a/task-1"]);
+    // The suggestion is now b/task-1; the worker's a/task-1 is still the task's.
+    r.ok(&r.main, &["set", "1", "area", "b"]);
+    r.ok(&r.main, &["wt", "new", "x/task-99"]);
+    let stray = r.wt("x/task-99");
+    let out = r.ok(&r.main, &["wt", "prune", "--yes"]);
+    assert!(!out.contains("a/task-1"), "{out}");
+    assert!(r.wt("a/task-1").exists());
+    r.git(&r.main, &["rev-parse", "--verify", "a/task-1"]);
+    // No task 99: its branch goes.
+    assert!(!stray.exists(), "{out}");
+    let branches = r.git(&r.main, &["branch", "--format=%(refname:short)"]);
+    assert!(!branches.lines().any(|l| l == "x/task-99"), "{branches}");
+}
+
+#[test]
 fn wt_prune_keeps_a_worktree_outside_the_worktree_root() {
     let r = Repo::new("wt-prune-outside");
     let manual = r.root.join("manual");

@@ -243,6 +243,7 @@ fn prune(repo: &Repo, yes: bool) -> Res<()> {
     use std::collections::{BTreeMap, BTreeSet};
     let p = &repo.primary;
     let mut named = BTreeSet::new();
+    let mut open = BTreeSet::new();
     for text in [
         repo.load()?,
         repo.committed()?.unwrap_or_default(),
@@ -251,9 +252,10 @@ fn prune(repo: &Repo, yes: bool) -> Res<()> {
     ] {
         for t in crate::queue::parse(&text) {
             // A worker's branch exists from `wt new`, but the task names it only at
-            // submit: keep the branch the brief suggests for every task not closed.
+            // submit: keep `<any area>/task-<id>` for every task not closed, since
+            // the area may have changed since the branch was made.
             if t.state != crate::queue::State::Done {
-                named.insert(crate::tasks::suggested_branch(&t));
+                open.insert(format!("task-{}", t.id));
             }
             named.extend(t.branch);
         }
@@ -287,6 +289,7 @@ fn prune(repo: &Repo, yes: bool) -> Res<()> {
         if *b == repo.trunk
             || repo.is_perennial(b)
             || named.contains(b)
+            || open.contains(b.rsplit('/').next().unwrap_or(b))
             || parent == b
             || !git::branch_exists(p, parent)
         {
