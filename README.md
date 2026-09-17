@@ -429,7 +429,14 @@ the change request targets: the examples pass `--trunk refs/remotes/origin/<defa
 (`github.event.repository.default_branch`, `CI_DEFAULT_BRANCH`), never the target branch — its
 author picks that, could point it at a branch with a weak or fake queue, and can retarget after the
 check passed — nor the change request's own `.5w.toml`. So the forge's default branch must be the
-trunk; a change request into any other branch is checked against the default branch's queue too.
+trunk; a change request into any other branch is checked against the default branch's queue too. A
+`--trunk` naming a branch (`refs/heads/<name>`, `refs/remotes/<remote>/<name>` or a short form) whose
+`.5w.toml` names another trunk is refused in one line naming both — make that trunk the forge's
+default branch, or pass `--trunk` for it — rather than read a queue that is not the trunk's; a sha
+is not compared. The head checked is the change request's own tip: GitLab's merged-results
+pipelines run on a merge into the target, whose commits the trunk lacks (a stacked change
+request's parent) would read as the branch's, so the example passes
+`CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` when GitLab sets it.
 
 **Which branch is the trunk on a server.** `FIVEW_TRUNK`, else `git config 5w.trunk`, else the
 branch the bare repository's `HEAD` names (then `git-town.main-branch`, then `main`); `.5w.toml`'s

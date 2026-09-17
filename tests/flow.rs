@@ -7598,6 +7598,90 @@ fn a_ci_check_reads_the_queue_and_require_task_at_the_trunk_it_checks_against() 
 }
 
 #[test]
+fn a_ci_check_against_a_trunk_ref_that_is_not_the_configured_trunk_refuses_naming_the_fix() {
+    let r = Repo::new("ci-trunk-not-default");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("trunk = \"main\""));
+    // The forge's default branch is develop, split off main before any task: its
+    // config names main, and its queue has none of main's.
+    r.git(&r.main, &["branch", "develop", "main"]);
+    // A stack: s/b onto s/a, both accepted.
+    r.ok(&r.main, &["add", "bottom", "branch:s/a"]);
+    r.ok(&r.main, &["add", "top", "branch:s/b"]);
+    r.ok(&r.main, &["wt", "new", "s/a"]);
+    r.commit_in(&r.wt("s/a"), "a", "a\n");
+    r.ok(&r.main, &["submit", "1", "s/a"]);
+    r.ok(&r.main, &["wt", "new", "s/b", "--from", "s/a"]);
+    r.commit_in(&r.wt("s/b"), "b", "b\n");
+    r.ok(&r.main, &["submit", "2", "s/b"]);
+    r.ok(&r.main, &["accept", "1", "2"]);
+    let tip = r.git(&r.main, &["rev-parse", "main"]);
+    let forge = r.root.join("forge.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            forge.to_str().unwrap(),
+        ],
+    );
+    let ci = r.root.join("ci");
+    r.git(
+        &r.root,
+        &["clone", "-q", forge.to_str().unwrap(), ci.to_str().unwrap()],
+    );
+    r.git(&ci, &["checkout", "-q", "--detach", "origin/s/b"]);
+    let check = |b: &str, base: &str, trunk: &str| {
+        let o = r.cli(
+            &ci,
+            &[
+                "ci",
+                "--branch",
+                b,
+                "--base",
+                base,
+                "--head",
+                &format!("origin/{b}"),
+                "--trunk",
+                trunk,
+            ],
+        );
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        (o.status.success(), out)
+    };
+
+    // Against the trunk, the stack passes: each change request is its own branch's.
+    for trunk in ["origin/main", "refs/remotes/origin/main", tip.as_str()] {
+        let (ok, out) = check("s/a", "origin/main", trunk);
+        assert!(ok, "s/a at {trunk}: {out}");
+        let (ok, out) = check("s/b", "origin/s/a", trunk);
+        assert!(ok, "s/b at {trunk}: {out}");
+    }
+    // Against develop, one line naming the fix, not a finding per task.
+    for trunk in ["origin/develop", "refs/remotes/origin/develop"] {
+        let (ok, out) = check("s/b", "origin/s/a", trunk);
+        assert!(!ok, "{out}");
+        assert_eq!(
+            out,
+            format!(
+                "5w: ci: --trunk {trunk} is branch develop, but its .5w.toml names the trunk main — make main the forge's default branch, or pass --trunk for main\n"
+            )
+        );
+    }
+    r.git(&ci, &["branch", "develop", "origin/develop"]);
+    assert!(
+        r.fails(&ci, &["ci", "--branch", "s/b", "--trunk", "develop"])
+            .contains("--trunk develop is branch develop, but its .5w.toml names the trunk main")
+    );
+}
+
+#[test]
 fn a_ci_check_refuses_a_queue_renamed_in_place_rather_than_reading_no_task() {
     let r = Repo::new("config-queue-in-place-ci");
     let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();

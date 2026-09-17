@@ -60,7 +60,12 @@
         # The queue and policy are read at the default branch, never at the target
         # branch: its author picks that, and can retarget after this ran.
         git fetch -q origin "+refs/heads/$CI_DEFAULT_BRANCH:refs/remotes/origin/$CI_DEFAULT_BRANCH"
-        5w ci --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA" \
+        # A merged-results pipeline checks out the merge into the target: its commit
+        # holds the target's commits the trunk lacks (a stacked change request's
+        # parent), which would read as this branch's. The source branch's own tip is
+        # what was reviewed.
+        5w ci --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" \
+              --head "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}" \
               --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" \
               --trunk "refs/remotes/origin/$CI_DEFAULT_BRANCH"
       else

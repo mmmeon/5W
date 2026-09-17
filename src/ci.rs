@@ -126,9 +126,21 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     // The trunk as a plain sha: a bad --trunk would read an empty queue. Over a
     // broken config, the tip its names were read at, not the trunk it names.
     let trunk_ref = match trunk_ref {
-        Some(t) => Some(git::rev(p, &t).ok_or_else(|| {
-            format!("ci: --trunk {t} is not a commit — pass a branch, tag or sha")
-        })?),
+        Some(t) => {
+            let sha = git::rev(p, &t).ok_or_else(|| {
+                format!("ci: --trunk {t} is not a commit — pass a branch, tag or sha")
+            })?;
+            // A forge whose default branch is not the trunk would read another
+            // branch's queue: every task would fail, none naming why.
+            if let Some(b) = trunk_ref_branch(p, &t)
+                && let Some(named) = committed_trunk(p, Some(&sha)).filter(|n| *n != b)
+            {
+                bail!(
+                    "ci: --trunk {t} is branch {b}, but its .5w.toml names the trunk {named} — make {named} the forge's default branch, or pass --trunk for {named}"
+                );
+            }
+            Some(sha)
+        }
         None => repo.broken_at.as_ref().map(|(_, t)| t.clone()).or_else(|| {
             [
                 format!("refs/heads/{}", repo.trunk),
@@ -686,6 +698,27 @@ pub fn setting_on(p: &std::path::Path, commit: Option<&str>, key: &str) -> bool 
             .unwrap_or(true),
         None => false,
     }
+}
+
+/// The branch a `--trunk` ref names: `refs/heads/<name>`, `refs/remotes/<remote>/<name>`
+/// or a short form of either. None for a sha, a tag or a remote's HEAD: nothing to compare.
+fn trunk_ref_branch(p: &std::path::Path, given: &str) -> Option<String> {
+    let full = git::opt(p, &["rev-parse", "--symbolic-full-name", given])?;
+    let name = match full.strip_prefix("refs/heads/") {
+        Some(n) => n.to_string(),
+        None => {
+            let rest = full.strip_prefix("refs/remotes/")?;
+            // A remote's name may hold a slash: the longest remote that prefixes it.
+            let remotes = git::opt(p, &["remote"]).unwrap_or_default();
+            remotes
+                .lines()
+                .filter_map(|r| rest.strip_prefix(r)?.strip_prefix('/'))
+                .min_by_key(|n| n.len())
+                .or_else(|| rest.split_once('/').map(|(_, n)| n))?
+                .to_string()
+        }
+    };
+    (!name.is_empty() && name != "HEAD").then_some(name)
 }
 
 /// The `trunk` a commit's `.5w.toml` names, read as the config reads it.
