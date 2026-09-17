@@ -33,6 +33,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   wt new --install / wt install run worktrees.install from the committed trunk config (#107), but the "uncommitted edits" note prints only after the command has run, so an operator who removed or changed the install command in an uncommitted edit learns it ran the committed one too late. Print the note before running the install command (and before other side effects in wt). Also the note text says "queue commands read the committed one" even for wt/ship; word it for all commands. Found in review of #107.
 - [ ] #111 The server names an impossible fix for an in-place rename repair under the gate
   Under gate_trunk the server (ci trunk_gate) refuses the repair of a queue name renamed in place with "ship it from an accepted branch (gate_trunk)", but #106 established no queue commit can land that repair; only the client refusal says it is an admin push past the hook. Make the server refusal name the admin step for a push that restores the last accepted names over a broken config. Found in review of #108.
+- [ ] #112 A deleted .5w.toml in trunk history reads as the default config when walking back
+  store.rs last_config_where returns Some("") at a commit that deleted .5w.toml without checking ok, so last_accepted_config / open_for_repair read "deleted" as a default config instead of walking further back to the last config that exists and is accepted. Verify with a test and fix. Found in review of #108.
 
 ## Done
 
