@@ -8,22 +8,20 @@
 # Make the `5w` check required on the trunk. A change request stays red until its
 # task is accepted; re-run the check after `5w accept`.
 #
-# Forge events as queue transitions (optional; delete the `events` step to opt out):
-# opening or pushing to a change request submits the task naming its branch, and
-# an approving review by someone with write access accepts it at the reviewed
-# commit, then the check re-runs. The job pushes the queue commit to the trunk,
-# so the token must be allowed to push there; the commit is unsigned unless the
-# runner has a key. Change requests from forks get a read-only token: submit and
-# accept those by hand. See the README's *Forge events*.
+# This workflow is read-only, and must stay so: on a change request GitHub runs the
+# change request's own copy of it, which its author can edit. Queue edits from
+# forge events (submit, accept) happen in ci/github-queue-events.yml, which runs
+# from the default branch when this one completes. Never grant GITHUB_TOKEN push
+# to the trunk.
 name: 5w
 on:
   push:
   pull_request:
-    types: [opened, synchronize, reopened]
+  # Only to wake ci/github-queue-events.yml when a review is submitted.
   pull_request_review:
     types: [submitted]
 permissions:
-  contents: write
+  contents: read
 jobs:
   queue:
     runs-on: ubuntu-latest
@@ -68,31 +66,6 @@ jobs:
           install -m 755 "$tmp/$asset" "$dest/5w"
           echo "install-5w: $("$dest/5w" --version) → $dest/5w" >&2
           echo "$dest" >> "$GITHUB_PATH"
-      - name: events
-        if: >-
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          (github.event_name == 'pull_request' ||
-           (github.event.review.state == 'approved' &&
-            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)))
-        env:
-          EVENT: ${{ github.event_name }}
-          TRUNK: ${{ github.base_ref }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PR_BRANCH: ${{ github.head_ref }}
-          REVIEWED: ${{ github.event.review.commit_id }}
-        run: |
-          set -eu
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ "$EVENT" = pull_request ]; then set -- --event submit
-          else set -- --event accept --at "$REVIEWED"; fi
-          # A racing job moves the trunk first: take its queue and re-run (a re-run is a no-op).
-          for try in 1 2 3; do
-            git fetch -q origin "+refs/heads/$TRUNK:refs/heads/$TRUNK"
-            5w ci "$@" --branch "$PR_BRANCH" --head "$PR_HEAD"
-            git push -q origin "refs/heads/$TRUNK" && exit 0
-          done
-          exit 1
       - name: check
         env:
           EVENT: ${{ github.event_name }}
@@ -100,7 +73,7 @@ jobs:
           REF: ${{ github.ref }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PR_BRANCH: ${{ github.head_ref }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           if [ "$EVENT" != push ]; then
             5w ci --base "$PR_BASE" --head "$PR_HEAD" --branch "$PR_BRANCH"

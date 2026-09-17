@@ -1,19 +1,21 @@
-# 5w — include in .gitlab-ci.yml (or copy the jobs). 5w is installed at the version
+# 5w — include in .gitlab-ci.yml (or copy the job). 5w is installed at the version
 # .5w.toml pins (`requires`), verified against SHA256SUMS and, when present, its
 # signature; the before_script is ci/install-5w.sh, inlined. Make the pipeline
 # required to merge; a merge request stays red until its task is accepted —
 # re-run the pipeline after `5w accept`.
 #
-# Forge events as queue transitions (optional; set FIVEW_PUSH_TOKEN, a token that
-# may push to the trunk, to opt in): a merge request pipeline submits the task
-# naming its branch, and the manual `5w:accept` job accepts it at the pipeline's
-# commit. GitLab runs no pipeline on an approval, so whoever may run that manual
-# job is who accepts — restrict it with a protected environment. The queue
-# commit is unsigned unless the runner has a key. See the README's *Forge events*.
-.5w:
+# The `5w` job is read-only, and must stay so: a merge request pipeline runs the
+# source branch's .gitlab-ci.yml, which its author can edit. Queue edits from
+# forge events are the `5w:queue-events` job below — see its comment.
+5w:
   image: debian:stable-slim
   variables:
     GIT_DEPTH: "0"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
   before_script:
     - apt-get update -qq && apt-get install -qq -y curl gnupg >/dev/null
     - |
@@ -51,32 +53,9 @@
       mkdir -p "$dest"
       install -m 755 "$tmp/$asset" "$dest/5w"
       echo "install-5w: $("$dest/5w" --version) → $dest/5w" >&2
-    - |
-      # 5w ci --event with the trunk pushed back, retried when a racing job moved it
-      # (a re-run is a no-op). No FIVEW_PUSH_TOKEN: events are off.
-      event() {
-        [ -n "${FIVEW_PUSH_TOKEN:-}" ] || return 0
-        t=$CI_MERGE_REQUEST_TARGET_BRANCH_NAME
-        git config user.name "5w ci"; git config user.email "5w-ci@$CI_SERVER_HOST"
-        git remote set-url --push origin "https://oauth2:$FIVEW_PUSH_TOKEN@$CI_SERVER_HOST/$CI_PROJECT_PATH.git"
-        for try in 1 2 3; do
-          git fetch -q origin "+refs/heads/$t:refs/heads/$t"
-          5w ci --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" \
-                --head "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}" "$@"
-          git push -q origin "refs/heads/$t" && return 0
-        done
-        return 1
-      }
-
-5w:
-  extends: .5w
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
   script:
     - |
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
-        event --event submit
         git fetch -q origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
         5w ci --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA" \
               --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" \
@@ -85,16 +64,94 @@
         5w ci --base "$CI_COMMIT_BEFORE_SHA" --head "$CI_COMMIT_SHA" --ref "refs/heads/$CI_COMMIT_BRANCH"
       fi
 
-5w:accept:
-  extends: .5w
+# Forge events as queue edits (optional). A scheduled pipeline on the default
+# branch — never a merge request pipeline, which runs code its author controls —
+# submits each open merge request's task, and accepts it once it is approved.
+#
+# - Create a pipeline schedule on the default branch (every few minutes).
+# - FIVEW_QUEUE_TOKEN: a project access token with `api` and `write_repository`,
+#   allowed to push the trunk, as a protected variable scoped to the `5w-queue`
+#   environment, and make that a protected environment only maintainers deploy
+#   to. No other job references the environment, so no other job can read it.
+# - Turn on "Remove all approvals when commits are added": GitLab records who
+#   approved, not which commit, so an approval must not survive a push. The job
+#   refuses to accept while that setting is off.
+# - An approval counts only from someone other than the author with at least
+#   Developer access; a merge request with changes requested is not accepted.
+# - Merge requests from forks are left alone. Do not enable "run pipelines in
+#   the parent project" for merge requests from forks you do not trust: that runs
+#   the fork's .gitlab-ci.yml with the parent's variables.
+# - The 5w version is pinned here, never read from a merge request. Queue commits
+#   are unsigned unless the runner has a key.
+5w:queue-events:
+  image: debian:stable-slim
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $FIVEW_PUSH_TOKEN
-      when: manual
-      allow_failure: true
-  environment: 5w-accept
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  environment:
+    name: 5w-queue
+    action: access
+  resource_group: 5w-queue
+  variables:
+    GIT_DEPTH: "0"
+    FIVEW_VERSION: "0.1.4"
+  before_script:
+    - apt-get update -qq && apt-get install -qq -y curl gnupg jq git >/dev/null
+    - |
+      set -eu
+      KEY_FPR=1125DC32ECA09CA21A1810DE3491A839212CC7DB   # mmmeon <si@mmmeon.com>, signing subkey
+      v=$FIVEW_VERSION
+      asset="5w-$v-$(uname -m)-unknown-linux-musl"
+      base="https://github.com/mmmeon/5W/releases/download/v$v"
+      tmp=$(mktemp -d)
+      curl -fsSL "$base/$asset" -o "$tmp/$asset"
+      curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+      ( cd "$tmp" && grep "  $asset\$" SHA256SUMS | sha256sum -c - ) >&2
+      curl -fsSL "$base/SHA256SUMS.asc" -o "$tmp/SHA256SUMS.asc"
+      curl -fsSL "https://raw.githubusercontent.com/mmmeon/5W/v$v/SIGNING_KEY.asc" -o "$tmp/key.asc"
+      export GNUPGHOME="$tmp/gnupg"; mkdir -m 700 "$GNUPGHOME"
+      gpg --batch --quiet --import "$tmp/key.asc"
+      gpg --batch --status-fd 1 --verify "$tmp/SHA256SUMS.asc" "$tmp/SHA256SUMS" 2>/dev/null \
+        | grep -q "^\[GNUPG:\] VALIDSIG $KEY_FPR " \
+        || { echo "install-5w: SHA256SUMS is not signed by $KEY_FPR" >&2; exit 1; }
+      install -m 755 "$tmp/$asset" /usr/local/bin/5w
+      rm -rf "$tmp"
   script:
     - |
-      # The branch must still be at this pipeline's commit: a newer push needs its own review.
-      git fetch -q origin "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
-      event --event accept --at "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}" \
-            --head "$(git rev-parse FETCH_HEAD)"
+      set -eu
+      api() { curl -fsS --header "PRIVATE-TOKEN: $FIVEW_QUEUE_TOKEN" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/$1"; }
+      trunk=$CI_DEFAULT_BRANCH
+      [ "$(api approvals | jq -r .reset_approvals_on_push)" = true ] \
+        || { echo "5w: turn on \"Remove all approvals when commits are added\" before accepting from CI" >&2; exit 1; }
+      git config user.name "5w queue events"; git config user.email "5w-queue@$CI_SERVER_HOST"
+      git checkout -q --detach
+      push="https://oauth2:$FIVEW_QUEUE_TOKEN@$CI_SERVER_HOST/$CI_PROJECT_PATH.git"
+      status=0
+      for mr in $(api "merge_requests?state=opened&target_branch=$trunk&per_page=100" \
+          | jq -r --argjson p "$CI_PROJECT_ID" '.[] | select(.source_project_id == $p) | .iid'); do
+        m=$(api "merge_requests/$mr")
+        head=$(printf '%s' "$m" | jq -r .sha); branch=$(printf '%s' "$m" | jq -r .source_branch)
+        author=$(printf '%s' "$m" | jq -r .author.id)
+        approver=
+        if [ "$(printf '%s' "$m" | jq -r .detailed_merge_status)" = requested_changes ]; then
+          echo "!$mr has changes requested: not accepting"
+        else
+          for id in $(api "merge_requests/$mr/approvals" | jq -r --argjson a "$author" '.approved_by[].user | select(.id != $a) | .id'); do
+            level=$(api "members/all/$id" 2>/dev/null | jq -r '.access_level // 0') || level=0
+            if [ "${level:-0}" -ge 30 ]; then approver=$id; break; fi
+          done
+        fi
+        git fetch -q origin "+refs/merge-requests/$mr/head:refs/5w/change-request"
+        [ "$(git rev-parse refs/5w/change-request)" = "$head" ] || { echo "!$mr moved; the next run decides"; continue; }
+        ok=
+        for try in 1 2 3; do
+          git fetch -q origin "+refs/heads/$trunk:refs/heads/$trunk"
+          5w ci --event submit --branch "$branch" --head "$head" || break
+          if [ -n "$approver" ]; then
+            5w ci --event accept --branch "$branch" --head "$head" --at "$head" || break
+          fi
+          if [ "$(git rev-parse "refs/heads/$trunk")" = "$(git rev-parse "origin/$trunk")" ] \
+            || git push -q "$push" "refs/heads/$trunk:refs/heads/$trunk"; then ok=1; break; fi
+        done
+        [ -n "$ok" ] || status=1
+      done
+      exit $status

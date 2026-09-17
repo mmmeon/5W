@@ -2749,6 +2749,7 @@ fn ci_events_refuse_in_one_line() {
     r.ok(&r.main, &["add", "x", "branch:a/x"]);
     r.ok(&r.main, &["add", "y", "branch:a/x"]);
     r.ok(&r.main, &["add", "z", "branch:b/z"]);
+    r.ok(&r.main, &["add", "w"]);
     r.git(&r.main, &["branch", "a/x"]);
     r.git(&r.main, &["branch", "b/z"]);
     let sha = r.git(&r.main, &["rev-parse", "HEAD"]);
@@ -2782,8 +2783,12 @@ fn ci_events_refuse_in_one_line() {
             "not a task branch",
         ),
         (
-            &["ci", "--event", "submit", "--branch", "b/z", "--task", "1"][..],
-            "#1 names branch a/x, not b/z",
+            &["ci", "--event", "submit", "--branch", "c/y", "--task", "1"][..],
+            "#1 names branch a/x, not c/y",
+        ),
+        (
+            &["ci", "--event", "submit", "--branch", "b/z", "--task", "4"][..],
+            "#3 already names b/z, not #4 — drop --task",
         ),
         (
             &["ci", "--event", "accept", "--branch", "b/z", "--at", &sha][..],

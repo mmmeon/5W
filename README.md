@@ -245,41 +245,64 @@ The wrappers install exactly the version the project pins (see *Staying current*
 
 ### Forge events
 
-A change request can drive the queue itself: opening it submits its task, an approving review
-accepts it. The job maps its forge's event onto one of two generic transitions:
+A change request can drive the queue itself: opening it submits its task, an approval accepts it.
+A job maps its forge's events onto two generic transitions:
 
 ```
 5w ci --event submit --branch <name> --head <tip>                 # opened, or pushed to
-5w ci --event accept --branch <name> --head <tip> --at <reviewed> # an approving review
+5w ci --event accept --branch <name> --head <tip> --at <reviewed> # approved
 ```
 
-The task is the one unclosed row naming the branch (`--task <id>` when none does yet). Each event
-is the ordinary `submit` or `accept`, with every check, committed to `refs/heads/<trunk>` — so the
-job fetches the trunk as a local branch first (`git fetch origin +main:main`), and **pushes it
-back itself**: 5w never pushes. Both wrappers above carry the wiring, off unless enabled.
+The task is the one unclosed row naming the branch; `--task <id>` names one when no row does, and is
+refused when that row names another branch. Each event is the ordinary `submit` or `accept`, with
+every check, committed to `refs/heads/<trunk>` — so the job fetches the trunk as a local branch
+first (`git fetch origin +main:main`) and **pushes it back itself**: 5w never pushes.
 
-- **Who accepts.** CI cannot tell who approved; the forge can. The GitHub wrapper acts only on an
-  approval by an owner, member or collaborator, on a change request from the repository itself; on
-  GitLab, which runs no pipeline on an approval, a manual `5w:accept` job does, so whoever may run it
-  — restrict it with a protected environment — accepts. Branch protection on the trunk decides whose
-  token may push the queue commit.
-- **What is accepted** is `--at`, the commit the review approved, and only when it is `--head`, the
-  change request's tip now, and contains the submitted commit. A push after the approval is refused:
-  it needs its own review. The ship check (`5w ci --branch`) then passes on that change and nothing
-  else.
+- **What is accepted** is `--at`, the approved commit, and only when it is `--head`, the change
+  request's tip now, and contains the submitted commit. A push after the approval needs its own. The
+  ship check (`5w ci --branch`) then passes on that change and nothing else.
 - **Re-runs are no-ops.** Submitting at the recorded commit, accepting at the recorded reviewed
-  commit, or either on a closed task prints one line and exits 0. A push after submit leaves the
-  row as it is; review reads the drift, and the approval names the commit. A job re-run at a head that was
+  commit, or either on a closed task prints one line and exits 0. A push after submit leaves the row
+  as it is; review reads the drift, and the approval names the commit. A re-run at a head that was
   rejected does not resubmit it; a new commit does. A branch no task names is a note, not a failure
-  — the change request's check is what fails it under `require_task`.
+  — the change request's check fails it under `require_task`.
 - **Races.** Events in one clone are serialised by the queue lock and a compare-and-swap; jobs in
-  separate clones race at the push, and the second is refused as non-fast-forward. Fetch the trunk again (dropping the local queue commit) and
-  re-run the event — the wrappers retry three times.
-- **Signing.** A queue commit is signed when the runner's git config asks for it
-  (`commit.gpgsign`, `user.signingkey`); a runner usually has no key, so event commits are unsigned.
-  Where the trunk requires signed commits, give the job a key or leave events to people.
-- A push by a forge's own job token may not start another workflow run: re-run the change request's
-  check after an accept that happened elsewhere (the GitHub wrapper runs it in the same job).
+  separate clones race at the push, and the second is refused as non-fast-forward. Fetch the trunk
+  again, dropping the local queue commit, and re-run the events; the wrappers retry three times.
+- **Signing.** A queue commit is signed when the runner's git config asks for it (`commit.gpgsign`,
+  `user.signingkey`). A runner usually has no key, so event commits are unsigned; where the trunk
+  requires signed commits, give the job a key or leave events to people.
+
+**Trust rules.** 5w cannot tell who approved or who runs it; the wiring around it must.
+
+1. **The job that edits the queue never runs code from the change request.** A forge runs a change
+   request's pipeline from the change request's own copy of the CI file, which its author can edit to
+   accept anything. So the check on the change request stays read-only, and submit and accept run
+   in a separate job defined on the default branch. That job checks out nothing from the change
+   request and reads none of its files — not its `.5w.toml`, not its `requires`: its 5w version is
+   pinned in the job (`FIVEW_VERSION`, which `ci/install-5w.sh` also honours). The change request's
+   commits are fetched as objects only.
+2. **Whatever wakes the job is not evidence.** It reads the change request again from the forge's
+   API: open, into the trunk, from the repository itself (not a fork), and its current head. An
+   approval counts only from someone other than the author with write access by the API's
+   permission check (not a display field such as `author_association`), of that head; any
+   outstanding "changes requested" blocks it.
+3. **The push credential belongs to that job alone.** A token allowed to push the trunk lives in an
+   environment only that job uses, restricted to the default branch. Never give the forge's general
+   job token (`GITHUB_TOKEN`, `CI_JOB_TOKEN`) push to the trunk: every writer's pipeline holds it.
+4. **Forks are done by hand**, and a fork's pipeline must never run with the parent's secrets.
+
+The wiring follows them:
+
+- **GitHub:** [ci/github-actions.yml](ci/github-actions.yml) is the read-only check
+  (`contents: read`). [ci/github-queue-events.yml](ci/github-queue-events.yml) runs from the default
+  branch on `workflow_run` of it, reads the review and the approver's permission from the API, pushes
+  with `FIVEW_PUSH_TOKEN` (a GitHub App or fine-grained token) from the `5w-queue` environment, and
+  re-runs the check after an accept.
+- **GitLab:** the `5w` job in [ci/gitlab-ci.yml](ci/gitlab-ci.yml) is the read-only check. The
+  `5w:queue-events` job runs on a schedule on the default branch, reads merge requests and approvals
+  from the API, and pushes with `FIVEW_QUEUE_TOKEN` from the protected `5w-queue` environment. GitLab
+  records who approved but not which commit, so it refuses while approvals survive a push.
 
 This repository's own [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `cargo fmt`, `cargo
 clippy` and `cargo test` on every push and change request, then the same `5w ci` check against 5W's

@@ -1,0 +1,136 @@
+# 5w forge events — copy to .github/workflows/5w-queue.yml, next to ci/github-actions.yml.
+#
+# Opening or pushing to a change request submits the task naming its branch; an
+# approval of its current tip accepts it. This is the one privileged workflow, so
+# its trust rules (README, *Forge events*) are built into it:
+#
+# - It runs from the default branch (`workflow_run`), never from the change
+#   request: GitHub runs a pull_request workflow from the change request's own
+#   copy, which its author can edit. Nothing from the change request is checked
+#   out, read or run — not its .5w.toml, not its `requires`: the 5w version is
+#   pinned below. Its commits are fetched as objects, for 5w to compare shas.
+# - The triggering run is only a wake-up. Everything is read again from the API:
+#   the change request's state, base, current head and author; its reviews; each
+#   approver's permission (write, maintain or admin, from the collaborator
+#   permission API — not author_association). An approval counts only if it is
+#   of the current head, by someone other than the author; any reviewer's
+#   outstanding "changes requested" blocks it.
+# - The trunk is pushed with FIVEW_PUSH_TOKEN — a GitHub App token or fine-grained
+#   token allowed to push the trunk — stored as a secret of the `5w-queue`
+#   environment, whose deployment branches are the default branch only. Never
+#   grant GITHUB_TOKEN push to the trunk: every writer's workflow would hold it.
+# - Change requests from forks are left alone: submit and accept those by hand.
+#
+# Queue commits from here are unsigned unless you give the job a signing key.
+name: 5w queue events
+on:
+  workflow_run:
+    workflows: ["5w"]
+    types: [completed]
+permissions:
+  contents: read
+  pull-requests: read
+  actions: write # only to re-run the change request's check after an accept
+concurrency:
+  group: 5w-queue
+  cancel-in-progress: false
+jobs:
+  events:
+    if: >-
+      contains(fromJSON('["pull_request","pull_request_review"]'), github.event.workflow_run.event) &&
+      github.event.workflow_run.pull_requests[0] != null
+    runs-on: ubuntu-latest
+    environment: 5w-queue
+    env:
+      FIVEW_VERSION: "0.1.4" # pinned here, never read from a change request
+      FIVEW_REQUIRE_SIGNATURE: "1"
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TRUNK: ${{ github.event.repository.default_branch }}
+      NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+      CHECK_RUN: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: install 5w (the version pinned above)
+        run: |
+          set -eu
+          dest="$HOME/.local/bin"
+          KEY_FPR=1125DC32ECA09CA21A1810DE3491A839212CC7DB   # mmmeon <si@mmmeon.com>, signing subkey
+          v=$FIVEW_VERSION
+          target="$(uname -m)-unknown-linux-musl"
+          asset="5w-$v-$target"
+          base="https://github.com/mmmeon/5W/releases/download/v$v"
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          curl -fsSL "$base/$asset" -o "$tmp/$asset"
+          curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+          ( cd "$tmp" && grep "  $asset\$" SHA256SUMS | sha256sum -c - ) >&2
+          curl -fsSL "$base/SHA256SUMS.asc" -o "$tmp/SHA256SUMS.asc"
+          curl -fsSL "https://raw.githubusercontent.com/mmmeon/5W/v$v/SIGNING_KEY.asc" -o "$tmp/key.asc"
+          export GNUPGHOME="$tmp/gnupg"; mkdir -m 700 "$GNUPGHOME"
+          gpg --batch --quiet --import "$tmp/key.asc"
+          gpg --batch --status-fd 1 --verify "$tmp/SHA256SUMS.asc" "$tmp/SHA256SUMS" 2>/dev/null \
+            | grep -q "^\[GNUPG:\] VALIDSIG $KEY_FPR " \
+            || { echo "install-5w: SHA256SUMS is not signed by $KEY_FPR" >&2; exit 1; }
+          mkdir -p "$dest"
+          install -m 755 "$tmp/$asset" "$dest/5w"
+          echo "$dest" >> "$GITHUB_PATH"
+      - name: submit, and accept an approval of the tip
+        env:
+          FIVEW_PUSH_TOKEN: ${{ secrets.FIVEW_PUSH_TOKEN }}
+        run: |
+          set -eu
+          pr=$(gh api "repos/$REPO/pulls/$NUMBER")
+          field() { printf '%s' "$pr" | jq -r "$1"; }
+          [ "$(field .state)" = open ] || { echo "#$NUMBER is not open"; exit 0; }
+          [ "$(field .base.ref)" = "$TRUNK" ] || { echo "#$NUMBER is not into $TRUNK"; exit 0; }
+          [ "$(field .head.repo.full_name)" = "$REPO" ] \
+            || { echo "#$NUMBER is from a fork: submit and accept it by hand"; exit 0; }
+          head=$(field .head.sha); branch=$(field .head.ref); author=$(field .user.login)
+
+          # Each reviewer's latest deciding review.
+          latest=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" | jq -s '
+            add // [] | map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
+            | group_by(.user.login) | map(max_by(.submitted_at))')
+          can_write() {
+            p=$(gh api "repos/$REPO/collaborators/$1/permission" --jq '.permission + " " + (.role_name // "")')
+            case " $p " in *" admin "*|*" write "*|*" maintain "*) return 0;; esac
+            return 1
+          }
+          approver=
+          if [ "$(printf '%s' "$latest" | jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length')" != 0 ]; then
+            echo "#$NUMBER has changes requested: not accepting"
+          else
+            for login in $(printf '%s' "$latest" | jq -r --arg head "$head" --arg author "$author" \
+                '.[] | select(.state == "APPROVED" and .commit_id == $head and .user.login != $author) | .user.login'); do
+              if can_write "$login"; then approver=$login; break; fi
+            done
+          fi
+
+          # The head as an object only: never checked out.
+          git fetch -q origin "+refs/pull/$NUMBER/head:refs/5w/change-request"
+          [ "$(git rev-parse refs/5w/change-request)" = "$head" ] \
+            || { echo "#$NUMBER moved while this ran; its next run decides"; exit 0; }
+          git config user.name "5w queue events"
+          git config user.email "5w-queue@users.noreply.github.com"
+          git checkout -q --detach
+          for try in 1 2 3; do
+            git fetch -q origin "+refs/heads/$TRUNK:refs/heads/$TRUNK"
+            5w ci --event submit --branch "$branch" --head "$head"
+            if [ -n "$approver" ]; then
+              echo "approved by $approver at $head"
+              5w ci --event accept --branch "$branch" --head "$head" --at "$head"
+            fi
+            [ "$(git rev-parse "refs/heads/$TRUNK")" = "$(git rev-parse "origin/$TRUNK")" ] && exit 0
+            if git push -q "https://x-access-token:$FIVEW_PUSH_TOKEN@github.com/$REPO.git" "refs/heads/$TRUNK:refs/heads/$TRUNK"; then
+              # The check is red until accepted: run it again against the new queue.
+              [ -z "$approver" ] || gh api -X POST "repos/$REPO/actions/runs/$CHECK_RUN/rerun" >/dev/null || true
+              exit 0
+            fi
+            git fetch -q origin "$TRUNK"
+          done
+          exit 1

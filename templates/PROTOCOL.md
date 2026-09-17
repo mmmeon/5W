@@ -57,5 +57,5 @@ Never:
   is still exactly what was reviewed at `reviewed:`. Anything added after review needs a fresh
   submit and accept.
 - A CI job may make the submit and accept edits for a change request (`5w ci --event`): the same
-  edits, pushed to the trunk. Accept is then the forge's approval of the change request's tip, and
-  the forge decides whose approval counts.
+  edits, pushed to the trunk, from a job that runs nothing from the change request. Accept is then
+  the forge's approval of the change request's tip, and the forge decides whose approval counts.

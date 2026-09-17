@@ -241,6 +241,12 @@ fn event_task(repo: &Repo, branch: &str, task: Option<u64>, what: &str) -> Res<O
     let mut all = queue::parse(&committed(&repo.cfg.file)?);
     all.extend(queue::parse(&committed(&repo.cfg.archive)?));
     if let Some(id) = task {
+        if let Some(o) = all
+            .iter()
+            .find(|t| t.id != id && t.state != State::Done && t.branch.as_deref() == Some(branch))
+        {
+            bail!("#{} already names {branch}, not #{id} — drop --task", o.id);
+        }
         let Some(t) = all.into_iter().find(|t| t.id == id) else {
             bail!("#{id} is not on {}'s queue", repo.trunk)
         };

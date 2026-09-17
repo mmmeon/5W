@@ -13,7 +13,8 @@ KEY_FPR=1125DC32ECA09CA21A1810DE3491A839212CC7DB   # mmmeon <si@mmmeon.com>, sig
 REPO=${FIVEW_REPO:-mmmeon/5W}
 dest=${1:-"$HOME/.local/bin"}
 
-v=$(sed -n 's/^requires *= *"\([0-9][0-9.]*\)".*/\1/p' .5w.toml 2>/dev/null | head -1)
+# FIVEW_VERSION pins it instead, for a job that must not read the checkout's .5w.toml.
+v=${FIVEW_VERSION:-$(sed -n 's/^requires *= *"\([0-9][0-9.]*\)".*/\1/p' .5w.toml 2>/dev/null | head -1)}
 [ -n "$v" ] || { echo "install-5w: no requires = \"x.y.z\" in ./.5w.toml" >&2; exit 1; }
 target="$(uname -m)-unknown-linux-musl"
 asset="5w-$v-$target"
