@@ -38,8 +38,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 2: rows carry 11 fields today.
 - [ ] #23 opts(): refuse a flag a command does not understand instead of silently accepting it @output !2 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. 5w ready --bogus exits 0 because opts() pushes unknown flags into o.flags. Refusal one line naming the fix.
-- [~] #25 Per-subcommand --help prints that command's one-line usage, not the full global listing @output !1 needs:#13 branch:output/task-25 submitted:d32230be5716
-  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. add/submit/accept/reject --help print the ~40-line USAGE; wt/ship/lint/ci/report already have their own.
 - [ ] #27 Color: disable for TERM=dumb and add an explicit --no-color flag @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. Sty::new() checks only isatty and NO_COLOR; --no-color is swallowed today by the opts() unknown-flag bug.
 - [ ] #28 Color the '5w: <error>' refusal red when stderr is a terminal and NO_COLOR is unset @output !1 needs:#13
@@ -88,3 +86,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 9.
 - [x] #24 row(): append a size hint when a title is truncated, not a bare ellipsis @output !1 needs:#13 branch:output/task-24 submitted:c80a4613f6c4 via:review reviewed:c80a4613f6c4
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 3.
+- [x] #25 Per-subcommand --help prints that command's one-line usage, not the full global listing @output !1 needs:#13 branch:output/task-25 submitted:d32230be5716 via:review reviewed:d32230be5716
+  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. add/submit/accept/reject --help print the ~40-line USAGE; wt/ship/lint/ci/report already have their own.
