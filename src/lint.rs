@@ -836,36 +836,31 @@ pub(crate) fn trunk_tip(dir: &std::path::Path, t: &str) -> Option<String> {
 }
 
 /// The names a repair of commit `tip`, whose broken config gives the names in
-/// `broken`, restores. None unless the break renamed the queue or archive in place
-/// (`tip` has no file under the broken name and one under the accepted name); then
-/// each queue name `tip` has no file under by its broken name, and the commit
-/// prefix, go back to the last accepted config's — a name whose file moved stays.
+/// `broken`, restores: each of the queue and archive renamed in place (`tip` has
+/// no file under its broken name and one under the last accepted config's), and,
+/// when there is one, the commit prefix. A name whose file moved, or that names no
+/// file either way, stays.
 pub(crate) fn names_to_restore(dir: &std::path::Path, tip: &str, broken: &Config) -> Vec<Restore> {
     let Some(last) = crate::store::last_accepted_config(dir, tip) else {
         return Vec::new();
     };
     let has = |name: &str| git::ok(dir, &["cat-file", "-e", &format!("{tip}:{name}")]);
-    let files = [
+    let mut restores: Vec<Restore> = [
         ("file", &broken.file, &last.file),
         ("archive", &broken.archive, &last.archive),
-    ];
-    let moved: Vec<bool> = files.iter().map(|(_, new, _)| has(new)).collect();
-    let in_place = files
-        .iter()
-        .zip(&moved)
-        .any(|((_, new, old), moved)| old != new && !moved && has(old));
-    if !in_place {
-        return Vec::new();
+    ]
+    .into_iter()
+    .filter(|(_, new, old)| old != new && !has(new) && has(old))
+    .map(|(key, new, old)| (key, new.clone(), old.clone()))
+    .collect();
+    if !restores.is_empty() && broken.commit_prefix != last.commit_prefix {
+        restores.push((
+            "commit_prefix",
+            broken.commit_prefix.clone(),
+            last.commit_prefix,
+        ));
     }
-    files
-        .into_iter()
-        .zip(moved)
-        .filter(|(_, moved)| !moved)
-        .map(|(f, _)| f)
-        .chain([("commit_prefix", &broken.commit_prefix, &last.commit_prefix)])
-        .filter(|(_, new, old)| old != new)
-        .map(|(key, new, old)| (key, new.clone(), old.clone()))
-        .collect()
+    restores
 }
 
 /// Whether `cfg` restores, over commit `tip` whose broken config gives the names

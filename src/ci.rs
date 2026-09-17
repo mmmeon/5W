@@ -698,12 +698,7 @@ fn archive_at(repo: &Repo, rev: &str) -> Res<String> {
     if let Some(a) = git::opt(p, &["show", &format!("{rev}:{new}")]) {
         return Ok(a);
     }
-    let Some(tip) = [
-        format!("refs/heads/{t}"),
-        format!("refs/remotes/origin/{t}"),
-    ]
-    .iter()
-    .find_map(|r| git::rev(p, r)) else {
+    let Some(tip) = lint::trunk_tip(p, t) else {
         return Ok(String::new());
     };
     let Some(text) = git::opt(p, &["show", &format!("{tip}:{file}")]) else {
@@ -712,19 +707,19 @@ fn archive_at(repo: &Repo, rev: &str) -> Res<String> {
     let Err(e) = crate::config::Config::from_toml(&text) else {
         return Ok(String::new());
     };
-    let old = crate::store::last_accepted_config(p, &tip)
-        .map(|c| c.archive)
-        .filter(|old| old != new && git::ok(p, &["cat-file", "-e", &format!("{rev}:{old}")]));
-    let Some(old) = old else {
-        return Ok(String::new());
-    };
-    let fix = match setting_on(p, Some(&tip), "gate_trunk") {
-        true => format!(
-            "an admin commits a {file} that parses with archive = \"{old}\" on {t} and pushes it past the server's hook"
-        ),
-        false => format!("commit a {file} that parses with archive = \"{old}\" on {t} and push it"),
-    };
-    bail!("{file} on {t} is broken ({e}) and names the archive {new}, not {old} — {fix}")
+    // Whether `rev` still holds the old archive; the names the repair restores
+    // are the trunk tip's (`store::restore_fix`), as a checkout's reads name them.
+    let at_rev = crate::store::last_accepted_config(p, &tip).is_some_and(|c| {
+        c.archive != *new && git::ok(p, &["cat-file", "-e", &format!("{rev}:{}", c.archive)])
+    });
+    let gate = || setting_on(p, Some(&tip), "gate_trunk");
+    match at_rev
+        .then(|| crate::store::restore_fix(p, t, &tip, &repo.cfg, gate(), &e, "archive"))
+        .flatten()
+    {
+        Some(fix) => bail!("{fix}"),
+        None => Ok(String::new()),
+    }
 }
 
 /// The commits a landing record covers, when it holds: see `trunk_gate`.

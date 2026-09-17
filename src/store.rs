@@ -112,6 +112,37 @@ pub(crate) fn last_accepted_config(dir: &Path, commit: &str) -> Option<Config> {
     Config::from_toml(&text).ok()
 }
 
+/// The refusal naming the repair of a break (`err`) of `trunk`'s config, whose tip
+/// commit is `tip` and whose broken config gives the names in `broken`, when it
+/// renamed `key`'s file in place: every name that repair restores
+/// (`lint::names_to_restore`), pushed past the server's hook under `gate_trunk`.
+/// None: the break did not rename `key` in place.
+pub(crate) fn restore_fix(
+    dir: &Path,
+    trunk: &str,
+    tip: &str,
+    broken: &Config,
+    gate_trunk: bool,
+    err: &str,
+    key: &str,
+) -> Option<String> {
+    let restores = crate::lint::names_to_restore(dir, tip, broken);
+    if !restores.iter().any(|(k, ..)| *k == key) {
+        return None;
+    }
+    let (what, names) = crate::lint::describe_restore(&restores);
+    let t = trunk;
+    let fix = match gate_trunk {
+        true => format!(
+            "an admin commits a {CONFIG_FILE} that parses with {names} on {t} and pushes it past the server's hook"
+        ),
+        false => format!("commit a {CONFIG_FILE} that parses with {names} on {t} and push it"),
+    };
+    Some(format!(
+        "{CONFIG_FILE} on {t} is broken ({err}) and names {what} — {fix}"
+    ))
+}
+
 /// A name a trunk config that `from_toml` refuses gives `key` (the trunk, the
 /// queue's file and archive, the commit prefix), read as the config reads it: the
 /// last string `kv` gives it. One holding a control character, which no config
@@ -567,24 +598,18 @@ impl Repo {
         })
     }
 
-    /// The refusal naming the repair of a break (`e`) that renamed `key`'s file in
-    /// place: every name that repair restores (`lint::names_to_restore`, over the
-    /// trunk's committed tip). None: the break did not rename `key` in place.
+    /// `restore_fix` over the trunk's committed tip.
     fn restore_fix(&self, e: &str, key: &str) -> Option<String> {
-        let t = &self.trunk;
-        let restores = crate::lint::trunk_tip(&self.primary, t)
-            .map(|tip| crate::lint::names_to_restore(&self.primary, &tip, &self.cfg))
-            .filter(|r| r.iter().any(|(k, ..)| *k == key))?;
-        let (what, names) = crate::lint::describe_restore(&restores);
-        let fix = match self.cfg.gate_trunk {
-            true => format!(
-                "an admin commits a {CONFIG_FILE} that parses with {names} on {t} and pushes it past the server's hook"
-            ),
-            false => format!("commit a {CONFIG_FILE} that parses with {names} on {t} and push it"),
-        };
-        Some(format!(
-            "{CONFIG_FILE} on {t} is broken ({e}) and names {what} — {fix}"
-        ))
+        let tip = crate::lint::trunk_tip(&self.primary, &self.trunk)?;
+        restore_fix(
+            &self.primary,
+            &self.trunk,
+            &tip,
+            &self.cfg,
+            self.cfg.gate_trunk,
+            e,
+            key,
+        )
     }
 
     /// Closed tasks moved out of the queue by `archive`. Empty when there is none.

@@ -7402,11 +7402,19 @@ fn the_server_names_an_archive_renamed_in_place_not_the_task() {
         &["main", "a/x", &format!("{reviewed}:refs/5w/reviewed/1")],
     );
     assert!(ok, "{err}");
-    // One break renames the archive, and the archive file stays where it was.
+    // One break renames the archive, and the archive file stays where it was; it
+    // also moves the queue, which stays renamed, and renames the commit prefix.
     let broken = cfg
         .replace("archive = \"DONE.md\"", "archive = \"DONE2.md\"")
+        .replace("file = \"TASKS.md\"", "file = \"Q.md\"")
+        .replace(
+            "commit_prefix = \"chore(tasks)\"",
+            "commit_prefix = \"queue\"",
+        )
         .replace("[sections]\n", "[sections]\ntrunk = \"main\"\n");
     assert!(broken.contains("DONE2.md") && broken.contains("[sections]\ntrunk"));
+    assert!(broken.contains("Q.md") && broken.contains("\"queue\""));
+    r.git(&r.main, &["mv", "TASKS.md", "Q.md"]);
     std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
     r.git(
         &r.main,
@@ -7419,7 +7427,8 @@ fn the_server_names_an_archive_renamed_in_place_not_the_task() {
     let blames_the_config = |out: &str| {
         out.contains(".5w.toml on main is broken")
             && out.contains("names the archive DONE2.md, not DONE.md")
-            && out.contains("archive = \"DONE.md\"")
+            && out.contains("archive = \"DONE.md\", commit_prefix = \"chore(tasks)\"")
+            && !out.contains("file = ")
             && out.contains("an admin")
             && !out.contains("not in the queue")
             && !out.contains("no task names it")
@@ -7451,7 +7460,8 @@ fn the_server_names_an_archive_renamed_in_place_not_the_task() {
             "-q",
             "--allow-empty",
             "-m",
-            &format!("chore(tasks): land #1\n\nLanded: {base}..{tip}"),
+            // The prefix the server reads is the broken config's.
+            &format!("queue: land #1\n\nLanded: {base}..{tip}"),
         ],
     );
     let before = r.git(&server, &["rev-parse", "main"]);
@@ -7465,15 +7475,20 @@ fn the_server_names_an_archive_renamed_in_place_not_the_task() {
 
 #[test]
 fn a_break_mixing_a_moved_queue_and_an_archive_renamed_in_place_names_each_repair() {
-    for moved in [true, false] {
-        let r = Repo::new(&format!("config-mixed-rename-{moved}"));
+    // The queue moved with its file or renamed in place; the archive renamed in
+    // place, or renamed with no archive file under either name.
+    for (moved, archived) in [(true, true), (false, true), (false, false)] {
+        let r = Repo::new(&format!("config-mixed-rename-{moved}-{archived}"));
         r.ok(&r.main, &["add", "first"]);
         r.ok(&r.main, &["wt", "new", "a/x"]);
         let wt = r.wt("a/x");
         r.commit_in(&wt, "f", "1\n");
         r.ok(&wt, &["submit", "1"]);
         r.ok(&r.main, &["accept", "1"]);
-        r.ok(&r.main, &["archive"]);
+        if archived {
+            r.ok(&r.main, &["archive"]);
+        }
+        assert_eq!(r.main.join("DONE.md").exists(), archived);
         let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
             .unwrap()
             .replace("gate_trunk = false", "gate_trunk = true");
@@ -7487,8 +7502,7 @@ fn a_break_mixing_a_moved_queue_and_an_archive_renamed_in_place_names_each_repai
             assert!(push_to(&r, &["main"]).0);
             std::fs::rename(server.join("hook-off"), &hook).unwrap();
         };
-        // One break renames the queue (moving its file, or leaving it in place),
-        // the archive in place, and the commit prefix.
+        // One break renames the queue, the archive and the commit prefix.
         if moved {
             r.git(&r.main, &["mv", "TASKS.md", "Q.md"]);
         }
@@ -7510,69 +7524,60 @@ fn a_break_mixing_a_moved_queue_and_an_archive_renamed_in_place_names_each_repai
         );
         past_hook();
 
-        // The refusal names every name the repair restores, and no name whose file moved.
-        let restored = ["archive = \"DONE.md\"", "commit_prefix = \"chore(tasks)\""];
-        let err = r.refuses(&r.main, &["ready"]);
-        let what = match moved {
-            true => "names the archive DONE2.md, not DONE.md",
-            false => "names the queue Q.md, not TASKS.md",
-        };
-        assert!(
-            err.contains(what)
-                && restored.iter().all(|n| err.contains(n))
+        // The refusal names every name renamed in place and the commit prefix, and
+        // no name whose file moved or that names no file.
+        let file = if moved { "Q.md" } else { "TASKS.md" };
+        let archive = if archived { "DONE.md" } else { "DONE2.md" };
+        let prefix = "chore(tasks)";
+        let names = |err: &str| {
+            err.contains(&format!("commit_prefix = \"{prefix}\""))
                 && err.contains("file = \"TASKS.md\"") != moved
-                && err.contains("an admin"),
-            "{err}"
-        );
+                && err.contains("archive = \"DONE.md\"") == archived
+                && err.contains("names the queue Q.md, not TASKS.md") != moved
+                && err.contains("names the archive DONE2.md, not DONE.md") == (moved && archived)
+                && err.contains("and the archive DONE2.md, not DONE.md") == (!moved && archived)
+        };
+        let err = r.refuses(&r.main, &["ready"]);
+        assert!(names(&err) && err.contains("an admin"), "{err}");
 
-        // The pre-commit hook takes exactly that repair.
+        // The pre-commit hook takes exactly that repair: any other name is refused.
         let commit = |text: &str, msg: &str| {
             std::fs::write(r.main.join(".5w.toml"), text).unwrap();
             r.git_path(&r.main, &path_with_5w(), &["commit", "-qam", msg])
         };
-        let fix = named(
-            if moved { "Q.md" } else { "TASKS.md" },
-            "DONE.md",
-            "chore(tasks)",
-        );
+        let other = |n: &str, a: &str, b: &str| if n == a { b.to_string() } else { a.to_string() };
         let wrong = [
             (
-                named("TASKS.md", "DONE.md", "chore(tasks)"),
-                "keeps file = \"Q.md\"",
+                named(&other(file, "Q.md", "TASKS.md"), archive, prefix),
+                format!("keeps file = \"{file}\""),
             ),
             (
-                named("Q.md", "DONE.md", "chore(tasks)"),
-                "keeps file = \"TASKS.md\"",
+                named(file, &other(archive, "DONE.md", "DONE2.md"), prefix),
+                format!("keeps archive = \"{archive}\""),
             ),
             (
-                fix.replace("\"chore(tasks)\"", "\"queue\""),
-                "keeps commit_prefix = \"chore(tasks)\"",
-            ),
-            (
-                fix.replace("\"DONE.md\"", "\"DONE2.md\""),
-                "keeps archive = \"DONE.md\"",
+                named(file, archive, "queue"),
+                format!("keeps commit_prefix = \"{prefix}\""),
             ),
         ];
-        for (text, want) in wrong.iter().filter(|(t, _)| *t != fix) {
+        for (text, want) in &wrong {
             let o = commit(text, "a wrong repair");
             let err = String::from_utf8_lossy(&o.stderr);
             assert!(!o.status.success() && err.contains(want), "{text}\n{err}");
         }
-        let o = commit(&fix, "repair the config");
+        let o = commit(&named(file, archive, prefix), "repair the config");
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 
         // The server refuses it naming the same names, pushed by an admin past its hook.
         let (ok, err) = push_to(&r, &["main"]);
         assert!(
-            !ok && err.contains(what)
-                && restored.iter().all(|n| err.contains(n))
-                && err.contains("file = \"TASKS.md\"") != moved
-                && err.contains("past the server's hook"),
+            !ok && names(&err) && err.contains("past the server's hook"),
             "{err}"
         );
         past_hook();
         r.ok(&r.main, &["add", "second"]);
-        assert!(r.ok(&r.main, &["show", "1"]).contains("archived"));
+        let shown = r.ok(&r.main, &["show", "1"]);
+        assert_eq!(shown.contains("archived"), archived, "{shown}");
     }
 }
 
