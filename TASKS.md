@@ -36,6 +36,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #82 Pre-receive with no trunk pin: refuse or warn when 5w.trunk/FIVEW_TRUNK is unset on a gated server @ci !1 branch:ci/task-82 rework:"committed_trunk reads the first trunk key while the config parser keeps the last, so a duplicate trunk = 'x' line slips a rename past the check and ungates master once landed: read the trunk via Config::from_toml and test duplicate keys"
   vary the mismatch fix wording by where the pin came from
   Found reviewing #79: (1) with 5w.trunk unset (admin removed it or hook installed by hand), HEAD gives master and a committed trunk = "x" still ungates master; making HEAD a pin is unsafe (stale HEAD refuses every push). Have ci/pre-receive refuse trunk-changing pushes, or warn on every push, while gate_trunk is on and no pin is set, naming 'git config 5w.trunk <HEAD branch>'. (2) when the pin is FIVEW_TRUNK, the mismatch refusal suggests git config 5w.trunk, which can't take effect while the env var is set; name the env var instead. Tests for both.
+- [ ] #83 A server whose trunk holds an unparsable .5w.toml refuses every push with only 'config line N', naming no fix @ci !1
+  Found reviewing #82 (pre-existing): if a broken .5w.toml reaches the trunk (hook off, older history), Repo::open fails on every later push and the admin sees only the parse error. Name the fix in one line (e.g. the commit that broke it and that pushing a fix to .5w.toml is allowed / how to bypass with FIVEW_TRUNK and a pinned trunk), and let a push that repairs .5w.toml be judged; test it.
 
 ## Done
 
