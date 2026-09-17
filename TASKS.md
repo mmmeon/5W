@@ -22,9 +22,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4
 - [ ] #16 Move git calls behind named operations in src/git.rs: no raw git argv outside it, output unchanged @vcs !3
   About 50 call sites in 10 modules pass raw git arguments (ship 12, wt 11, lint 5, queue 4, store 3). Move each into a named function in src/git.rs. No behaviour change: tests/flow.rs and the #14 bench baseline prove it. Groundwork for the admin commands and a version-control shim.
-- [~] #19 Batch accept (accept 4 5 6) and ship --accepted: land every accepted branch bottom of stack first @queue !2 rework:"replace refs (git replace) make change_id read reviewed objects in place of post-review ones, so ship lands unreviewed content: set GIT_NO_REPLACE_OBJECTS=1 in git::raw for every 5w git call and test a replaced blob" branch:queue/task-19 submitted:cb26ea1932e4
-  stop at the first refusal
-  A supervisor round of 8 accepted tasks meant 8 accepts and 8 ships with the stack order (#12 before #13, #14 before #15) worked out by hand. Each accept keeps its own checks; ship --accepted keeps every ship refusal.
 - [ ] #20 Several queue edits in one signed commit: one signature per supervisor round @queue !2
   Each queue edit is its own signed commit; with a hardware key that is a touch per edit. Design how a batch (accepts, adds) commits once while keeping the private-index, compare-and-swap update-ref guarantee and one-line commit subjects that still name each edit.
 - [ ] #21 Decide on a version-control shim over the git operations from #16 @vcs !4 >owner needs:#16
@@ -114,3 +111,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #47: ci --trunk ^HEAD or a missing ref goes straight into merge-base and git show <trunk>:TASKS.md. With --branch, ship_check reads an empty queue; with require_task off it prints 'no task names X — unreviewed change' and passes even if a task names the branch unaccepted. Resolve --trunk through git::rev (plain sha) and refuse in one line; test ci --branch x --trunk nope refuses.
 - [x] #49 ci/pre-receive: branch deletion in a SHA-256 repository is rejected (only 40 zeros treated as deletion) @ci !1 branch:ci/task-49 submitted:0ac527241bf7 via:review reviewed:0ac527241bf7
   Found reviewing #47: ci/pre-receive skips a deletion only when the new sha is 40 zeros; SHA-256 uses 64, so a delete goes on to 5w ci --head 000…0, which refuses and rejects the push. Treat an all-zero sha of either length as null (hook script and ci's --base zero stripping); test with git init --object-format=sha256.
+- [x] #19 Batch accept (accept 4 5 6) and ship --accepted: land every accepted branch bottom of stack first @queue !2 branch:queue/task-19 submitted:cb26ea1932e4 via:review reviewed:cb26ea1932e4
+  stop at the first refusal
+  A supervisor round of 8 accepted tasks meant 8 accepts and 8 ships with the stack order (#12 before #13, #14 before #15) worked out by hand. Each accept keeps its own checks; ship --accepted keeps every ship refusal.
