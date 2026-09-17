@@ -471,6 +471,11 @@ merge conflicts with the trunk lands nothing, and is refused naming the rebase o
 --accepted` ships the repair first and stops after it, so the trunk is pushed with the repair
 alone. `lint` (but for the repair commit, see `lint --staged`), `audit`, `doctor`, `hook`,
 `update-files` and a `requires` newer than this 5w still refuse on the broken config.
+A break that renames or drops the queue file's name while the file stays put has no such path:
+the server wants the landing record in a file the trunk lacks. Queue commands then refuse naming
+the broken config and both names; the repair is a `.5w.toml` that parses with the old `file`,
+committed on the trunk with `--no-verify` (a pre-commit hook holds a repair to the broken names,
+gated or not) and pushed — under the gate by an admin, past the server's hook.
 
 A forge's check is judged the same way: `5w ci --branch` on a change request whose head commits a
 config that parses (or none) runs the ship check under that config, with the trunk's queue file,

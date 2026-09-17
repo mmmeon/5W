@@ -530,6 +530,7 @@ impl Repo {
         match self.load_file(&self.cfg.file)? {
             Some(s) => Ok(s),
             None if let Some(fix) = self.origin_only_fix() => bail!("{fix}"),
+            None if let Some(e) = &self.broken => bail!("{}", self.unmoved_queue(e)),
             None => bail!("{}", self.no_queue()),
         }
     }
@@ -545,6 +546,37 @@ impl Repo {
             ),
             _ => format!("no {name} on {t} — `{} init`", self.cfg.cmd_tasks),
         }
+    }
+
+    /// Why a trunk whose committed config is broken (`e`) has no queue file by the
+    /// name the server reads: the break renamed or dropped `file` and left the queue
+    /// where the trunk's last accepted config keeps it. No queue commit lands the
+    /// repair then — the server wants its landing record in a file the trunk lacks
+    /// — so the fix is that name back, committed past the pre-commit hook (which
+    /// holds a repair to the broken names) and pushed past a gated server's hook.
+    fn unmoved_queue(&self, e: &str) -> String {
+        let (t, new) = (&self.trunk, &self.cfg.file);
+        let old = git::rev(&self.primary, &format!("refs/heads/{t}"))
+            .and_then(|tip| {
+                last_config_where(&self.primary, &tip, |c| Config::from_toml(c).is_ok())
+            })
+            .and_then(|c| Config::from_toml(&c).ok())
+            .map(|c| c.file)
+            .filter(|old| old != new && matches!(self.load_file(old), Ok(Some(_))));
+        let Some(old) = old else {
+            return format!(
+                "no {new} on {t}, the queue its broken {CONFIG_FILE} names ({e}) — fix {CONFIG_FILE} on {t}"
+            );
+        };
+        let fix = match self.cfg.gate_trunk {
+            true => format!(
+                "an admin commits a {CONFIG_FILE} that parses with file = \"{old}\" on {t} (--no-verify) and pushes it past the server's hook"
+            ),
+            false => format!(
+                "commit a {CONFIG_FILE} that parses with file = \"{old}\" on {t} (--no-verify: the pre-commit hook holds a repair to the broken name) and push it"
+            ),
+        };
+        format!("{CONFIG_FILE} on {t} is broken ({e}) and names the queue {new}, not {old} — {fix}")
     }
 
     /// Closed tasks moved out of the queue by `archive`. Empty when there is none.

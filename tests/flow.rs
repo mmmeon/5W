@@ -7078,6 +7078,86 @@ fn a_repair_after_two_renaming_breaks_is_landed_under_the_names_the_server_reads
 }
 
 #[test]
+fn a_break_that_renames_the_queue_in_place_names_the_config_and_its_repair() {
+    for gated in [true, false] {
+        let r = Repo::new(&format!("config-rename-in-place-{gated}"));
+        let mut cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+        if gated {
+            cfg = cfg.replace("gate_trunk = false", "gate_trunk = true");
+        } else {
+            // The queue already moved, the way 5w reads a rename.
+            cfg = cfg.replace("file = \"TASKS.md\"", "file = \"Q.md\"");
+            r.git(&r.main, &["mv", "TASKS.md", "Q.md"]);
+        }
+        std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+        r.git(&r.main, &["commit", "-qam", "set up"]);
+        let server = server_of(&r);
+        r.ok(&r.main, &["hook", "install", "pre-commit"]);
+        let hook = server.join("hooks/pre-receive");
+        let unhooked = |msg: &str| {
+            r.git(&r.main, &["commit", "--no-verify", "-qam", msg]);
+            std::fs::rename(&hook, server.join("hook-off")).unwrap();
+            assert!(push_to(&r, &["main"]).0);
+            std::fs::rename(server.join("hook-off"), &hook).unwrap();
+        };
+        // One break renames the queue (gated) or drops its name (back to the
+        // default), and the queue file stays where it was.
+        let (old, new) = if gated {
+            ("TASKS.md", "QUEUE.md")
+        } else {
+            ("Q.md", "TASKS.md")
+        };
+        let renamed = if gated {
+            cfg.replace("file = \"TASKS.md\"", "file = \"QUEUE.md\"")
+        } else {
+            cfg.replace("file = \"Q.md\"\n", "")
+        };
+        assert_ne!(renamed, cfg);
+        let broken = renamed.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n");
+        std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+        unhooked("break the config, rename the queue in place");
+
+        // The refusal names the broken config and the repair, not `init`.
+        for cmd in [&["add", "repair the config"][..], &["ready"]] {
+            let err = r.refuses(&r.main, cmd);
+            assert!(
+                err.contains(".5w.toml on main is broken")
+                    && err.contains(&format!("names the queue {new}, not {old}"))
+                    && err.contains(&format!("file = \"{old}\""))
+                    && err.contains("--no-verify")
+                    && !err.contains("init"),
+                "{err}"
+            );
+            // Past the server's hook is an admin's step, needed only under the gate.
+            assert_eq!(err.contains("an admin"), gated, "{err}");
+            assert_eq!(err.contains("past the server's hook"), gated, "{err}");
+        }
+
+        // The repair it names lands, and the queue opens again. The pre-commit
+        // hook holds a repair to the broken name, so it is committed past it.
+        std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+        let o = r.git_path(
+            &r.main,
+            &path_with_5w(),
+            &["commit", "-qam", "repair the config"],
+        );
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && err.contains("keeps file"), "{err}");
+        if gated {
+            unhooked("repair the config");
+        } else {
+            r.git(
+                &r.main,
+                &["commit", "--no-verify", "-qam", "repair the config"],
+            );
+            let (ok, err) = push_to(&r, &["main"]);
+            assert!(ok, "{err}");
+        }
+        r.ok(&r.main, &["add", "after the repair"]);
+    }
+}
+
+#[test]
 fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
     let r = Repo::new("config-bricked-x");
     let server = server_of(&r);

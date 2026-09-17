@@ -657,7 +657,7 @@ pub fn check_texts(
 /// `ci` judges it — not the trunk checkout's working copy, whose uncommitted edit
 /// (a lane's kind, `default_lane`) would otherwise let a close skip review. None:
 /// the trunk commits no config to judge by. Err: it does not parse — its error,
-/// and a config holding the queue names it still gives (see `Repo::open_lenient`).
+/// and the queue names it still gives, as the server reads them (`store::broken_names`).
 /// The trunk is the one committed state names: an uncommitted `trunk` edit does
 /// not send the rules to another branch's config.
 fn committed_config(repo: &Repo) -> Option<Result<Config, (String, Config)>> {
@@ -678,31 +678,13 @@ fn committed_config_text(repo: &Repo) -> Option<(String, Committed)> {
     .iter()
     .find_map(|r| git::rev(&repo.primary, r))?;
     let text = git::opt(&repo.primary, &["show", &format!("{tip}:{file}")])?;
-    let cfg = Config::from_toml(&text).map_err(|e| unparsed_names(repo, &tip, &text, e));
+    let cfg = Config::from_toml(&text).map_err(|e| {
+        (
+            e,
+            crate::store::broken_names(&repo.primary, &text, Some(&tip)),
+        )
+    });
     Some((text, cfg))
-}
-
-/// A committed config that does not parse: its error, and a config holding the
-/// queue names it still gives.
-fn unparsed_names(repo: &Repo, tip: &str, text: &str, err: String) -> (String, Config) {
-    let kv = crate::config::parse_toml(text)
-        .ok()
-        .or_else(|| {
-            crate::store::last_readable_config(&repo.primary, tip)
-                .and_then(|t| crate::config::parse_toml(&t).ok())
-        })
-        .unwrap_or_default();
-    let said = |key: &str| crate::store::said(&repo.primary, &kv, Some(tip), key);
-    let d = Config::default();
-    (
-        err,
-        Config {
-            file: said("file").unwrap_or(d.file.clone()),
-            archive: said("archive").unwrap_or(d.archive.clone()),
-            commit_prefix: said("commit_prefix").unwrap_or(d.commit_prefix.clone()),
-            ..d
-        },
-    )
 }
 
 /// The config queue rules are judged under in a checkout: the one its trunk
