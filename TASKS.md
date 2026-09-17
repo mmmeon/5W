@@ -54,7 +54,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. wt rm reads rest.get(1); scan args like tasks::opts() does.
 - [ ] #31 README: one-line uninstall note (cargo uninstall 5w) next to the install line @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning.
-- [ ] #32 review --json prints the same text as review: give it JSON output or refuse the flag @output !1
+- [~] #32 review --json prints the same text as review: give it JSON output or refuse the flag @output !1 branch:output/task-32 submitted:899619cb8312
   Found by the #14 benchmark: review --json output is byte-identical to review at every queue size.
 - [ ] #33 wt: resolve .. in the worktree root once, so refusals and the --install line print clean paths too @wt !1 needs:#6
   #6 canonicalizes only the printed 'cd' line. The 'already exists' refusals in wt new/add and 'wt: <cmd> (in <dir>)' still show '..'. Normalize lexically in Repo::wt_root() instead; fs::canonicalize also follows symlinks (/tmp to /private/tmp on macOS).
