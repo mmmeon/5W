@@ -121,7 +121,8 @@ write a second line into the file.
 
 **Ship lands what was accepted.** `ship` compares the exact diff the branch adds now with the one it
 added at the reviewed commit — whitespace, modes and binary content included, only blob ids and
-hunk line numbers normalised away. Not `git patch-id`, which ignores whitespace and would pass an
+hunk line numbers normalised away, and read with plumbing and every diff setting pinned, so a textconv
+driver, a `-diff` attribute, `diff.context` or `diff.ignoreSubmodules` cannot hide a change. Not `git patch-id`, which ignores whitespace and would pass an
 indentation change made after review. A clean rebase passes. A commit added after review, or a
 rebase that changed the lines next to the change, does not, and a refused `--sync` puts the branch
 back where it was. The check runs before anything rewrites the branch, and again after the rebase. A

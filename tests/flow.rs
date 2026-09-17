@@ -1114,6 +1114,93 @@ fn a_whitespace_change_after_review_blocks_ship() {
     assert!(!out.contains("rebasing"), "{out}");
 }
 
+/// A post-review change to `f` in a repository whose own diff settings might
+/// hide it: `setup` runs in the trunk checkout (whose .git/config the worktrees
+/// share) before the work starts. Ship must still refuse.
+fn a_change_after_review_hidden_by_diff_config_blocks_ship(
+    setup: impl Fn(&Repo),
+    change: impl Fn(&Repo, &Path),
+) {
+    let r = Repo::new("diffconfig");
+    setup(&r);
+    r.ok(&r.main, &["add", "feature"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    change(&r, &wt);
+    let out = r.fails(&r.main, &["ship", "f/a", "--sync"]);
+    assert!(out.contains("is not the change #1 accepted"), "{out}");
+    assert!(!r.main.join("f").exists());
+}
+
+fn attributes(r: &Repo, text: &str) {
+    r.commit_in(&r.main, ".gitattributes", text);
+}
+
+#[test]
+fn a_textconv_driver_does_not_hide_a_change_after_review() {
+    a_change_after_review_hidden_by_diff_config_blocks_ship(
+        |r| {
+            attributes(r, "f diff=hide\n");
+            r.git(
+                &r.main,
+                &["config", "diff.hide.textconv", "sh -c \"echo same\""],
+            );
+        },
+        |r, wt| r.commit_in(wt, "f", "evil\n"),
+    );
+}
+
+#[test]
+fn a_no_diff_attribute_does_not_hide_a_change_after_review() {
+    a_change_after_review_hidden_by_diff_config_blocks_ship(
+        |r| attributes(r, "f -diff\n"),
+        |r, wt| r.commit_in(wt, "f", "evil\n"),
+    );
+}
+
+#[test]
+fn ignored_submodules_do_not_hide_a_gitlink_added_after_review() {
+    a_change_after_review_hidden_by_diff_config_blocks_ship(
+        |r| {
+            r.git(&r.main, &["config", "diff.ignoreSubmodules", "all"]);
+        },
+        |r, wt| {
+            let sha = r.git(wt, &["rev-parse", "HEAD"]);
+            r.git(
+                wt,
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &format!("160000,{sha},sub"),
+                ],
+            );
+            r.git(wt, &["commit", "-qm", "gitlink"]);
+        },
+    );
+}
+
+#[test]
+fn zero_diff_context_still_refuses_a_rebase_that_changed_nearby_lines() {
+    let r = Repo::new("context0");
+    r.git(&r.main, &["config", "diff.context", "0"]);
+    r.commit_in(&r.main, "g", "1\n2\n3\n4\n5\n6\n7\n");
+    r.ok(&r.main, &["add", "feature"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "g", "1\n2\n3\n4\n55\n6\n7\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    // The trunk changes a line the reviewed hunk showed as context. (Digits
+    // only, so no hunk header names a function and tells the two apart.)
+    r.commit_in(&r.main, "g", "1\n2\n33\n4\n5\n6\n7\n");
+    let out = r.fails(&r.main, &["ship", "f/a", "--sync"]);
+    assert!(out.contains("is not the change #1 accepted"), "{out}");
+}
+
 #[test]
 fn a_failing_fast_forward_changes_nothing() {
     let r = Repo::new("ffail");

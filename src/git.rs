@@ -144,27 +144,21 @@ pub fn dirty(dir: &Path) -> Res<bool> {
 /// numbers in hunk headers. Context lines stay, so a rebase that changed text
 /// next to the change reads as different and asks for a fresh look — the safe way
 /// to be wrong.
+///
+/// The diff is `diff-tree`, plumbing, with every setting a repository's config,
+/// attributes or environment could use to change its output pinned: a textconv
+/// driver or `-diff` must not hide content, `diff.context=0` must not drop the
+/// context, `diff.ignoreSubmodules` must not drop a gitlink.
 pub fn change_id(dir: &Path, base: &str, tip: &str) -> Res<String> {
     let mb = git(dir, &["merge-base", base, tip])?;
     let diff = raw(
         dir,
-        &[
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-renames",
-            // diff.ignoreSubmodules would hide a gitlink change from the gate.
-            "--ignore-submodules=none",
-            "--binary",
-            "--full-index",
-            &mb,
-            tip,
-        ],
-        &[],
+        &pinned_diff(&["-p", "--binary", "--full-index", &mb, tip]),
+        &PINNED_ENV,
         None,
     )?;
     if !diff.ok {
-        return Err(format!("git diff {mb} {tip}: {}", diff.stderr.trim()));
+        return Err(format!("git diff-tree {mb} {tip}: {}", diff.stderr.trim()));
     }
     let mut norm = String::with_capacity(diff.stdout.len());
     for line in diff.stdout.split_inclusive('\n') {
@@ -182,6 +176,48 @@ pub fn change_id(dir: &Path, base: &str, tip: &str) -> Res<String> {
     }
     let o = raw(dir, &["hash-object", "--stdin"], &[], Some(&norm))?;
     Ok(o.stdout.trim().to_string())
+}
+
+const PINNED_ENV: [(&str, &str); 2] = [("GIT_DIFF_OPTS", "--unified=3"), ("GIT_EXTERNAL_DIFF", "")];
+
+/// `git diff-tree -r` with the given arguments, and every option config could
+/// otherwise set spelled out, for output that depends on the commits alone.
+pub fn pinned_diff<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut v = vec![
+        "-c",
+        "core.quotePath=true",
+        "-c",
+        "diff.suppressBlankEmpty=false",
+        "-c",
+        "diff.noprefix=false",
+        "-c",
+        "diff.mnemonicPrefix=false",
+        "-c",
+        "diff.relative=false",
+        "-c",
+        "diff.orderFile=",
+        "-c",
+        "diff.renames=false",
+        "-c",
+        "diff.ignoreSubmodules=none",
+        "diff-tree",
+        "-r",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--no-relative",
+        "--ignore-submodules=none",
+        "--unified=3",
+        "--inter-hunk-context=0",
+        "--diff-algorithm=myers",
+        "--indent-heuristic",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "-O/dev/null",
+    ];
+    v.extend_from_slice(args);
+    v
 }
 
 pub fn parent_of(dir: &Path, branch: &str) -> Option<String> {
