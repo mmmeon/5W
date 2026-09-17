@@ -7172,7 +7172,7 @@ fn a_break_that_renames_the_queue_in_place_names_the_config_and_its_repair() {
                 err.contains(".5w.toml on main is broken")
                     && err.contains(&format!("names the queue {new}, not {old}"))
                     && err.contains(&format!("file = \"{old}\""))
-                    && err.contains("--no-verify")
+                    && !err.contains("--no-verify")
                     && !err.contains("init"),
                 "{err}"
             );
@@ -7181,23 +7181,24 @@ fn a_break_that_renames_the_queue_in_place_names_the_config_and_its_repair() {
             assert_eq!(err.contains("past the server's hook"), gated, "{err}");
         }
 
-        // The repair it names lands, and the queue opens again. The pre-commit
-        // hook holds a repair to the broken name, so it is committed past it.
-        std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
-        let o = r.git_path(
-            &r.main,
-            &path_with_5w(),
-            &["commit", "-qam", "repair the config"],
-        );
+        // The pre-commit hook takes the repair it names — the trunk's last accepted
+        // names, the file the broken config names being absent — and no other name.
+        let commit = |msg: &str| r.git_path(&r.main, &path_with_5w(), &["commit", "-qam", msg]);
+        let elsewhere = cfg.replace(&format!("file = \"{old}\""), "file = \"ELSE.md\"");
+        std::fs::write(r.main.join(".5w.toml"), &elsewhere).unwrap();
+        let o = commit("rename the queue elsewhere");
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(!o.status.success() && err.contains("keeps file"), "{err}");
+        std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+        let o = commit("repair the config");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success(), "{err}");
+        // The repair lands, and the queue opens again.
         if gated {
-            unhooked("repair the config");
+            std::fs::rename(&hook, server.join("hook-off")).unwrap();
+            assert!(push_to(&r, &["main"]).0);
+            std::fs::rename(server.join("hook-off"), &hook).unwrap();
         } else {
-            r.git(
-                &r.main,
-                &["commit", "--no-verify", "-qam", "repair the config"],
-            );
             let (ok, err) = push_to(&r, &["main"]);
             assert!(ok, "{err}");
         }

@@ -454,7 +454,8 @@ pre-commit hook takes the repair commit the same way: while the trunk's `.5w.tom
 `5w lint --staged` refuses a commit whose staged `.5w.toml` does not parse either, naming the fix,
 and judges one whose staged config parses (or is absent) under it — so the repair can be committed on
 a branch in its worktree. It must keep the queue file, archive and commit prefix the broken config
-gives (rename in a later commit), and its queue edits are checked as any.
+gives (rename in a later commit) — but for a break that renamed the queue in place, below — and its
+queue edits are checked as any.
 
 In a checkout, the repair goes through the queue like any change. When the trunk's committed
 `.5w.toml` is what is broken (not an edit in the trunk's working copy), the queue commands, `wt`
@@ -475,8 +476,10 @@ alone. `lint` (but for the repair commit, see `lint --staged`), `audit`, `doctor
 A break that renames or drops the queue file's name while the file stays put has no such path:
 the server wants the landing record in a file the trunk lacks. Queue commands then refuse naming
 the broken config and both names; the repair is a `.5w.toml` that parses with the old `file`,
-committed on the trunk with `--no-verify` (a pre-commit hook holds a repair to the broken names,
-gated or not) and pushed — under the gate by an admin, past the server's hook.
+committed on the trunk and pushed — under the gate by an admin, past the server's hook. The
+pre-commit hook takes that commit: a repair may restore the `file`, `archive` and `commit_prefix` of
+the trunk's last config that parsed while the trunk holds the queue under that `file` and nothing
+under the broken name.
 
 A forge's check is judged the same way: `5w ci --branch` on a change request whose head commits a
 config that parses (or none) runs the ship check under that config, with the trunk's queue file,

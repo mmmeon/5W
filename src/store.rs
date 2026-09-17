@@ -108,6 +108,12 @@ fn last_config_where(dir: &Path, commit: &str, ok: impl Fn(&str) -> bool) -> Opt
     )
 }
 
+/// The newest config on `commit`'s first-parent line that `from_toml` accepts.
+pub(crate) fn last_accepted_config(dir: &Path, commit: &str) -> Option<Config> {
+    let text = last_config_where(dir, commit, |c| Config::from_toml(c).is_ok())?;
+    Config::from_toml(&text).ok()
+}
+
 /// A name a trunk config that `from_toml` refuses gives `key` (the trunk, the
 /// queue's file and archive, the commit prefix), read as the config reads it: the
 /// last string `kv` gives it. One holding a control character, which no config
@@ -557,10 +563,7 @@ impl Repo {
     fn unmoved_queue(&self, e: &str) -> String {
         let (t, new) = (&self.trunk, &self.cfg.file);
         let old = git::rev(&self.primary, &format!("refs/heads/{t}"))
-            .and_then(|tip| {
-                last_config_where(&self.primary, &tip, |c| Config::from_toml(c).is_ok())
-            })
-            .and_then(|c| Config::from_toml(&c).ok())
+            .and_then(|tip| last_accepted_config(&self.primary, &tip))
             .map(|c| c.file)
             .filter(|old| old != new && matches!(self.load_file(old), Ok(Some(_))));
         let Some(old) = old else {
@@ -570,10 +573,10 @@ impl Repo {
         };
         let fix = match self.cfg.gate_trunk {
             true => format!(
-                "an admin commits a {CONFIG_FILE} that parses with file = \"{old}\" on {t} (--no-verify) and pushes it past the server's hook"
+                "an admin commits a {CONFIG_FILE} that parses with file = \"{old}\" on {t} and pushes it past the server's hook"
             ),
             false => format!(
-                "commit a {CONFIG_FILE} that parses with file = \"{old}\" on {t} (--no-verify: the pre-commit hook holds a repair to the broken name) and push it"
+                "commit a {CONFIG_FILE} that parses with file = \"{old}\" on {t} and push it"
             ),
         };
         format!("{CONFIG_FILE} on {t} is broken ({e}) and names the queue {new}, not {old} — {fix}")
