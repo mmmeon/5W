@@ -76,8 +76,13 @@
 # - Turn on "Remove all approvals when commits are added": GitLab records who
 #   approved, not which commit, so an approval must not survive a push. The job
 #   refuses to accept while that setting is off.
-# - An approval counts only from someone other than the author with at least
-#   Developer access; a merge request with changes requested is not accepted.
+# - An approval counts only if given after the current head arrived (the versions
+#   API), by someone with at least Developer access who neither opened the merge
+#   request nor authored or committed its commits (by the emails GitLab shows the
+#   token); a merge request with changes requested is not accepted.
+# - Set "Minimum role to use pipeline variables" to Owner or no one: a variable
+#   such as CI_API_V4_URL or CI_SERVER_URL set on a pipeline or schedule would
+#   send the token elsewhere.
 # - Merge requests from forks are left alone. Do not enable "run pipelines in
 #   the parent project" for merge requests from forks you do not trust: that runs
 #   the fork's .gitlab-ci.yml with the parent's variables.
@@ -93,7 +98,7 @@
   resource_group: 5w-queue
   variables:
     GIT_DEPTH: "0"
-    FIVEW_VERSION: "0.1.4"
+    FIVEW_VERSION: "0.1.4" # pinned here, never read from a merge request; a release with `ci --event`
   before_script:
     - apt-get update -qq && apt-get install -qq -y curl gnupg jq git >/dev/null
     - |
@@ -124,33 +129,63 @@
         || { echo "5w: turn on \"Remove all approvals when commits are added\" before accepting from CI" >&2; exit 1; }
       git config user.name "5w queue events"; git config user.email "5w-queue@$CI_SERVER_HOST"
       git checkout -q --detach
-      push="https://oauth2:$FIVEW_QUEUE_TOKEN@$CI_SERVER_HOST/$CI_PROJECT_PATH.git"
+      # Push with the token in git's environment for that one command, not in its arguments.
+      push() (
+        export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$CI_SERVER_URL/.extraheader"
+        GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'oauth2:%s' "$FIVEW_QUEUE_TOKEN" | base64 -w0)"
+        export GIT_CONFIG_VALUE_0
+        git push -q "$CI_SERVER_URL/$CI_PROJECT_PATH.git" "$@"
+      )
+      # ISO 8601 times as epoch seconds, fractions and offsets allowed.
+      epoch='sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601'
       status=0
-      for mr in $(api "merge_requests?state=opened&target_branch=$trunk&per_page=100" \
-          | jq -r --argjson p "$CI_PROJECT_ID" '.[] | select(.source_project_id == $p) | .iid'); do
+      page=1
+      while :; do
+        mrs=$(api "merge_requests?state=opened&target_branch=$trunk&per_page=100&page=$page" \
+          | jq -r --argjson p "$CI_PROJECT_ID" '.[] | select(.source_project_id == $p) | .iid')
+        [ -n "$mrs" ] || break
+        all="${all:-} $mrs"
+        page=$((page + 1))
+      done
+      for mr in ${all:-}; do
         m=$(api "merge_requests/$mr")
         head=$(printf '%s' "$m" | jq -r .sha); branch=$(printf '%s' "$m" | jq -r .source_branch)
         author=$(printf '%s' "$m" | jq -r .author.id)
+        # When the current head arrived: an approval from before it is of an older commit,
+        # whatever the approval reset has caught up with.
+        since=$(api "merge_requests/$mr/versions" | jq -r --arg h "$head" \
+          "[.[] | select(.head_commit_sha == \$h) | .created_at | $epoch] | min // empty")
+        # Emails of whoever wrote or committed the change: they do not approve it.
+        makers=$(api "merge_requests/$mr/commits?per_page=100" \
+          | jq -c '[.[] | .author_email, .committer_email | select(. != null) | ascii_downcase] | unique')
         approver=
         if [ "$(printf '%s' "$m" | jq -r .detailed_merge_status)" = requested_changes ]; then
           echo "!$mr has changes requested: not accepting"
+        elif [ -z "$since" ]; then
+          echo "!$mr: no version with head $head yet; the next run decides"
         else
-          for id in $(api "merge_requests/$mr/approvals" | jq -r --argjson a "$author" '.approved_by[].user | select(.id != $a) | .id'); do
+          for id in $(api "merge_requests/$mr/approvals" | jq -r --argjson a "$author" --argjson since "$since" \
+              ".approved_by[] | select(.user.id != \$a and .approved_at != null and (.approved_at | $epoch) > \$since) | .user.id"); do
             level=$(api "members/all/$id" 2>/dev/null | jq -r '.access_level // 0') || level=0
-            if [ "${level:-0}" -ge 30 ]; then approver=$id; break; fi
+            [ "${level:-0}" -ge 30 ] || continue
+            emails=$(api "users/$id" 2>/dev/null \
+              | jq -c '[.email, .public_email, .commit_email | select(. != null and . != "") | ascii_downcase]') || emails='[]'
+            [ "$(jq -n --argjson e "${emails:-[]}" --argjson m "$makers" '[$e[] | select(. as $x | $m | index($x))] | length')" = 0 ] \
+              || { echo "!$mr: approver $id wrote or committed the change; not counted"; continue; }
+            approver=$id; break
           done
         fi
         git fetch -q origin "+refs/merge-requests/$mr/head:refs/5w/change-request"
         [ "$(git rev-parse refs/5w/change-request)" = "$head" ] || { echo "!$mr moved; the next run decides"; continue; }
         ok=
-        for try in 1 2 3; do
+        for _ in 1 2 3; do
           git fetch -q origin "+refs/heads/$trunk:refs/heads/$trunk"
           5w ci --event submit --branch "$branch" --head "$head" || break
           if [ -n "$approver" ]; then
             5w ci --event accept --branch "$branch" --head "$head" --at "$head" || break
           fi
           if [ "$(git rev-parse "refs/heads/$trunk")" = "$(git rev-parse "origin/$trunk")" ] \
-            || git push -q "$push" "refs/heads/$trunk:refs/heads/$trunk"; then ok=1; break; fi
+            || push "refs/heads/$trunk:refs/heads/$trunk"; then ok=1; break; fi
         done
         [ -n "$ok" ] || status=1
       done

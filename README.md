@@ -280,29 +280,40 @@ first (`git fetch origin +main:main`) and **pushes it back itself**: 5w never pu
    accept anything. So the check on the change request stays read-only, and submit and accept run
    in a separate job defined on the default branch. That job checks out nothing from the change
    request and reads none of its files — not its `.5w.toml`, not its `requires`: its 5w version is
-   pinned in the job (`FIVEW_VERSION`, which `ci/install-5w.sh` also honours). The change request's
-   commits are fetched as objects only.
+   pinned in the job (`FIVEW_VERSION`, which `ci/install-5w.sh` also honours) and must be a release
+   that has `ci --event` — the templates name 0.1.4, the first one planned to; check before enabling.
+   The change request's commits are fetched as objects only.
 2. **Whatever wakes the job is not evidence.** It reads the change request again from the forge's
    API: open, into the trunk, from the repository itself (not a fork), and its current head. An
-   approval counts only from someone other than the author with write access by the API's
-   permission check (not a display field such as `author_association`), of that head; any
-   outstanding "changes requested" blocks it.
+   approval counts only if it is of that head, and from someone with write access by the API's
+   permission check (not a display field such as `author_association`) who neither opened the change
+   request nor authored or committed any of its commits. Any outstanding "changes requested" blocks
+   it.
 3. **The push credential belongs to that job alone.** A token allowed to push the trunk lives in an
    environment only that job uses, restricted to the default branch. Never give the forge's general
    job token (`GITHUB_TOKEN`, `CI_JOB_TOKEN`) push to the trunk: every writer's pipeline holds it.
+   Each token reaches only the git command that needs it, through its environment — never its
+   arguments, and never stored in the clone. Nobody but owners may set pipeline variables: one that
+   overrides the API or server address would send the token elsewhere.
 4. **Forks are done by hand**, and a fork's pipeline must never run with the parent's secrets.
 
 The wiring follows them:
 
 - **GitHub:** [ci/github-actions.yml](ci/github-actions.yml) is the read-only check
   (`contents: read`). [ci/github-queue-events.yml](ci/github-queue-events.yml) runs from the default
-  branch on `workflow_run` of it, reads the review and the approver's permission from the API, pushes
-  with `FIVEW_PUSH_TOKEN` (a GitHub App or fine-grained token) from the `5w-queue` environment, and
-  re-runs the check after an accept.
+  branch on `workflow_run` of it (the change request into the default branch, when the run lists
+  several), reads the reviews, the commits and the approver's permission from the API, fetches with
+  the read-only `GITHUB_TOKEN` (so a private repository works), pushes with `FIVEW_PUSH_TOKEN` (a
+  GitHub App or fine-grained token) from the `5w-queue` environment, and re-runs the check after an
+  accept.
 - **GitLab:** the `5w` job in [ci/gitlab-ci.yml](ci/gitlab-ci.yml) is the read-only check. The
   `5w:queue-events` job runs on a schedule on the default branch, reads merge requests and approvals
   from the API, and pushes with `FIVEW_QUEUE_TOKEN` from the protected `5w-queue` environment. GitLab
-  records who approved but not which commit, so it refuses while approvals survive a push.
+  records who approved but not which commit, so it refuses while approvals survive a push, and counts
+  an approval only if given after the current head arrived (the merge request's versions). Set
+  "Minimum role to use pipeline variables" to Owner or no one: a pipeline or schedule variable
+  overriding `CI_API_V4_URL` or `CI_SERVER_URL` would redirect the token. Commit authors are matched
+  by the emails GitLab shows the token, so that check is only as good as those.
 
 This repository's own [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `cargo fmt`, `cargo
 clippy` and `cargo test` on every push and change request, then the same `5w ci` check against 5W's
