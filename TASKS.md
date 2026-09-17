@@ -38,7 +38,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #68 Queue symlink leftovers: a working-tree-only link redirects queue writes outside the repo @queue !1
   ci ship_check reads a trunk link as an empty queue; the refusal suggests copying a non-queue target
   Found reviewing #65 (pre-existing): (1) TASKS.md replaced locally (untracked) by a symlink → 5w add writes through it, possibly to a file outside the repository, and leaves ' T TASKS.md'; refuse queue writes when the checkout's queue file is a symlink, one line. (2) ci ship_check reads <trunk>:TASKS.md without checking the mode, so a link already on trunk reads as an empty queue ('no task names X … ok'): refuse/flag it. (3) When the trunk link points at a non-.md file, #65's refusal suggests 'cp src/main.rs TASKS.md'; name reverting the commit that re-pointed it instead. Tests for each.
-- [ ] #65 5w commits a symlinked TASKS.md as a regular 100644 blob, turning the trunk entry into a file (' T TASKS.md') @queue !1 branch:queue/task-65
+- [~] #65 5w commits a symlinked TASKS.md as a regular 100644 blob, turning the trunk entry into a file (' T TASKS.md') @queue !1 branch:queue/task-65 submitted:dac449ea6c20a3812af4024bc197cb95ee91013b
   Found reviewing #62 (pre-existing): when TASKS.md (or the archive) is tracked as a symlink (mode 120000), 5w's queue commit writes the target's content as a 100644 blob at that path, so main's entry changes type and the checkout shows ' T TASKS.md'. Either commit to the symlink's target path, or refuse in one line naming it; test it.
 
 ## Done
