@@ -50,8 +50,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. main.rs prints refusals with eprintln! uncolored.
 - [ ] #29 USAGE: one line linking the README on the web @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig: link to web docs in help text.
-- [~] #30 wt rm: find --force anywhere in the arguments, not only at position 2 @wt !1 needs:#13 branch:wt/task-30 submitted:532ba21d60cd
-  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. wt rm reads rest.get(1); scan args like tasks::opts() does.
 - [ ] #31 README: one-line uninstall note (cargo uninstall 5w) next to the install line @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning.
 - [~] #32 review --json prints the same text as review: give it JSON output or refuse the flag @output !1 branch:output/task-32 submitted:899619cb8312
@@ -86,3 +84,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Tool-neutral, read-only, works on any 5W repository (e.g. ara). Sources only what 5W already has: TASKS.md and archive history in git, .git/5w/last-failure.md and saved reports, doctor and lint findings.
   Report: tasks by lane/level/area; submit→accept time; reject and rework cycles with reasons; tasks reopened; blocked time on needs; branches shipped without a task (when require_task is off); queue edits made outside 5w (lint over history); recorded failures and refusals; context cost of delegate briefs (bytes/estimated tokens, largest first — same estimator as the benchmark).
   Compact by default, --json, --since <rev|date>. Refusal-free on a repo with no history. Design the report sections in the README before building.
+- [x] #30 wt rm: find --force anywhere in the arguments, not only at position 2 @wt !1 needs:#13 branch:wt/task-30 submitted:532ba21d60cd via:review reviewed:532ba21d60cd
+  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. wt rm reads rest.get(1); scan args like tasks::opts() does.
