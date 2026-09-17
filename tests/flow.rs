@@ -398,6 +398,33 @@ fn a_change_after_accept_blocks_ship() {
 }
 
 #[test]
+fn a_forced_ship_of_a_changed_branch_says_so_once_and_only_once_it_lands() {
+    let r = Repo::new("postacceptforce");
+    r.ok(&r.main, &["add", "x"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.commit_in(&wt, "f", "changed\n");
+    // Accept moved main: behind, so the refusal stands alone, no --force notice first.
+    let out = r.refuses(&r.main, &["ship", "a/x", "--force"]);
+    assert!(
+        out.contains("--sync") && !out.contains("changed since"),
+        "{out}"
+    );
+    // The check runs before and after the rebase; the notice is said once.
+    let out = r.ok(&r.main, &["ship", "a/x", "--force", "--sync"]);
+    assert_eq!(
+        out.matches("ship: #1's branch changed since review at ")
+            .count(),
+        1,
+        "{out}"
+    );
+    assert!(r.main.join("f").exists());
+}
+
+#[test]
 fn squash_lands_one_commit_on_the_verified_trunk() {
     let r = Repo::new("squash");
     r.ok(&r.main, &["add", "x"]);
@@ -821,6 +848,27 @@ fn an_unreviewed_ship_says_so_only_once_it_lands() {
         "{out}"
     );
     assert!(r.main.join("x").exists());
+}
+
+#[test]
+fn an_unreviewed_ship_the_fast_forward_refuses_is_one_line() {
+    let r = Repo::new("unreviewedff");
+    r.ok(&r.main, &["wt", "new", "u/x"]);
+    let wt = r.wt("u/x");
+    let edited = format!("{}\n", r.tasks());
+    r.commit_in(&wt, "TASKS.md", &edited);
+    // Main's checkout holds an uncommitted queue row: git refuses the fast-forward.
+    std::fs::write(
+        r.main.join("TASKS.md"),
+        format!("{}- [ ] #9 peer\n", r.tasks()),
+    )
+    .unwrap();
+    let out = r.refuses(&r.main, &["ship", "u/x"]);
+    assert!(
+        out.contains("fast-forward") && !out.contains("shipping unreviewed"),
+        "{out}"
+    );
+    assert!(wt.exists());
 }
 
 #[test]

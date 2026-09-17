@@ -217,7 +217,6 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
                 "no task names branch:{branch} and require_task is on (--force ships unreviewed)"
             );
         }
-        // Said once every check has passed: a refusal below must stand alone.
         notices.push(format!(
             "ship: no task references {branch} — shipping unreviewed"
         ));
@@ -288,7 +287,15 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
 
     // Before anything rewrites the branch, and again after a rebase has.
     let behind = !git::ok(p, &["merge-base", "--is-ancestor", trunk, &branch]);
-    verify_reviewed(repo, &all, &rows, &branch, force, behind && sync)?;
+    verify_reviewed(
+        repo,
+        &all,
+        &rows,
+        &branch,
+        force,
+        behind && sync,
+        &mut notices,
+    )?;
 
     if behind {
         if !sync {
@@ -313,7 +320,7 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
                 w.display()
             );
         }
-        if let Err(e) = verify_reviewed(repo, &all, &rows, &branch, force, false) {
+        if let Err(e) = verify_reviewed(repo, &all, &rows, &branch, force, false, &mut notices) {
             // The rebase bought nothing; do not leave the branch rewritten.
             let _ = git::raw(w, &["reset", "--hard", "--quiet", &before], &[], None);
             bail!(
@@ -370,10 +377,6 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
         }
     }
 
-    for n in &notices {
-        eprintln!("{n}");
-    }
-
     // --- fast-forward first: until it succeeds nothing has changed ------------------------
     let ff = match &trunk_wt {
         Some(w) => {
@@ -400,6 +403,10 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
     };
     if let Err(e) = ff {
         bail!("fast-forward of {trunk} to {branch} failed; nothing was changed: {e}");
+    }
+    // Said once it has landed: a refusal before this must stand alone.
+    for n in &notices {
+        eprintln!("{n}");
     }
     if land != tip {
         println!("ship: squashed into {}", short(&land));
@@ -507,12 +514,20 @@ fn verify_reviewed(
     branch: &str,
     force: bool,
     quiet: bool,
+    notices: &mut Vec<String>,
 ) -> Res<()> {
     let p = &repo.primary;
     let trunk = &repo.trunk;
     let tasks = &repo.cfg.cmd_tasks;
     let tip = git::rev(p, &format!("refs/heads/{branch}")).ok_or("cannot resolve branch")?;
     macro_rules! say { ($($t:tt)*) => { if !quiet { println!($($t)*) } } }
+    // A --force notice waits for the ship to land, and is said once across the
+    // checks before and after a rebase.
+    let mut note = |n: String| {
+        if !notices.contains(&n) {
+            notices.push(n);
+        }
+    };
     for t in rows.iter().filter(|t| t.state == State::Done) {
         match &t.reviewed {
             None => say!(
@@ -526,7 +541,7 @@ fn verify_reviewed(
             Some(r) => {
                 let Some(reviewed) = git::rev(p, r) else {
                     if force {
-                        eprintln!("ship: reviewed commit {r} is gone; --force");
+                        note(format!("ship: reviewed commit {r} is gone; --force"));
                         continue;
                     }
                     bail!(
@@ -548,10 +563,10 @@ fn verify_reviewed(
                         t.id
                     );
                 } else if force {
-                    eprintln!(
+                    note(format!(
                         "ship: #{}'s branch changed since review at {r}; --force",
                         t.id
-                    );
+                    ));
                 } else {
                     bail!(
                         "{branch} is not the change #{} accepted at {r}: `git range-diff {trunk}...{r} {trunk}...{branch}`; re-review with `{tasks} open {id}`, submit, accept",
