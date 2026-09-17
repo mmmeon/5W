@@ -7747,6 +7747,89 @@ fn a_ci_check_refuses_a_queue_renamed_in_place_rather_than_reading_no_task() {
 }
 
 #[test]
+fn a_ci_note_over_a_broken_config_names_the_trunk_read_and_claims_only_a_real_repair() {
+    let r = Repo::new("config-broken-note-ci");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("trunk = \"main\""));
+    // a/x predates the break and leaves .5w.toml alone.
+    r.ok(&r.main, &["add", "first", "branch:a/x"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    r.commit_in(&r.wt("a/x"), "f", "1\n");
+    r.ok(&r.main, &["submit", "1", "a/x"]);
+    // The break names another trunk.
+    let broken = cfg.replace("trunk = \"main\"", "trunk = \"x\"") + "bogus = 1\n";
+    std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+    r.git(
+        &r.main,
+        &["commit", "--no-verify", "-qam", "break the config"],
+    );
+    // b/y, off the broken trunk, commits the fix.
+    let side = r.root.join("side");
+    r.git(
+        &r.main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "b/y",
+            side.to_str().unwrap(),
+            "main",
+        ],
+    );
+    std::fs::write(side.join(".5w.toml"), &cfg).unwrap();
+    r.git(&side, &["commit", "--no-verify", "-qam", "fix the config"]);
+    let forge = r.root.join("forge.git");
+    let push = || {
+        let _ = std::fs::remove_dir_all(&forge);
+        r.git(
+            &r.root,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                r.main.to_str().unwrap(),
+                forge.to_str().unwrap(),
+            ],
+        );
+    };
+    push();
+    let run = |ci: &Path, b: &str| {
+        let head = format!("origin/{b}");
+        let o = r.cli(ci, &["ci", "--branch", b, "--head", &head]);
+        (
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+
+    // The note names the trunk the config was read from, not the one it names.
+    let ci = ci_clone(&r, &forge, "ci");
+    let (_, err) = run(&ci, "a/x");
+    assert!(
+        err.contains("main's .5w.toml is unreadable") && !err.contains("x's .5w.toml"),
+        "{err}"
+    );
+    // A change request that leaves .5w.toml alone is no repair.
+    assert!(!err.contains("repairs it"), "{err}");
+    // One that commits a config is.
+    let (_, err) = run(&ci, "b/y");
+    assert!(
+        err.contains("main's .5w.toml is unreadable; this change request repairs it"),
+        "{err}"
+    );
+
+    // A queue linked on that trunk is named on it, not on x.
+    link_queue(&r);
+    push();
+    let ci = ci_clone(&r, &forge, "ci-link");
+    let (out, err) = run(&ci, "a/x");
+    let text = format!("{out}{err}");
+    assert!(text.contains("TASKS.md is a symlink on main"), "{text}");
+    assert!(!text.contains("symlink on x"), "{text}");
+}
+
+#[test]
 fn a_ci_clone_reads_an_archive_renamed_in_place_at_the_trunk_it_checks_against() {
     let r = Repo::new("config-archive-in-place-ci");
     // The archive was once OLD.md: a clone whose main stayed there reads that name.

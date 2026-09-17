@@ -164,7 +164,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             let tip = git::rev(p, h).ok_or_else(|| {
                 format!("ci: --head {h} is not a commit — pass a branch, tag or sha")
             })?;
-            let cfg = match (onto || branch.is_some()).then_some(tip) {
+            let cfg = match (onto || branch.is_some()).then_some(&tip) {
                 Some(t) => {
                     match git::opt(p, &["show", &format!("{t}:{}", crate::store::CONFIG_FILE)]) {
                         Some(text) => crate::config::Config::from_toml(&text).ok(),
@@ -183,10 +183,23 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             cfg.commit_prefix = repo.cfg.commit_prefix.clone();
             // Nor may a change request's config drop the review its check asks for.
             cfg.require_task = setting_on(p, trunk_ref.as_deref(), "require_task");
+            // Named on the trunk it was read from; a repair only if the tip changes
+            // the config since it forked from that trunk.
+            let config_at = |r: &str| {
+                git::opt(
+                    p,
+                    &["rev-parse", &format!("{r}:{}", crate::store::CONFIG_FILE)],
+                )
+            };
+            let repairs = trunk_ref
+                .as_deref()
+                .and_then(|t| git::opt(p, &["merge-base", &tip, t]))
+                .is_some_and(|b| config_at(&b) != config_at(&tip));
             eprintln!(
-                "5w ci: {}'s .5w.toml is unreadable; this {} repairs it and is judged under the one it commits",
-                repo.trunk,
-                if onto { "push" } else { "change request" }
+                "5w ci: {}'s .5w.toml is unreadable; this {} {}judged under the one it commits",
+                repo.broken_at.as_ref().map_or(&repo.trunk, |(t, _)| t),
+                if onto { "push" } else { "change request" },
+                if repairs { "repairs it and is " } else { "is " }
             );
             repaired = Repo {
                 cwd: repo.cwd.clone(),
@@ -919,7 +932,7 @@ fn ship_check(
         for f in links {
             out.push(format!(
                 "{f} is a symlink on {}, not the queue file — replace the link with the file",
-                repo.trunk
+                repo.broken_at.as_ref().map_or(&repo.trunk, |(t, _)| t)
             ));
         }
         return Ok(());
