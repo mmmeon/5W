@@ -151,22 +151,45 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         || (cmd == "hook" && rest.get(1).map(|s| s.as_str()) == Some("pre-receive"))
     {
         Repo::open_lenient()?
+    } else if !matches!(
+        cmd.as_str(),
+        "init" | "lint" | "audit" | "hook" | "update-files" | "doctor"
+    ) {
+        // The queue and ship over a trunk that commits a broken config: its repair
+        // is reviewed and landed like any change. Lint, doctor and the rest report it.
+        Repo::open_for_repair()?
     } else {
         Repo::open()?
     };
-    match cmd.as_str() {
-        "wt" => wt::run(&repo, rest),
-        "ship" => ship::run(&repo, rest),
+    let res = run_command(&repo, &cmd, rest);
+    if res.is_ok()
+        && !matches!(cmd.as_str(), "ci" | "hook" | "lint")
+        && let Some(e) = &repo.broken
+    {
+        eprintln!(
+            "5w: {} on {} is broken ({e}); read as its last config that parses — {}",
+            store::CONFIG_FILE,
+            repo.trunk,
+            store::repair_fix()
+        );
+    }
+    res
+}
+
+fn run_command(repo: &Repo, cmd: &str, rest: &[String]) -> Res<()> {
+    match cmd {
+        "wt" => wt::run(repo, rest),
+        "ship" => ship::run(repo, rest),
         "init" => match rest.iter().find(|a| a.starts_with("--")) {
-            Some(f) => Err(tasks::unknown_flag(&repo, "init", f)),
-            None => init(&repo),
+            Some(f) => Err(tasks::unknown_flag(repo, "init", f)),
+            None => init(repo),
         },
-        "lint" => lint::run(&repo, rest),
-        "audit" => audit::run(&repo, rest),
-        "ci" => ci::run(&repo, rest),
-        "hook" => lint::hook(&repo, rest),
-        "update-files" => upkeep::update_files(&repo, rest),
-        _ => tasks::run(&repo, &cmd, rest),
+        "lint" => lint::run(repo, rest),
+        "audit" => audit::run(repo, rest),
+        "ci" => ci::run(repo, rest),
+        "hook" => lint::hook(repo, rest),
+        "update-files" => upkeep::update_files(repo, rest),
+        _ => tasks::run(repo, cmd, rest),
     }
 }
 

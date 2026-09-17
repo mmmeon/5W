@@ -6100,6 +6100,126 @@ fn a_landing_repairing_a_config_broken_past_parsing_is_told_by_the_trunks_queue_
 }
 
 #[test]
+fn a_gated_trunk_whose_config_broke_lands_its_repair_through_5w() {
+    // A syntax error, and a key this 5w does not know.
+    for (name, syntax) in [("repair-syntax", true), ("repair-key", false)] {
+        let r = Repo::new(name);
+        let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+            .unwrap()
+            .replace("gate_trunk = false", "gate_trunk = true");
+        std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+        r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+        let server = server_of(&r);
+        // The note goes to stderr: what a command prints stays what it prints.
+        let path = |b: &str| {
+            let o = r.cli(&r.main, &["wt", "path", b]);
+            PathBuf::from(String::from_utf8_lossy(&o.stdout).trim())
+        };
+        // A branch forked before the break still commits the good config.
+        r.ok(&r.main, &["add", "early code"]);
+        r.ok(&r.main, &["wt", "new", "f/early"]);
+        r.commit_in(&path("f/early"), "early.txt", "x\n");
+        let broken = if syntax {
+            cfg.replace("title_max = 120", "title_max = = 1")
+        } else {
+            cfg.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n")
+        };
+        assert_ne!(broken, cfg);
+        std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+        r.git(&r.main, &["commit", "-qam", "break the config"]);
+        let hook = server.join("hooks/pre-receive");
+        std::fs::rename(&hook, server.join("hook-off")).unwrap();
+        assert!(push_to(&r, &["main"]).0);
+        std::fs::rename(server.join("hook-off"), &hook).unwrap();
+
+        // The queue opens by the trunk's last config that reads, saying so.
+        let out = r.ok(&r.main, &["add", "repair the config"]);
+        assert!(
+            out.contains(".5w.toml on main is broken")
+                && out.contains("upgrade 5w, or ship the repair"),
+            "{out}"
+        );
+        r.ok(&r.main, &["add", "plain code"]);
+        r.ok(&r.main, &["add", "repair, and rename the queue"]);
+        r.ok(&r.main, &["wt", "new", "f/fix"]);
+        r.commit_in(&path("f/fix"), ".5w.toml", &cfg);
+        r.ok(&r.main, &["wt", "new", "f/code"]);
+        r.commit_in(&path("f/code"), "code.txt", "x\n");
+        r.ok(&r.main, &["wt", "new", "f/rename"]);
+        r.commit_in(
+            &path("f/rename"),
+            ".5w.toml",
+            &cfg.replace("file = \"TASKS.md\"", "file = \"Q.md\""),
+        );
+        for (id, b) in [
+            ("1", "f/early"),
+            ("2", "f/fix"),
+            ("3", "f/code"),
+            ("4", "f/rename"),
+        ] {
+            r.ok(&r.main, &["submit", id, b]);
+        }
+        r.ok(&r.main, &["accept", "1", "2", "3", "4"]);
+        // Lint still reports the broken config, and says nothing of the repair open.
+        assert!(
+            !r.fails(&r.main, &["lint"])
+                .contains("last config that parses")
+        );
+        let out = r.ok(&path("f/early"), &["lint", "--staged"]);
+        assert!(!out.contains("last config that parses"), "{out}");
+
+        // Only the repair ships while the trunk's config is broken: judged by what
+        // would land, so neither new code nor a branch from before the break does.
+        let before = r.git(&r.main, &["rev-parse", "main"]);
+        for b in ["f/code", "f/early"] {
+            let err = r.refuses(&r.main, &["ship", b, "--sync"]);
+            assert!(
+                err.contains(".5w.toml on main is broken")
+                    && err.contains("upgrade 5w, or ship the repair"),
+                "{err}"
+            );
+        }
+        // Nor a repair that renames what the gate reads the queue by.
+        let err = r.refuses(&r.main, &["ship", "f/rename", "--sync"]);
+        assert!(
+            err.contains("keeps file = \"TASKS.md\"; rename in a later commit"),
+            "{err}"
+        );
+        assert_eq!(r.git(&r.main, &["rev-parse", "main"]), before);
+        // --accepted ships the repair first, and stops: the rest ships under it.
+        // The gate still reads as on: the landing is recorded, and the server takes it.
+        let out = r.ok(&r.main, &["ship", "--accepted", "--sync"]);
+        assert!(
+            out.contains("landing of #2 recorded")
+                && out.contains("again ships the rest")
+                && !out.contains("landing of #1"),
+            "{out}"
+        );
+        assert_eq!(r.git(&r.main, &["show", "main:.5w.toml"]), cfg.trim_end());
+        let reviewed = r
+            .line(2)
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix("reviewed:"))
+            .unwrap()
+            .to_string();
+        let (ok, err) = push_to(&r, &["main", &format!("{reviewed}:refs/5w/reviewed/2")]);
+        assert!(ok, "{err}");
+        assert_eq!(
+            r.git(&server, &["rev-parse", "main"]),
+            r.git(&r.main, &["rev-parse", "main"])
+        );
+        // Repaired, 5w opens as before and the rest ships normally.
+        for (b, id) in [("f/early", 1), ("f/code", 3)] {
+            let out = r.ok(&r.main, &["ship", b, "--sync"]);
+            assert!(
+                out.contains(&format!("landing of #{id} recorded")) && !out.contains("broken"),
+                "{out}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
     let r = Repo::new("config-bricked-x");
     let server = server_of(&r);
@@ -7091,8 +7211,16 @@ fn an_unknown_key_says_a_newer_5w_may_know_it() {
     std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
     r.git(&r.main, &["commit", "-qam", "future"]);
     assert!(
-        r.fails(&r.main, &["ready"])
+        r.fails(&r.main, &["doctor"])
             .contains("a newer one may know it")
+    );
+    // The queue reads the trunk's last config that parses, and says why.
+    let out = r.ok(&r.main, &["ready"]);
+    assert!(
+        out.contains("is broken")
+            && out.contains("a newer one may know it")
+            && out.contains("upgrade 5w, or ship the repair"),
+        "{out}"
     );
 }
 

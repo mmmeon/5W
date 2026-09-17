@@ -435,6 +435,21 @@ and judges one whose staged config parses (or is absent) under it — so the rep
 a branch in its worktree. It must keep the queue file, archive and commit prefix the broken config
 gives (rename in a later commit), and its queue edits are checked as any.
 
+In a checkout, the repair goes through the queue like any change. When the trunk's committed
+`.5w.toml` is what is broken (not an edit in the trunk's working copy), the queue commands, `wt`
+and `ship` read the newest config on the trunk's first-parent line that 5w accepts, with the queue
+file, archive and commit prefix as the server reads them, and `gate_trunk` and `require_task` on
+unless the config says `false`; they note on stderr that the trunk's config is broken — upgrade
+5w (the key may be a newer one's), or ship the repair. So `add`, `wt new`, `submit`, `accept` and
+`ship` land the reviewed repair with its landing record, and one push of the trunk (with
+`refs/5w/reviewed/<id>` when the server lacks the reviewed commit) takes it. `ship` judges what
+would land — the branch merged onto the trunk — and refuses it unless its `.5w.toml` parses (or is
+gone) and keeps the trunk's queue file, archive and commit prefix (rename in a later commit): a
+branch from before the break, which still commits the old config, is not a repair. `ship
+--accepted` ships the repair first and stops after it, so the rest ship under the config it
+commits. `lint` (but for the repair commit, see `lint --staged`), `audit`, `doctor`, `hook`,
+`update-files` and a `requires` newer than this 5w still refuse on the broken config.
+
 A forge's check is judged the same way: `5w ci --branch` on a change request whose head commits a
 config that parses (or none) runs the ship check under that config, with the trunk's queue file,
 archive and commit prefix as above, and `require_task` read from the trunk like `gate_trunk` (on,

@@ -601,7 +601,7 @@ fn says_on(text: &str, key: &str) -> Option<bool> {
 /// A boolean `key` as `commit`'s config says it, read as `gate_settings` reads
 /// `gate_trunk`: text that does not parse by the newest config on its first-parent
 /// line that does, on when none does or there is no commit.
-fn setting_on(p: &std::path::Path, commit: Option<&str>, key: &str) -> bool {
+pub fn setting_on(p: &std::path::Path, commit: Option<&str>, key: &str) -> bool {
     let Some(c) = commit else { return true };
     match git::opt(p, &["show", &format!("{c}:{}", crate::store::CONFIG_FILE)]) {
         Some(text) => says_on(&text, key)

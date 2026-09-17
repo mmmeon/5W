@@ -140,6 +140,14 @@ fn ship_accepted(repo: &Repo, o: &Opts) -> Res<()> {
     };
     let mut order: Vec<(usize, String)> = branches.into_iter().map(|b| (depth(&b), b)).collect();
     order.sort_by_key(|(d, _)| *d);
+    // Over a broken trunk config only its repair ships: that goes first.
+    if repo.broken.is_some() {
+        order.sort_by_key(|(_, b)| {
+            git::rev(p, &format!("refs/heads/{b}"))
+                .and_then(|t| repo.unrepaired(&t))
+                .is_some()
+        });
+    }
     if order.is_empty() {
         println!("ship: no accepted branch left to ship");
         return Ok(());
@@ -154,6 +162,17 @@ fn ship_accepted(repo: &Repo, o: &Opts) -> Res<()> {
             bail!("stopped at {b}: {e} ({done})");
         }
         shipped.push(b.clone());
+        // A landed repair changes the config this run opened with: the rest ships
+        // under the one it commits, in a run of its own.
+        if repo.broken.is_some() && shipped.len() < order.len() {
+            println!(
+                "ship: {b} repaired {}'s {} — `{} --accepted` again ships the rest under it",
+                repo.trunk,
+                crate::store::CONFIG_FILE,
+                repo.cfg.cmd_ship
+            );
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -180,6 +199,13 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
     }
     if !git::branch_exists(p, &branch) {
         bail!("no such branch: {branch}");
+    }
+    // A trunk committing a broken config takes only its repair: the server would
+    // refuse any other landing, and 5w would not read the trunk after it.
+    if let Some(why) =
+        git::rev(p, &format!("refs/heads/{branch}")).and_then(|t| repo.unrepaired(&t))
+    {
+        bail!("{why}");
     }
     if let Some(parent) = git::parent_of(p, &branch)
         && &parent != trunk

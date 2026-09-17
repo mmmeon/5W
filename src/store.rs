@@ -86,16 +86,90 @@ fn committed_trunk(dir: &Path) -> Option<String> {
 /// The newest `.5w.toml` that parses on `commit`'s first-parent line, from the
 /// commit itself back: "" where that line deleted it. None: no such commit.
 pub fn last_readable_config(dir: &Path, commit: &str) -> Option<String> {
+    last_config_where(dir, commit, |t| crate::config::parse_toml(t).is_ok())
+}
+
+/// The newest `.5w.toml` on `commit`'s first-parent line that `ok` accepts, as
+/// `last_readable_config` walks it.
+fn last_config_where(dir: &Path, commit: &str, ok: impl Fn(&str) -> bool) -> Option<String> {
     let line = git::opt(
         dir,
         &["rev-list", "--first-parent", commit, "--", CONFIG_FILE],
     )?;
     line.lines().find_map(
         |c| match git::opt(dir, &["show", &format!("{c}:{CONFIG_FILE}")]) {
-            Some(text) => crate::config::parse_toml(&text).is_ok().then_some(text),
+            Some(text) => ok(&text).then_some(text),
             None => Some(String::new()),
         },
     )
+}
+
+/// How `open` meets a trunk config that does not parse.
+#[derive(Clone, Copy, PartialEq)]
+enum Broken {
+    /// Refuse: the error is the command's.
+    Refuse,
+    /// `ci` on a server: the names the trunk says, over the defaults.
+    Judge,
+    /// A checkout's queue and ship: the trunk's last config that `from_toml`
+    /// accepts, told by the names and gate settings the server reads, so the
+    /// reviewed repair can be accepted, landed and recorded.
+    Repair,
+}
+
+/// The fix a broken trunk config names in a checkout: its keys may be a newer 5w's.
+pub fn repair_fix() -> &'static str {
+    "upgrade 5w, or ship the repair"
+}
+
+/// A checkout's config over a trunk commit whose `.5w.toml` does not parse: the
+/// newest one on its first-parent line that does, with the names and the
+/// `gate_trunk` and `require_task` settings read as the server's gate reads them
+/// (failing closed). None: a server, no such trunk commit, a working copy that
+/// differs from it (fixed in place), a `requires` newer than this 5w, or no
+/// config on the line that reads.
+fn repair_config(primary: &Path, trunk: &str, bare: bool) -> Option<Config> {
+    if bare {
+        return None;
+    }
+    let tip = [
+        format!("refs/heads/{trunk}"),
+        format!("refs/remotes/origin/{trunk}"),
+    ]
+    .iter()
+    .find_map(|r| git::rev(primary, r))?;
+    let text = git::opt(primary, &["show", &format!("{tip}:{CONFIG_FILE}")])?;
+    if Config::from_toml(&text).is_ok() || crate::config::requires_newer(&text).is_some() {
+        return None;
+    }
+    if let Some(w) = git::worktree_of(primary, trunk).ok().flatten()
+        && fs::read_to_string(w.join(CONFIG_FILE))
+            .ok()
+            .as_deref()
+            .map(|t| t.trim_end_matches('\n'))
+            != Some(text.as_str())
+    {
+        return None;
+    }
+    let base = last_config_where(primary, &tip, |t| Config::from_toml(t).is_ok())?;
+    let mut cfg = Config::from_toml(&base).ok()?;
+    let kv = crate::config::parse_toml(&text)
+        .ok()
+        .or_else(|| crate::config::parse_toml(&base).ok())
+        .unwrap_or_default();
+    let said = |key: &str| {
+        kv.iter().rev().find_map(|(k, v)| match v {
+            crate::config::Val::Str(t) if k == key => Some(t.clone()),
+            _ => None,
+        })
+    };
+    cfg.trunk = said("trunk").or(cfg.trunk);
+    cfg.file = said("file").unwrap_or(cfg.file);
+    cfg.archive = said("archive").unwrap_or(cfg.archive);
+    cfg.commit_prefix = said("commit_prefix").unwrap_or(cfg.commit_prefix);
+    cfg.gate_trunk = crate::ci::setting_on(primary, Some(&tip), "gate_trunk");
+    cfg.require_task = crate::ci::setting_on(primary, Some(&tip), "require_task");
+    Some(cfg)
 }
 
 /// Resolve `.` and `..` components without touching the filesystem.
@@ -120,16 +194,23 @@ fn normalize(p: &Path) -> PathBuf {
 
 impl Repo {
     pub fn open() -> Res<Repo> {
-        Repo::open_with(false)
+        Repo::open_with(Broken::Refuse)
     }
 
     /// Open even when the trunk's config does not parse, noting its error: a
     /// server must still judge the push that fixes it (`ci`).
     pub fn open_lenient() -> Res<Repo> {
-        Repo::open_with(true)
+        Repo::open_with(Broken::Judge)
     }
 
-    fn open_with(lenient: bool) -> Res<Repo> {
+    /// Open a checkout whose trunk commits a config that does not parse by the
+    /// trunk's last one that does, noting the error: its repair is reviewed and
+    /// shipped like any change (a gated server takes it only with its landing).
+    pub fn open_for_repair() -> Res<Repo> {
+        Repo::open_with(Broken::Repair)
+    }
+
+    fn open_with(mode: Broken) -> Res<Repo> {
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
         let common = git::git(
             &cwd,
@@ -206,7 +287,14 @@ impl Repo {
         let cfg = match src {
             Some(s) => match Config::from_toml(&s) {
                 Ok(c) => c,
-                Err(e) if lenient => {
+                Err(e) if mode == Broken::Repair => match repair_config(&primary, &guess, bare) {
+                    Some(c) => {
+                        broken = Some(e);
+                        c
+                    }
+                    None => return Err(e),
+                },
+                Err(e) if mode == Broken::Judge => {
                     broken = Some(e);
                     // What the text says where it can be read, as the config reads
                     // it (the last key winning): the trunk, and the names the gate
@@ -261,6 +349,47 @@ impl Repo {
             bare,
             pin,
             broken,
+        })
+    }
+
+    /// Why a ship of `tip` onto a trunk whose committed config does not parse is
+    /// refused: what would land, `tip` merged onto the trunk, must commit a config
+    /// that parses (or none) and keeps the queue names the trunk's gate reads.
+    /// None: the trunk reads, or `tip` lands such a repair.
+    pub fn unrepaired(&self, tip: &str) -> Option<String> {
+        let e = self.broken.as_ref()?;
+        let (p, t) = (&self.primary, &self.trunk);
+        let trunk = git::rev(p, &format!("refs/heads/{t}"))?;
+        let show = |at: &str| git::opt(p, &["show", &format!("{at}:{CONFIG_FILE}")]);
+        if show(&trunk).is_none_or(|text| Config::from_toml(&text).is_ok()) {
+            return None;
+        }
+        let fix = format!("{CONFIG_FILE} on {t} is broken ({e}) — {}", repair_fix());
+        // A conflicting merge lands nothing: the repair must merge cleanly.
+        let Some(tree) = git::opt(p, &["merge-tree", "--write-tree", &trunk, tip])
+            .and_then(|o| o.lines().next().map(String::from))
+        else {
+            return Some(fix);
+        };
+        let cfg = match show(&tree) {
+            Some(text) => match Config::from_toml(&text) {
+                Ok(c) => c,
+                Err(_) => return Some(fix),
+            },
+            None => Config::default(),
+        };
+        let was = &self.cfg;
+        [
+            ("file", &was.file, &cfg.file),
+            ("archive", &was.archive, &cfg.archive),
+            ("commit_prefix", &was.commit_prefix, &cfg.commit_prefix),
+        ]
+        .into_iter()
+        .find(|(_, old, new)| old != new)
+        .map(|(key, old, _)| {
+            format!(
+                "a repair of {t}'s {CONFIG_FILE} keeps {key} = {old:?}; rename in a later commit"
+            )
         })
     }
 
