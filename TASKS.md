@@ -37,8 +37,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. Sty::new() checks only isatty and NO_COLOR; --no-color is swallowed today by the opts() unknown-flag bug.
 - [ ] #28 Color the '5w: <error>' refusal red when stderr is a terminal and NO_COLOR is unset @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. main.rs prints refusals with eprintln! uncolored.
-- [~] #29 USAGE: one line linking the README on the web @output !1 needs:#13 branch:output/task-29 submitted:d456c3922d26
-  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig: link to web docs in help text.
 - [ ] #31 README: one-line uninstall note (cargo uninstall 5w) next to the install line @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning.
 - [ ] #34 USAGE: one example invocation under the usage line, e.g. 5w ready area:output @output !1 needs:#13
@@ -98,3 +96,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #37: FIVEW_WT_ROOT="" counts as set, so Repo::wt_root() joins '' onto the primary and worktrees land at <primary>/<slug>, inside the repository. Treat an empty value as unset (fall back to worktrees.root / the default); test it.
 - [x] #41 wt prune: keep any <area>/task-<id> branch of an open task, not only the currently suggested name @wt !1 branch:wt/task-41 submitted:0d13d58f3b0a via:review reviewed:0d13d58f3b0a
   Found reviewing #17: after 5w set <id> area <new>, the untouched <old>/task-<id> worktree is listed for removal because the suggestion changed. Keep any branch whose last component is task-<id> for a task not closed; test with set area after wt new.
+- [x] #29 USAGE: one line linking the README on the web @output !1 needs:#13 branch:output/task-29 submitted:d456c3922d26 via:review reviewed:d456c3922d26
+  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig: link to web docs in help text.
