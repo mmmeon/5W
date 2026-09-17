@@ -6868,6 +6868,41 @@ fn a_trunk_config_broken_past_parsing_is_read_as_the_last_one_that_parsed() {
 }
 
 #[test]
+fn a_config_broken_after_the_trunk_deleted_it_is_read_as_the_last_one_before() {
+    let r = Repo::new("config-deleted-then-broken");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+        .unwrap()
+        .replace("file = \"TASKS.md\"", "file = \"Q.md\"");
+    assert!(cfg.contains("file = \"Q.md\"") && cfg.contains("title_max = 120"));
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["mv", "TASKS.md", "Q.md"]);
+    r.git(&r.main, &["commit", "-qam", "queue elsewhere"]);
+    // The config is deleted, then comes back broken past parsing.
+    r.git(&r.main, &["rm", "-q", ".5w.toml"]);
+    r.git(
+        &r.main,
+        &["commit", "--no-verify", "-qm", "drop the config"],
+    );
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace("title_max = 120", "title_max = = 1"),
+    )
+    .unwrap();
+    r.git(&r.main, &["add", ".5w.toml"]);
+    r.git(
+        &r.main,
+        &["commit", "--no-verify", "-qm", "break the config"],
+    );
+
+    // The deletion is not a config: the queue opens by the one before it.
+    let out = r.ok(&r.main, &["add", "repair the config"]);
+    assert!(out.contains(".5w.toml on main is broken"), "{out}");
+    let queue = std::fs::read_to_string(r.main.join("Q.md")).unwrap();
+    assert!(queue.contains("repair the config"), "{queue}");
+    assert!(!r.main.join("TASKS.md").exists());
+}
+
+#[test]
 fn a_landing_repairing_a_config_broken_past_parsing_is_told_by_the_trunks_queue_names() {
     let r = Repo::new("config-syntax-names");
     let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();

@@ -88,7 +88,7 @@ fn committed_trunk(dir: &Path) -> Option<String> {
 }
 
 /// The newest `.5w.toml` that parses on `commit`'s first-parent line, from the
-/// commit itself back: "" where that line deleted it. None: no such commit.
+/// commit itself back, past commits that deleted it. None: no such commit.
 pub fn last_readable_config(dir: &Path, commit: &str) -> Option<String> {
     last_config_where(dir, commit, |t| crate::config::parse_toml(t).is_ok())
 }
@@ -100,12 +100,10 @@ fn last_config_where(dir: &Path, commit: &str, ok: impl Fn(&str) -> bool) -> Opt
         dir,
         &["rev-list", "--first-parent", commit, "--", CONFIG_FILE],
     )?;
-    line.lines().find_map(
-        |c| match git::opt(dir, &["show", &format!("{c}:{CONFIG_FILE}")]) {
-            Some(text) => ok(&text).then_some(text),
-            None => Some(String::new()),
-        },
-    )
+    // A commit that deleted the file has no config to read: walk on past it.
+    line.lines()
+        .filter_map(|c| git::opt(dir, &["show", &format!("{c}:{CONFIG_FILE}")]))
+        .find(|text| ok(text))
 }
 
 /// The newest config on `commit`'s first-parent line that `from_toml` accepts.
