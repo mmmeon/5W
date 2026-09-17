@@ -40,6 +40,10 @@ pub struct Repo {
     /// Opened for `ci` over a trunk config that does not parse: its error. The
     /// config is then the default, and `ci` judges only a push that repairs it.
     pub broken: Option<String>,
+    /// The trunk as committed state names it: what `trunk` would be if the config
+    /// read were the one committed where it was read. Queue rules are judged on
+    /// it, so an uncommitted `trunk` edit in a checkout moves no gate.
+    pub committed_trunk: String,
 }
 
 pub const CONFIG_FILE: &str = ".5w.toml";
@@ -294,8 +298,11 @@ impl Repo {
                     )
                 })
         };
-        let mut src =
-            on_trunk(&guess).or_else(|| fs::read_to_string(primary.join(CONFIG_FILE)).ok());
+        let mut src = on_trunk(&guess);
+        let mut from_primary = src.is_none();
+        if from_primary {
+            src = fs::read_to_string(primary.join(CONFIG_FILE)).ok();
+        }
         // `5w.trunk` is local: a clone has no pin, and its primary checkout may
         // be on a branch without the file. The committed config names the trunk.
         if src.is_none()
@@ -304,6 +311,7 @@ impl Repo {
             && let Some(t) = committed_trunk(&primary)
         {
             src = on_trunk(&t);
+            from_primary = false;
             guess = t;
         }
         let mut broken = None;
@@ -357,7 +365,26 @@ impl Repo {
         let pin = pin.filter(|_| bare);
         let trunk = match &pin {
             Some((t, _)) => t.clone(),
-            None => cfg.trunk.clone().unwrap_or(guess),
+            None => cfg.trunk.clone().unwrap_or(guess.clone()),
+        };
+        // The same resolution over the committed copy of what was read. A broken
+        // config or a pin already reads committed text.
+        let committed_trunk = if broken.is_some() || pin.is_some() {
+            trunk.clone()
+        } else {
+            let text = if from_primary {
+                git::opt(&primary, &["show", &format!("HEAD:{CONFIG_FILE}")])
+            } else {
+                [
+                    format!("refs/heads/{guess}"),
+                    format!("refs/remotes/origin/{guess}"),
+                ]
+                .iter()
+                .find_map(|r| git::opt(&primary, &["show", &format!("{r}:{CONFIG_FILE}")]))
+            };
+            text.and_then(|t| crate::config::parse_toml(&t).ok())
+                .and_then(|kv| said(&primary, &kv, None, "trunk"))
+                .unwrap_or(guess)
         };
         Ok(Repo {
             cwd,
@@ -368,6 +395,7 @@ impl Repo {
             bare,
             pin,
             broken,
+            committed_trunk,
         })
     }
 

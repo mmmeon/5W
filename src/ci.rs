@@ -174,6 +174,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 bare: repo.bare,
                 pin: repo.pin.clone(),
                 broken: None,
+                committed_trunk: repo.committed_trunk.clone(),
             };
             &repaired
         }

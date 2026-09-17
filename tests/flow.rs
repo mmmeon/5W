@@ -6378,6 +6378,63 @@ fn the_pre_commit_hook_judges_a_queue_commit_under_the_committed_trunk_config() 
 }
 
 #[test]
+fn an_uncommitted_trunk_rename_does_not_move_the_config_the_hook_judges_by() {
+    let r = Repo::new("hook-uncommitted-trunk");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let reviewed = cfg.replace("[lanes.agent]\n", "[lanes.agent]\nclose = \"review\"\n");
+    assert_ne!(reviewed, cfg);
+    r.ok(&r.main, &["hook", "install"]);
+    r.commit_in(&r.main, ".5w.toml", &reviewed);
+    r.ok(&r.main, &["add", "do it"]);
+    // Another branch commits a config without the review.
+    r.ok(&r.main, &["wt", "new", "f/other"]);
+    r.commit_in(&r.wt("f/other"), ".5w.toml", &cfg);
+    // The trunk checkout's copy renames the trunk to it, uncommitted.
+    let renamed = reviewed.replace("trunk = \"main\"", "trunk = \"f/other\"");
+    assert_ne!(renamed, reviewed);
+    std::fs::write(r.main.join(".5w.toml"), &renamed).unwrap();
+    let commit = |text: &str| {
+        std::fs::write(r.main.join("TASKS.md"), text).unwrap();
+        r.git(&r.main, &["add", "--", "TASKS.md"]);
+        let mut c = Command::new("git");
+        c.args(["commit", "-qm", "queue"]).current_dir(&r.main);
+        env(&mut c, &r.root);
+        let o = c.output().unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+
+    // A close still needs the review main commits,
+    let closed = r
+        .tasks()
+        .replace("- [ ] #1 do it", "- [x] #1 do it via:self");
+    let (ok, err) = commit(&closed);
+    assert!(!ok && err.contains("closes via:review"), "{err}");
+    r.git(&r.main, &["reset", "-q", "--", "TASKS.md"]);
+    r.git(&r.main, &["checkout", "--", "TASKS.md"]);
+    // and a queue edit on main is still on the trunk.
+    let row = r.tasks().replace("## Open\n", "## Open\n\n- [ ] #2 more\n");
+    let (ok, err) = commit(&row);
+    assert!(ok, "{err}");
+
+    // A lint of commits judges them by main's committed config too.
+    std::fs::write(
+        r.main.join("TASKS.md"),
+        r.tasks()
+            .replace("- [ ] #1 do it", "- [x] #1 do it via:self"),
+    )
+    .unwrap();
+    r.git(
+        &r.main,
+        &["commit", "-qm", "close #1", "--no-verify", "--", "TASKS.md"],
+    );
+    let out = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(out.contains("closes via:review"), "{out}");
+}
+
+#[test]
 fn queue_writes_and_lint_ranges_judge_under_the_committed_trunk_config() {
     let r = Repo::new("writes-committed-config");
     let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();

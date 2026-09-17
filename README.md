@@ -350,7 +350,8 @@ Hand edits are checked, not trusted:
 - **`5w hook install`** (also run by `5w wt setup`) adds a pre-commit hook running `5w lint --staged`.
   It judges a queue commit under the `.5w.toml` the trunk commits, as `ci` does — not the trunk
   checkout's working copy or the staged one, so an uncommitted lane edit does not let a close skip
-  the review the committed config asks for: commit the config change first, on its own. `5w lint
+  the review the committed config asks for: commit the config change first, on its own. Nor does
+  an uncommitted `trunk` edit: the trunk is the one the committed config names. `5w lint
   <rev>` and `<from>..<to>` in a checkout, and `5w done`'s close, judge lanes under that committed
   config too; a trunk that commits none, or one that does not parse, is judged under the checkout's.
   Where `5w` is not installed the hook lets the commit through with a warning to follow

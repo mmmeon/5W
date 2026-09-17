@@ -658,11 +658,14 @@ pub fn check_texts(
 /// (a lane's kind, `default_lane`) would otherwise let a close skip review. None:
 /// the trunk commits no config to judge by. Err: it does not parse — its error,
 /// and a config holding the queue names it still gives (see `Repo::open_lenient`).
+/// The trunk is the one committed state names: an uncommitted `trunk` edit does
+/// not send the rules to another branch's config.
 fn committed_config(repo: &Repo) -> Option<Result<Config, (String, Config)>> {
     let file = crate::store::CONFIG_FILE;
+    let trunk = &repo.committed_trunk;
     let tip = [
-        format!("refs/heads/{}", repo.trunk),
-        format!("refs/remotes/origin/{}", repo.trunk),
+        format!("refs/heads/{trunk}"),
+        format!("refs/remotes/origin/{trunk}"),
     ]
     .iter()
     .find_map(|r| git::rev(&repo.primary, r))?;
@@ -702,17 +705,18 @@ pub fn committed_rules(repo: &Repo) -> Option<Config> {
     committed_config(repo)?.ok()
 }
 
-/// `repo` judged under `cfg`.
+/// `repo` judged under `cfg`, on the trunk committed state names.
 fn with_config(repo: &Repo, cfg: Config) -> Repo {
     Repo {
         cwd: repo.cwd.clone(),
         primary: repo.primary.clone(),
         common: repo.common.clone(),
         cfg,
-        trunk: repo.trunk.clone(),
+        trunk: repo.committed_trunk.clone(),
         bare: repo.bare,
         pin: repo.pin.clone(),
         broken: None,
+        committed_trunk: repo.committed_trunk.clone(),
     }
 }
 
