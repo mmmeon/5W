@@ -240,6 +240,12 @@ fn reject_refuses_work_that_was_never_submitted() {
     let out = r.fails(&r.main, &["reject", "1", "not good"]);
     assert!(out.contains("never submitted"), "{out}");
     assert!(r.line(1).starts_with("- [ ] #1") && !r.line(1).contains("rework:"));
+    // Closed was never pending review either; `open` alone would not make it rejectable.
+    r.ok(&r.main, &["done", "1", "--self"]);
+    let out = r.fails(&r.main, &["reject", "1", "not good"]);
+    assert!(out.contains("nothing to reject"), "{out}");
+    assert!(!out.contains("open 1` first"), "{out}");
+    assert!(r.line(1).starts_with("- [x] #1") && !r.line(1).contains("rework:"));
 }
 
 #[test]

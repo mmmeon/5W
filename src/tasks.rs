@@ -1478,7 +1478,9 @@ fn reject(repo: &Repo, args: &[String]) -> Res<()> {
     let tasks = &repo.cfg.cmd_tasks;
     let q = Q::load(repo)?;
     match q.get(id)?.state {
-        State::Done => bail!("#{id} is closed; `{tasks} open {id}` first"),
+        State::Done => bail!(
+            "#{id} is closed, never pending review, so there is nothing to reject — to redo it: `{tasks} open {id}`, then the worker submits"
+        ),
         State::Open => bail!(
             "#{id} was never submitted, so there is nothing to reject — worker: `{tasks} submit {id} <branch>`"
         ),
