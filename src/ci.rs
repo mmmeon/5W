@@ -122,13 +122,15 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             .and_then(|t| git::opt(p, &["merge-base", t, &head])),
     };
     let onto_trunk = refname.as_deref() == Some(format!("refs/heads/{}", repo.trunk).as_str());
-    // Off the trunk, what the trunk already holds (merged in) is the trunk's, not the branch's.
     let span = match &base {
         Some(b) => format!("{b}..{head}"),
         None => head.clone(),
     };
     let mut rev_list = vec!["rev-list", "--reverse", &span];
-    if let Some(t) = trunk_ref.as_deref().filter(|_| !onto_trunk) {
+    // Off the trunk, what the trunk already holds (merged in) is the trunk's, not the
+    // branch's. A plain range names no branch: it judges every commit in it.
+    let off_trunk = branch.is_some() || (refname.is_some() && !onto_trunk);
+    if let Some(t) = trunk_ref.as_deref().filter(|_| off_trunk) {
         rev_list.extend(["--not", t]);
     }
     let range: Vec<String> = match &base {

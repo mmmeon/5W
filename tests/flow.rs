@@ -4781,6 +4781,81 @@ fn pre_receive_checks_pushes_to(name: &str) {
     let out = push(&["f/a"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("queue edits go on main"));
     assert!(!out.status.success());
+
+    // A branch that merged a trunk tip the server lacks is judged against the server's
+    // trunk, even when the same push moves the trunk: push the trunk first.
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    r.git(&r.main, &["checkout", "-q", "main"]);
+    r.ok(&r.main, &["add", "three"]);
+    r.git(&r.main, &["checkout", "-q", "f/a"]);
+    r.git(&r.main, &["merge", "-q", "--no-edit", "main"]);
+    let out = push(&["main", "f/a"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("queue edits go on main"));
+    assert!(push(&["main"]).status.success());
+    let out = push(&["f/a"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn pre_receive_does_not_let_a_branch_land_on_a_trunk_update_git_refuses() {
+    // git runs pre-receive before its own per-ref checks, and a push that is not
+    // atomic applies the refs that pass: judged against the pushed trunk, a branch
+    // that merged it would land its queue commits while the trunk update is refused.
+    for refuse in ["deny-non-fast-forward", "update-hook"] {
+        let r = Repo::new("prereceive-refused-trunk");
+        r.ok(&r.main, &["add", "one"]);
+        let server = r.root.join("server.git");
+        r.git(
+            &r.root,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                r.main.to_str().unwrap(),
+                server.to_str().unwrap(),
+            ],
+        );
+        r.ok(&server, &["hook", "install", "pre-receive"]);
+        r.git(
+            &r.main,
+            &["remote", "add", "origin", server.to_str().unwrap()],
+        );
+        let mut update = "+main";
+        if refuse == "deny-non-fast-forward" {
+            r.git(&server, &["config", "receive.denyNonFastForwards", "true"]);
+            // Rewrite main's history: the server's main is no ancestor of the new one.
+            r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+            r.ok(&r.main, &["add", "uno"]);
+        } else {
+            let hook = server.join("hooks/update");
+            std::fs::write(
+                &hook,
+                "#!/bin/sh\n[ \"$1\" = refs/heads/main ] && exit 1\nexit 0\n",
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            update = "main";
+        }
+        r.ok(&r.main, &["add", "two"]);
+        r.git(&r.main, &["checkout", "-qb", "f/b"]);
+        let out = r.git_path(
+            &r.main,
+            &path_with_5w(),
+            &["push", "-q", "origin", update, "f/b"],
+        );
+        assert!(!out.status.success(), "{refuse}");
+        assert!(
+            r.git(&server, &["branch", "--list", "f/b"]).is_empty(),
+            "{refuse}: f/b landed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
 
 #[test]
@@ -4929,6 +5004,27 @@ fn ci_push_of_a_branch_that_merged_the_trunk_judges_only_its_own_commits() {
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(err.matches("queue edits go on main").count(), 1, "{err}");
+}
+
+#[test]
+fn ci_plain_range_judges_every_commit_the_trunk_holds_too() {
+    // No --ref or --branch: no branch to set the trunk's commits apart from.
+    let r = Repo::new("ci-plain-range");
+    r.ok(&r.main, &["add", "x"]);
+    let old = r.git(&r.main, &["rev-parse", "HEAD"]);
+    std::fs::write(r.main.join("code"), "x\n").unwrap();
+    r.git(&r.main, &["add", "code"]);
+    r.git(&r.main, &["commit", "-qm", "code"]);
+    let o = r.cli(&r.main, &["ci", "--base", &old, "--head", "main"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        "5w ci: 1 commit(s), range: ok\n"
+    );
+    r.ok(&r.main, &["add", "y"]);
+    let o = r.cli(&r.main, &["ci", "--base", &old, "--head", "main"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("queue edits go on main"));
 }
 
 #[test]

@@ -295,10 +295,15 @@ the same command runs under any CI, in a server hook, and by hand:
 
 - **A push to the trunk:** every commit in the range is linted as landing on the trunk.
 - **A push to any other branch:** its commits carry no queue edits. Commits the trunk already holds —
-  brought in by `git merge <trunk>` — are the trunk's and are not judged again.
+  brought in by `git merge <trunk>` — are the trunk's and are not judged again. The trunk they are
+  judged against is the server's before the push: a hook cannot know whether git will apply a trunk
+  update in the same push (a non-fast-forward, an `update` hook), so push the trunk first, then a
+  branch that merged its new tip.
 - **A change request:** no queue edits, plus the ship check — an accepted task names the branch, and
   what the branch adds is exactly what was reviewed (a clean rebase passes). The check is red until
   the task is accepted; re-run it after `5w accept`.
+- **A plain range** (neither `--ref` nor `--branch`): every commit in it carries no queue edits,
+  whether or not the trunk holds it.
 
 A missing or all-zero `--base` means the merge-base with the trunk. The checkout needs full history.
 `--head`, `--base` and `--trunk` must each name one commit: a negation such as `^HEAD` or a range is
