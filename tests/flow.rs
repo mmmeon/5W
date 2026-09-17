@@ -7474,6 +7474,83 @@ fn the_server_names_an_archive_renamed_in_place_not_the_task() {
 }
 
 #[test]
+fn a_ci_clone_reads_an_archive_renamed_in_place_at_the_trunk_it_checks_against() {
+    let r = Repo::new("config-archive-in-place-ci");
+    // The archive was once OLD.md: a clone whose main stayed there reads that name.
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("archive = \"DONE.md\"") && cfg.contains("trunk = \"main\""));
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace("archive = \"DONE.md\"", "archive = \"OLD.md\""),
+    )
+    .unwrap();
+    r.git(&r.main, &["commit", "-qam", "archive to OLD.md"]);
+    let stale = r.git(&r.main, &["rev-parse", "HEAD"]);
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "archive to DONE.md"]);
+    // #1 accepted and archived.
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&r.main, &["submit", "1", "a/x"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.ok(&r.main, &["archive"]);
+    // One break renames the archive in place and names another trunk.
+    let broken = cfg
+        .replace("archive = \"DONE.md\"", "archive = \"DONE2.md\"")
+        .replace("trunk = \"main\"", "trunk = \"x\"")
+        + "bogus = 1\n";
+    std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+    r.git(
+        &r.main,
+        &["commit", "--no-verify", "-qam", "break the config"],
+    );
+    let forge = r.root.join("forge.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            forge.to_str().unwrap(),
+        ],
+    );
+    let ci = ci_clone(&r, &forge, "ci");
+    let run = |args: &[&str]| {
+        let o = r.cli(
+            &ci,
+            &[&["ci", "--branch", "a/x", "--head", "origin/a/x"], args].concat(),
+        );
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        (o.status.success(), out)
+    };
+    let blames_the_config = |out: &str| {
+        out.contains(".5w.toml on main is broken")
+            && out.contains("names the archive DONE2.md, not DONE.md")
+            && out.contains("archive = \"DONE.md\"")
+            && !out.contains("unreviewed change")
+            && !out.contains("no task names it")
+    };
+
+    // The names are main's, which the clone guessed: read at main, whether or not
+    // --trunk names it, and not at the trunk x its broken config names.
+    for args in [&[][..], &["--trunk", "origin/main"]] {
+        let (ok, out) = run(args);
+        assert!(!ok && blames_the_config(&out), "{args:?}: {out}");
+    }
+    // A stale local main, from before the break, does not speak for --trunk.
+    r.git(&ci, &["update-ref", "refs/heads/main", &stale]);
+    let (ok, out) = run(&["--trunk", "origin/main"]);
+    assert!(!ok && blames_the_config(&out), "{out}");
+}
+
+#[test]
 fn a_break_mixing_a_moved_queue_and_an_archive_renamed_in_place_names_each_repair() {
     // The queue moved with its file or renamed in place; the archive renamed in
     // place, or renamed with no archive file under either name.

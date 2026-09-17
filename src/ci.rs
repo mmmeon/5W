@@ -115,17 +115,20 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         }
         None => None,
     };
-    // The trunk as a plain sha: a bad --trunk would read an empty queue.
+    // The trunk as a plain sha: a bad --trunk would read an empty queue. Over a
+    // broken config, the tip its names were read at, not the trunk it names.
     let trunk_ref = match trunk_ref {
         Some(t) => Some(git::rev(p, &t).ok_or_else(|| {
             format!("ci: --trunk {t} is not a commit — pass a branch, tag or sha")
         })?),
-        None => [
-            format!("refs/heads/{}", repo.trunk),
-            format!("refs/remotes/origin/{}", repo.trunk),
-        ]
-        .into_iter()
-        .find_map(|r| git::rev(p, &r)),
+        None => repo.broken_at.as_ref().map(|(_, t)| t.clone()).or_else(|| {
+            [
+                format!("refs/heads/{}", repo.trunk),
+                format!("refs/remotes/origin/{}", repo.trunk),
+            ]
+            .into_iter()
+            .find_map(|r| git::rev(p, &r))
+        }),
     };
     // A trunk whose config does not parse would refuse every push, the fix too:
     // judge a trunk push, or a change request, whose tip commits a config that
@@ -174,6 +177,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 bare: repo.bare,
                 pin: repo.pin.clone(),
                 broken: None,
+                broken_at: repo.broken_at.clone(),
                 committed_trunk: repo.committed_trunk.clone(),
             };
             &repaired
@@ -341,7 +345,8 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         ));
     }
     if onto_trunk {
-        trunk_gate(repo, base.as_deref(), &span, &range, &mut problems)?;
+        let tip = trunk_ref.as_deref();
+        trunk_gate(repo, base.as_deref(), tip, &span, &range, &mut problems)?;
     }
 
     if let Some(b) = &branch {
@@ -427,6 +432,7 @@ struct Commit {
 fn trunk_gate(
     repo: &Repo,
     base: Option<&str>,
+    tip: Option<&str>,
     span: &str,
     range: &[String],
     out: &mut Vec<String>,
@@ -510,7 +516,7 @@ fn trunk_gate(
     for c in range.iter().filter(|c| !judged_set.contains(c.as_str())) {
         let Some(k) = commits.get(c) else { continue };
         let Some(id) = record_of(k) else { continue };
-        match landing(repo, c, k, &id, &commits, &in_range) {
+        match landing(repo, tip, c, k, &id, &commits, &in_range) {
             Ok(landed) => covered.extend(landed),
             Err(why) => unjudged_failures.push((
                 c,
@@ -522,7 +528,7 @@ fn trunk_gate(
     for c in &judged {
         let Some(k) = commits.get(c) else { continue };
         if let Some(id) = record_of(k) {
-            match landing(repo, c, k, &id, &commits, &in_range) {
+            match landing(repo, tip, c, k, &id, &commits, &in_range) {
                 Ok(landed) => covered.extend(landed),
                 Err(why) => out.push(format!("{}: land #{id} covers nothing — {why}", short(c))),
             }
@@ -687,18 +693,19 @@ fn committed_trunk(p: &std::path::Path, commit: Option<&str>) -> Option<String> 
 }
 
 /// The archive as commit `rev` has it, empty when it has none — unless the trunk's
-/// committed config is broken and renamed the archive in place, leaving the closed
+/// config at `tip` (the trunk this check reads: `--trunk`, else where a broken
+/// config was read) is broken and renamed the archive in place, leaving the closed
 /// tasks under the name its last accepted config keeps, which `rev` still has.
 /// Read as empty, an accepted row would stop naming its task and branch: refused
 /// with the repair, as a checkout's reads refuse it (store: `no_archive`). The
 /// names here are the trunk's, even under a pushed config that parses.
-fn archive_at(repo: &Repo, rev: &str) -> Res<String> {
-    let (p, t, file) = (&repo.primary, &repo.trunk, crate::store::CONFIG_FILE);
+fn archive_at(repo: &Repo, rev: &str, tip: Option<&str>) -> Res<String> {
+    let (p, file) = (&repo.primary, crate::store::CONFIG_FILE);
     let new = &repo.cfg.archive;
     if let Some(a) = git::opt(p, &["show", &format!("{rev}:{new}")]) {
         return Ok(a);
     }
-    let Some(tip) = lint::trunk_tip(p, t) else {
+    let Some(tip) = tip else {
         return Ok(String::new());
     };
     let Some(text) = git::opt(p, &["show", &format!("{tip}:{file}")]) else {
@@ -707,14 +714,18 @@ fn archive_at(repo: &Repo, rev: &str) -> Res<String> {
     let Err(e) = crate::config::Config::from_toml(&text) else {
         return Ok(String::new());
     };
-    // Whether `rev` still holds the old archive; the names the repair restores
-    // are the trunk tip's (`store::restore_fix`), as a checkout's reads name them.
-    let at_rev = crate::store::last_accepted_config(p, &tip).is_some_and(|c| {
-        c.archive != *new && git::ok(p, &["cat-file", "-e", &format!("{rev}:{}", c.archive)])
+    // Whether `rev` still holds the old archive; the names are those `tip`'s broken
+    // config gives (`store::restore_fix`), as a checkout's reads name them, on the
+    // trunk they were read on.
+    let broken = crate::store::broken_names(p, &text, Some(tip));
+    let t = repo.broken_at.as_ref().map_or(&repo.trunk, |(t, _)| t);
+    let at_rev = crate::store::last_accepted_config(p, tip).is_some_and(|c| {
+        c.archive != broken.archive
+            && git::ok(p, &["cat-file", "-e", &format!("{rev}:{}", c.archive)])
     });
-    let gate = || setting_on(p, Some(&tip), "gate_trunk");
+    let gate = || setting_on(p, Some(tip), "gate_trunk");
     match at_rev
-        .then(|| crate::store::restore_fix(p, t, &tip, &repo.cfg, gate(), &e, "archive"))
+        .then(|| crate::store::restore_fix(p, t, tip, &broken, gate(), &e, "archive"))
         .flatten()
     {
         Some(fix) => bail!("{fix}"),
@@ -725,6 +736,7 @@ fn archive_at(repo: &Repo, rev: &str) -> Res<String> {
 /// The commits a landing record covers, when it holds: see `trunk_gate`.
 fn landing(
     repo: &Repo,
+    trunk: Option<&str>,
     sha: &str,
     k: &Commit,
     id: &str,
@@ -783,7 +795,7 @@ fn landing(
     let show = |f: &str| git::opt(p, &["show", &format!("{sha}:{f}")]).unwrap_or_default();
     let all: Vec<Task> = queue::parse(&show(&repo.cfg.file))
         .into_iter()
-        .chain(queue::parse(&archive_at(repo, sha)?))
+        .chain(queue::parse(&archive_at(repo, sha, trunk)?))
         .collect();
     let id_n = parse_id(id)?;
     let Some(t) = all.iter().find(|t| t.id == id_n) else {
@@ -844,7 +856,7 @@ fn ship_check(
         return Ok(());
     }
     let show = |f: &str| git::opt(p, &["show", &format!("{trunk}:{f}")]).unwrap_or_default();
-    let archive = match archive_at(repo, trunk) {
+    let archive = match archive_at(repo, trunk, Some(trunk)) {
         Ok(a) => a,
         Err(why) => {
             out.push(format!("{branch}: {why}"));

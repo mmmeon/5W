@@ -772,6 +772,7 @@ fn with_config(repo: &Repo, cfg: Config) -> Repo {
         bare: repo.bare,
         pin: repo.pin.clone(),
         broken: None,
+        broken_at: None,
         committed_trunk: repo.committed_trunk.clone(),
     }
 }

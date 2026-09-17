@@ -410,7 +410,10 @@ A missing or all-zero `--base` means the merge-base with the trunk. The checkout
 `--head`, `--base` and `--trunk` must each name one commit: a negation such as `^HEAD` or a range is
 refused, not read as an empty range that passes having checked nothing, or as a trunk with an empty
 queue that passes an unreviewed branch (`accept --at` and `audit --since` refuse it too). Without
-`--trunk`, the trunk is `refs/heads/<trunk>`, else `refs/remotes/origin/<trunk>`.
+`--trunk`, the trunk is `refs/heads/<trunk>`, else `refs/remotes/origin/<trunk>` — over a broken
+trunk config, the tip of the branch it was read from (the pin, or the branch guessed for it), not a
+trunk it names. Whether that trunk's config broke and renamed the archive in place is read at that
+commit, not at a local branch that may be stale.
 
 | Where                                                                           | How                                                                                                                                                                                                                                  |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

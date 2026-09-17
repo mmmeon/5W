@@ -40,6 +40,10 @@ pub struct Repo {
     /// Opened for `ci` over a trunk config that does not parse: its error. The
     /// config is then the default, and `ci` judges only a push that repairs it.
     pub broken: Option<String>,
+    /// Opened for `ci` over a broken trunk config: the trunk it was read on (the
+    /// pinned or guessed one, which may not be the trunk it names) and that trunk's
+    /// tip commit, where its names were read (`broken_names`).
+    pub broken_at: Option<(String, String)>,
     /// The trunk as committed state names it: what `trunk` would be if the config
     /// read were the one committed where it was read. Queue rules are judged on
     /// it, so an uncommitted `trunk` edit in a checkout moves no gate.
@@ -384,6 +388,7 @@ impl Repo {
             guess = t;
         }
         let mut broken = None;
+        let mut broken_at = None;
         let in_checkout = checkout.get() && !from_primary;
         let cfg = match src {
             Some(s) => match Config::from_toml(&s) {
@@ -406,7 +411,9 @@ impl Repo {
                     ]
                     .iter()
                     .find_map(|r| git::rev(&primary, r));
-                    broken_names(&primary, &s, tip.as_deref())
+                    let names = broken_names(&primary, &s, tip.as_deref());
+                    broken_at = tip.map(|t| (guess.clone(), t));
+                    names
                 }
                 Err(e) => return Err(e),
             },
@@ -447,6 +454,7 @@ impl Repo {
             bare,
             pin,
             broken,
+            broken_at,
             committed_trunk,
         })
     }
