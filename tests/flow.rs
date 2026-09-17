@@ -5891,6 +5891,19 @@ fn a_server_cloned_after_the_trunk_config_broke_installs_the_hook_that_takes_the
                 && again.contains("already installed"),
             "{again}"
         );
+        // A pin removed after the install comes back on re-install, and the note names it
+        // rather than the trunk the broken config says.
+        r.git(&server, &["config", "--unset", "5w.trunk"]);
+        let again = r.ok(&server, &["hook", "install", "pre-receive"]);
+        assert!(
+            again.contains("hook: 5w.trunk = main")
+                && again.contains(".5w.toml on main is broken")
+                && again.contains("accepts only a push to main that repairs it")
+                && !again.contains("develop")
+                && again.contains("already installed"),
+            "{again}"
+        );
+        assert_eq!(r.git(&server, &["config", "5w.trunk"]), "main");
         r.git(
             &r.main,
             &["remote", "add", "origin", server.to_str().unwrap()],

@@ -1213,6 +1213,22 @@ fn broken_note(repo: &Repo, trunk: &str) {
     }
 }
 
+/// The server's trunk, pinned from HEAD when nothing pins it (on every install, so a
+/// removed pin comes back): a guess that finds no such branch judges no push as landing
+/// on it. Returns the trunk the hook judges.
+fn pin_trunk(repo: &Repo, kind: &str) -> Res<String> {
+    if kind == "pre-receive"
+        && repo.bare
+        && git::opt(&repo.primary, &["config", "5w.trunk"]).is_none()
+        && let Some(b) = crate::store::head_branch(&repo.primary)
+    {
+        git::git(&repo.primary, &["config", "5w.trunk", &b])?;
+        println!("hook: 5w.trunk = {b} (the trunk pushes are judged against; from HEAD)");
+        return Ok(b);
+    }
+    Ok(repo.trunk.clone())
+}
+
 pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
     let kind = args.get(1).map(|s| s.as_str()).unwrap_or("pre-commit");
     if !matches!(kind, "pre-commit" | "pre-receive") {
@@ -1234,7 +1250,8 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
                     if std::fs::read_to_string(&path).ok().as_deref()
                         == Some(hook_script(repo, kind).as_str()) =>
                 {
-                    broken_note(repo, &repo.trunk);
+                    let trunk = pin_trunk(repo, kind)?;
+                    broken_note(repo, &trunk);
                     println!("hook: already installed at {}", path.display());
                     return Ok(());
                 }
@@ -1250,18 +1267,7 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
             }
             let script = hook_script(repo, kind);
             std::fs::write(&path, script).map_err(|e| e.to_string())?;
-            // The server's trunk, pinned: a guess that finds no such branch judges no
-            // push as landing on it.
-            let mut trunk = repo.trunk.clone();
-            if kind == "pre-receive"
-                && repo.bare
-                && git::opt(&repo.primary, &["config", "5w.trunk"]).is_none()
-                && let Some(b) = crate::store::head_branch(&repo.primary)
-            {
-                git::git(&repo.primary, &["config", "5w.trunk", &b])?;
-                println!("hook: 5w.trunk = {b} (the trunk pushes are judged against; from HEAD)");
-                trunk = b;
-            }
+            let trunk = pin_trunk(repo, kind)?;
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                 .map_err(|e| e.to_string())?;

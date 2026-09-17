@@ -406,7 +406,7 @@ branch the bare repository's `HEAD` names (then `git-town.main-branch`, then `ma
 a committed rename must not move the gate off the branch the server guards. A push to the pinned
 trunk whose `.5w.toml` names another trunk is refused, naming both and the pin to change
 (`FIVEW_TRUNK` when that is the pin, since `git config` cannot outrank it) — renaming the trunk on a
-server is its admin's step. `5w hook install pre-receive` records `5w.trunk` from `HEAD` when it is unset —
+server is its admin's step. `5w hook install pre-receive` records `5w.trunk` from `HEAD` when it is unset (a re-install too) —
 set it by hand if the trunk is renamed. `HEAD` itself is no pin (a stale one would refuse every push):
 while `gate_trunk` is on and nothing pins the trunk, every push warns, naming `git config 5w.trunk
 <HEAD's branch>`, and a push to `HEAD`'s branch whose `.5w.toml` renames the trunk away from it is
