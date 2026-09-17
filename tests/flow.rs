@@ -1993,6 +1993,112 @@ fn ship_accepted_stops_at_the_first_refusal_naming_the_branch() {
     );
 }
 
+/// `ship --accepted` over a branch that changes `.5w.toml`, then code: on a
+/// gated server, with the trunk (`gate_trunk` from `start`) and the reviewed
+/// refs pushed in one push, as `ci` judges the run by the config before it.
+fn ship_accepted_over_a_config_change(
+    name: &str,
+    start: bool,
+    change: &[(&str, &str)],
+) -> (Repo, String, bool, String) {
+    let r = Repo::new(name);
+    if start {
+        let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+        std::fs::write(
+            r.main.join(".5w.toml"),
+            cfg.replace("gate_trunk = false", "gate_trunk = true"),
+        )
+        .unwrap();
+        r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+    }
+    let server = server_of(&r);
+    r.ok(&r.main, &["add", "change the config"]);
+    r.ok(&r.main, &["add", "code"]);
+    r.ok(&r.main, &["wt", "new", "a/cfg"]);
+    let a = r.wt("a/cfg");
+    let cfg = std::fs::read_to_string(a.join(".5w.toml")).unwrap();
+    let mut changed = cfg.clone();
+    for (from, to) in change {
+        changed = changed.replace(from, to);
+    }
+    assert_ne!(changed, cfg);
+    r.commit_in(&a, ".5w.toml", &changed);
+    r.ok(&a, &["submit", "1"]);
+    r.ok(&r.main, &["wt", "new", "b/code"]);
+    let b = r.wt("b/code");
+    r.commit_in(&b, "code", "c\n");
+    r.ok(&b, &["submit", "2"]);
+    r.ok(&r.main, &["accept", "1", "2"]);
+    let out = r.ok(&r.main, &["ship", "--accepted", "--sync"]);
+    let mut refs = vec!["main".to_string()];
+    for id in [1, 2] {
+        let reviewed = r
+            .line(id)
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix("reviewed:"))
+            .unwrap()
+            .to_string();
+        refs.push(format!("{reviewed}:refs/5w/reviewed/{id}"));
+    }
+    let refs: Vec<&str> = refs.iter().map(String::as_str).collect();
+    let (ok, err) = push_to(&r, &refs);
+    if ok {
+        assert_eq!(
+            r.git(&server, &["rev-parse", "main"]),
+            r.git(&r.main, &["rev-parse", "main"])
+        );
+    }
+    (r, out, ok, err)
+}
+
+#[test]
+fn ship_accepted_records_landings_after_a_branch_turns_gate_trunk_on() {
+    let (r, out, ok, err) = ship_accepted_over_a_config_change(
+        "shipacceptedgateon",
+        false,
+        &[("gate_trunk = false", "gate_trunk = true")],
+    );
+    assert!(out.contains("landing of #2 recorded"), "{out}");
+    assert!(ok, "{out}\n{err}");
+    assert!(r.main.join("code").exists());
+}
+
+#[test]
+fn ship_accepted_still_records_landings_after_a_branch_turns_gate_trunk_off() {
+    let (r, out, ok, err) = ship_accepted_over_a_config_change(
+        "shipacceptedgateoff",
+        true,
+        &[("gate_trunk = true", "gate_trunk = false")],
+    );
+    assert!(
+        out.contains("landing of #1 recorded") && out.contains("landing of #2 recorded"),
+        "{out}"
+    );
+    assert!(ok, "{out}\n{err}");
+    assert!(r.main.join("code").exists());
+}
+
+#[test]
+fn ship_accepted_stops_after_a_branch_renames_what_the_gate_reads() {
+    let (r, out, ok, err) = ship_accepted_over_a_config_change(
+        "shipacceptedrename",
+        true,
+        &[(
+            "commit_prefix = \"chore(tasks)\"",
+            "commit_prefix = \"queue\"",
+        )],
+    );
+    // a/cfg lands under the config it replaces; the rest waits for its push.
+    assert!(
+        out.contains("landing of #1 recorded")
+            && out.contains("push main, then")
+            && !out.contains("b/code is on main"),
+        "{out}"
+    );
+    assert!(ok, "{out}\n{err}");
+    assert!(!r.main.join("code").exists());
+}
+
 #[test]
 fn duplicate_ids_stop_every_command() {
     let r = Repo::new("dup");

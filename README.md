@@ -104,8 +104,11 @@ each — and stops at the first refusal, naming what was accepted and what was n
 names one commit, so it takes one id). `5w ship --accepted --sync` then ships every branch an
 accepted task names that still exists, parents before their children (from the recorded stack),
 each exactly as `ship <branch>` would, and stops at the first refusal with the branch it stopped at
-and what already landed. It takes `--sync`, `--squash` and `--discard-ignored` for every branch;
-not `-m` or `--force`, which belong to one branch.
+and what already landed. The run reaches a server in one push, judged by the trunk's config before
+it: after a branch that changes `.5w.toml` the rest ship under the new config, recording landings
+if either gates the trunk, but a change to the trunk, queue file, archive or commit prefix stops
+the run there — push the trunk, then run it again. It takes `--sync`, `--squash` and
+`--discard-ignored` for every branch; not `-m` or `--force`, which belong to one branch.
 
 Where every commit is signed with a hardware key, a commit per edit is a touch per edit. `5w batch`
 reads write commands from stdin, one per line as they would follow `5w`, and commits them as one:
@@ -451,8 +454,8 @@ unless the config says `false`; they note on stderr that the trunk's config is b
 would land — the branch merged onto the trunk — and refuses it unless its `.5w.toml` parses (or is
 gone) and keeps the trunk's queue file, archive and commit prefix (rename in a later commit): a
 branch from before the break, which still commits the old config, is not a repair. `ship
---accepted` ships the repair first and stops after it, so the rest ship under the config it
-commits. `lint` (but for the repair commit, see `lint --staged`), `audit`, `doctor`, `hook`,
+--accepted` ships the repair first and stops after it, so the trunk is pushed with the repair
+alone. `lint` (but for the repair commit, see `lint --staged`), `audit`, `doctor`, `hook`,
 `update-files` and a `requires` newer than this 5w still refuse on the broken config.
 
 A forge's check is judged the same way: `5w ci --branch` on a change request whose head commits a

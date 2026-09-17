@@ -36,6 +36,9 @@ struct Opts {
     force: bool,
     discard_ignored: bool,
     message: Option<String>,
+    /// Record landings whatever `gate_trunk` says: a run whose trunk was gated
+    /// before an earlier branch turned it off still reaches a gated server.
+    record: bool,
 }
 
 pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
@@ -47,6 +50,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         force: false,
         discard_ignored: false,
         message: None,
+        record: false,
     };
     let mut i = 0;
     while i < args.len() {
@@ -89,7 +93,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         if o.force {
             bail!("--accepted ships only accepted work; --force one branch by name");
         }
-        return ship_accepted(repo, &o);
+        return ship_accepted(repo, o);
     }
     let branch = match branch.or_else(|| git::current_branch(&repo.cwd)) {
         Some(b) => b,
@@ -103,7 +107,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
 
 /// Every branch an accepted task names that still exists, parents before their
 /// children, each shipped as `ship <branch>` would; the first refusal stops the run.
-fn ship_accepted(repo: &Repo, o: &Opts) -> Res<()> {
+fn ship_accepted(repo: &Repo, mut o: Opts) -> Res<()> {
     let p = &repo.primary;
     let committed = repo.committed()?.unwrap_or_default();
     let archived = repo.committed_file(&repo.cfg.archive)?.unwrap_or_default();
@@ -153,8 +157,25 @@ fn ship_accepted(repo: &Repo, o: &Opts) -> Res<()> {
         return Ok(());
     }
     let mut shipped: Vec<String> = Vec::new();
+    // Everything this run lands reaches the server in one push, which `ci` judges
+    // by the trunk's config before the run. A landing that changes the config:
+    // the rest ships under the new one, recording landings if either gates the
+    // trunk, unless it renames what that judgement reads; then the run stops.
+    let mut reopened: Option<Repo> = None;
+    let config_at = |r: &Repo| {
+        git::opt(
+            p,
+            &[
+                "show",
+                &format!("refs/heads/{}:{}", r.trunk, crate::store::CONFIG_FILE),
+            ],
+        )
+    };
+    o.record = repo.cfg.gate_trunk;
     for (_, b) in &order {
-        if let Err(e) = ship(repo, b, o) {
+        let cur = reopened.as_ref().unwrap_or(repo);
+        let before = config_at(cur);
+        if let Err(e) = ship(cur, b, &o) {
             let done = match shipped.is_empty() {
                 true => "none shipped".to_string(),
                 false => format!("shipped {}", shipped.join(" ")),
@@ -162,17 +183,38 @@ fn ship_accepted(repo: &Repo, o: &Opts) -> Res<()> {
             bail!("stopped at {b}: {e} ({done})");
         }
         shipped.push(b.clone());
-        // A landed repair changes the config this run opened with: the rest ships
-        // under the one it commits, in a run of its own.
-        if repo.broken.is_some() && shipped.len() < order.len() {
+        if shipped.len() == order.len() || config_at(cur) == before {
+            continue;
+        }
+        let again = |cmd: &str| {
             println!(
-                "ship: {b} repaired {}'s {} — `{} --accepted` again ships the rest under it",
+                "ship: {b} changed {}'s {} — push {}, then `{cmd} --accepted` again ships the rest under it",
                 repo.trunk,
                 crate::store::CONFIG_FILE,
-                repo.cfg.cmd_ship
+                repo.trunk,
             );
+        };
+        // A landed repair: a gated server takes it only alone.
+        if repo.broken.is_some() {
+            again(&repo.cfg.cmd_ship);
             return Ok(());
         }
+        // Opened where the run started, unless its worktree shipped away.
+        if !repo.cwd.exists() {
+            std::env::set_current_dir(&repo.primary).map_err(|e| e.to_string())?;
+        }
+        let r = Repo::open_for_repair()
+            .map_err(|e| format!("stopped after {b}: {e} (shipped {})", shipped.join(" ")))?;
+        let (was, now) = (&repo.cfg, &r.cfg);
+        if r.trunk != repo.trunk
+            || now.file != was.file
+            || now.archive != was.archive
+            || now.commit_prefix != was.commit_prefix
+        {
+            again(&now.cmd_ship);
+            return Ok(());
+        }
+        reopened = Some(r);
     }
     Ok(())
 }
@@ -185,6 +227,7 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
         force,
         discard_ignored,
         ref message,
+        record,
     } = *o;
     let p = &repo.primary;
     let trunk = &repo.trunk;
@@ -454,7 +497,7 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
         println!("ship: squashed into {}", short(&land));
     }
     let mut landed = land.clone();
-    if repo.cfg.gate_trunk {
+    if repo.cfg.gate_trunk || record {
         match &authorised {
             Some((id, reviewed)) => match record_landing(repo, *id, &trunk_sha, &land) {
                 Ok(r) => {
