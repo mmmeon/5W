@@ -17,7 +17,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #2 Create the report label on mmmeon/5W so 5w report send can apply it @report !1 >restricted
 - [ ] #3 Release 0.1.3: queue commits and squashes signed when the repository signs @release !1 >restricted
 - [ ] #8 Run the aarch64 release binary on real arm64 hardware @release !1 >manual
-- [ ] #10 Forge events as queue transitions: a change request submits, an approving review accepts, from a CI job @ci !3 branch:ci/task-10 rework:"github-queue-events fetches with persist-credentials: false and no token, so it fails on private repositories: give only the fetches the read-only GITHUB_TOKEN; also add the GitLab approval-after-head-version check and refuse an approver who authored/committed the head commit"
+- [~] #10 Forge events as queue transitions: a change request submits, an approving review accepts, from a CI job @ci !3 rework:"github-queue-events fetches with persist-credentials: false and no token, so it fails on private repositories: give only the fetches the read-only GITHUB_TOKEN; also add the GitLab approval-after-head-version check and refuse an approver who authored/committed the head commit" branch:ci/task-10 submitted:426744c29bc8
 - [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4
 - [ ] #16 Move git calls behind named operations in src/git.rs: no raw git argv outside it, output unchanged @vcs !3
   About 50 call sites in 10 modules pass raw git arguments (ship 12, wt 11, lint 5, queue 4, store 3). Move each into a named function in src/git.rs. No behaviour change: tests/flow.rs and the #14 bench baseline prove it. Groundwork for the admin commands and a version-control shim.
