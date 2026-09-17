@@ -226,7 +226,9 @@ The queue is read by agents, so every read is priced in tokens.
   titles; `show`, `next` and `delegate` print bodies.
 - **Output is compact off a terminal**, or with `FIVEW_AGENT=1`: one line per task
   (`#14 !3 @faces title + [branch] >lane — note`, `+` marking a body), no headers, one-line
-  refusals naming the fix. `FIVEW_AGENT=0` or `--full` gives the human layout.
+  refusals naming the fix. `FIVEW_AGENT=0` or `--full` gives the human layout. `ready`'s summary
+  line ends with the next step (`→ 5w delegate 14`) and `review` closes with `→ 5w accept 14`, as
+  `next` does; `--json` and `--ids` carry no hint.
 - **`--json`**, **`--ids`**, **`--limit N`** on every list; **`5w next [filters]`** returns just the
   first ready task with its body. `review --json` adds each submitted task's `tip`, `moved` (commits
   since submit), `diff` (shortstat against the trunk) and `behind`.

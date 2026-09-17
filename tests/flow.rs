@@ -286,6 +286,9 @@ fn review_json_is_one_object_per_submitted_task() {
         "{j}"
     );
     assert_eq!(r.ok(&r.main, &["review", "--ids"]), "1\n");
+    let plain = r.ok(&r.main, &["review"]);
+    assert!(plain.contains("\n→ 5w accept 1\n"), "{plain}");
+    assert!(!out.contains('→'), "{out}");
 }
 
 #[test]
@@ -742,9 +745,13 @@ fn compact_json_ids_limit_and_next() {
     let out = r.ok(&r.main, &["ready"]);
     assert_eq!(
         out,
-        "#2 !1 easy one +\n#1 !3 @core hard one\n2 ready · 1 >owner · 0 blocked\n"
+        "#2 !1 easy one +\n#1 !3 @core hard one\n2 ready · 1 >owner · 0 blocked → 5w delegate 2\n"
     );
     assert_eq!(r.ok(&r.main, &["ready", "--ids", "--limit", "1"]), "2\n");
+    let hint = r.ok(&r.main, &["ready", "level:3"]);
+    assert!(hint.ends_with("→ 5w delegate 1\n"), "{hint}");
+    let none = r.ok(&r.main, &["ready", "area:nowhere"]);
+    assert!(!none.contains('→'), "{none}");
     let json = r.ok(&r.main, &["ready", "--json"]);
     assert!(
         json.starts_with("{\"id\":2,\"state\":\"open\",\"level\":1,"),

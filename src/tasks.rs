@@ -463,7 +463,10 @@ fn ready(repo: &Repo, args: &[String]) -> Res<()> {
     if review > 0 {
         parts.push(format!("{review} in review"));
     }
-    let line = parts.join(" · ");
+    let mut line = parts.join(" · ");
+    if let Some(t) = ready.first() {
+        line.push_str(&format!(" → {} delegate {}", repo.cfg.cmd_tasks, t.id));
+    }
     if o.compact {
         println!("{line}")
     } else {
@@ -1228,9 +1231,9 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
 fn review(repo: &Repo, args: &[String]) -> Res<()> {
     let o = opts(args)?;
     let q = Q::load(repo)?;
-    let mut found = false;
+    let mut found = None;
     for t in q.tasks.iter().filter(|t| t.state == State::Review) {
-        found = true;
+        found = found.or(Some(t.id));
         if o.ids {
             println!("{}", t.id);
             continue;
@@ -1296,17 +1299,18 @@ fn review(repo: &Repo, args: &[String]) -> Res<()> {
     if o.json || o.ids {
         return Ok(());
     }
-    if !found {
-        println!("(nothing submitted)");
+    match found {
+        Some(id) => println!("→ {} accept {id}", repo.cfg.cmd_tasks),
+        None => println!("(nothing submitted)"),
     }
     let checklist = &repo.cfg.checklist;
     if !checklist.is_empty() {
-        if o.flags.iter().any(|f| f == "--checklist") || (!o.compact && found) {
+        if o.flags.iter().any(|f| f == "--checklist") || (!o.compact && found.is_some()) {
             println!("checklist:");
             for (i, c) in checklist.iter().enumerate() {
                 println!("  {}. {c}", i + 1);
             }
-        } else if found {
+        } else if found.is_some() {
             println!("(checklist: 5w review --checklist)");
         }
     }
