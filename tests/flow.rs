@@ -1619,6 +1619,24 @@ fn relative_wt_root_env_is_read_from_the_primary_checkout() {
 }
 
 #[test]
+fn empty_wt_root_env_is_treated_as_unset() {
+    let r = Repo::new("wt-env-empty");
+    for (val, branch) in [("", "a/empty"), ("  ", "a/blank")] {
+        let mut c = Command::new(bin5w());
+        c.args(["wt", "new", branch]).current_dir(&r.main);
+        env(&mut c, &r.root);
+        c.env("FIVEW_WT_ROOT", val);
+        let o = c.output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let slug = branch.replace('/', "-");
+        // The default root beside the primary, never inside it.
+        assert!(r.root.join("repo-wt").join(&slug).join("README").exists());
+        assert!(!r.main.join(&slug).exists());
+        assert!(!r.main.join(val).join(&slug).exists());
+    }
+}
+
+#[test]
 fn wt_rm_finds_force_anywhere_in_the_arguments() {
     let r = Repo::new("wt-rm-force");
     r.ok(&r.main, &["wt", "new", "a/x"]);

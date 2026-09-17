@@ -339,7 +339,7 @@ finished is measured from the submit. Blocked time still running is measured to 
 5w wt prune [--yes]       # list, then remove, branches and worktrees left with nothing in them
 ```
 
-Worktrees go in `worktrees.root` (default `../<repo>-wt`, or `$FIVEW_WT_ROOT`); a relative root,
+Worktrees go in `worktrees.root` (default `../<repo>-wt`, or `$FIVEW_WT_ROOT`, ignored when empty); a relative root,
 from either, is read from the primary checkout whatever directory 5w runs in (a subdirectory, another
 worktree), and its `..` is resolved as written (symlinks are kept) so every path 5w prints is clean. `.worktree-links`
 lists gitignored paths or globs to symlink in from the primary — `.env`, a dev database, large

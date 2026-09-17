@@ -173,9 +173,10 @@ impl Repo {
     /// A relative root, from `$FIVEW_WT_ROOT` or `worktrees.root`, is read from the primary
     /// checkout whatever the current directory, so checks and `git worktree add` agree.
     pub fn wt_root(&self) -> PathBuf {
+        // An empty or blank value counts as unset: joined on, it would put worktrees in the primary.
         let root = match std::env::var_os("FIVEW_WT_ROOT") {
-            Some(r) => self.primary.join(r),
-            None => self.configured_wt_root(),
+            Some(r) if !r.to_string_lossy().trim().is_empty() => self.primary.join(r),
+            _ => self.configured_wt_root(),
         };
         normalize(&root)
     }
