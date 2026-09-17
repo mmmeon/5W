@@ -31,8 +31,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Whether to put an interface over #16's named operations (trunk tip, queue commit + CAS ref update, worktree add/rm/ls, rebase onto, diff fingerprint, parent record, dirty, ref validation, signing), which system is second (jj the obvious candidate), and whether git-town's config keys stay the parent record.
 - [ ] #22 JSON list rows: trim to id, state, level, area, title, branch by default; --full for the rest @output !2 needs:#13 branch:output/task-22 rework:"short JSON row drops what the text row shows: keep unmet and rework in every list's default (blocked --json is meaningless without unmet); test blocked --json carries unmet; note the breaking change in README"
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 2: rows carry 11 fields today.
-- [~] #27 Color: disable for TERM=dumb and add an explicit --no-color flag @output !1 needs:#13 branch:output/task-27 submitted:3f91c12af32e
-  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. Sty::new() checks only isatty and NO_COLOR; --no-color is swallowed today by the opts() unknown-flag bug.
 - [ ] #28 Color the '5w: <error>' refusal red when stderr is a terminal and NO_COLOR is unset @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. main.rs prints refusals with eprintln! uncolored.
 - [ ] #35 Stacked branches recorded with the trunk as parent: ship re-review and --sync conflicts on work already landed @wt !3
@@ -100,3 +98,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. 5w ready --bogus exits 0 because opts() pushes unknown flags into o.flags. Refusal one line naming the fix.
 - [x] #31 README: one-line uninstall note (cargo uninstall 5w) next to the install line @output !1 needs:#13 branch:output/task-31 submitted:5ea392f19198 via:review reviewed:5ea392f19198
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning.
+- [x] #27 Color: disable for TERM=dumb and add an explicit --no-color flag @output !1 needs:#13 branch:output/task-27 submitted:3f91c12af32e via:review reviewed:3f91c12af32e
+  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. Sty::new() checks only isatty and NO_COLOR; --no-color is swallowed today by the opts() unknown-flag bug.
