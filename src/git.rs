@@ -10,6 +10,22 @@ pub struct Out {
 }
 
 pub fn raw(dir: &Path, args: &[&str], env: &[(&str, &str)], input: Option<&str>) -> Res<Out> {
+    let (ok, stdout, stderr) = raw_bytes(dir, args, env, input.map(str::as_bytes))?;
+    Ok(Out {
+        ok,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr,
+    })
+}
+
+/// `raw` with stdin and stdout as bytes, for content that need not be UTF-8:
+/// read lossily, two different invalid bytes would compare equal.
+pub fn raw_bytes(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    input: Option<&[u8]>,
+) -> Res<(bool, Vec<u8>, String)> {
     let mut c = Command::new("git");
     c.arg("-C").arg(dir).args(args);
     // Every object is what it is: a replace ref (which can be pushed) must not
@@ -49,19 +65,19 @@ pub fn raw(dir: &Path, args: &[&str], env: &[(&str, &str)], input: Option<&str>)
         let mut stdin = child.stdin.take().expect("piped stdin");
         let s = s.to_owned();
         std::thread::spawn(move || {
-            let _ = stdin.write_all(s.as_bytes());
+            let _ = stdin.write_all(&s);
         })
     });
     let o = child.wait_with_output().map_err(|e| format!("git: {e}"))?;
     if let Some(w) = writer {
         let _ = w.join();
     }
-    Ok(Out {
-        ok: o.status.success(),
-        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+    Ok((
+        o.status.success(),
+        o.stdout,
         // Only ever carried into a refusal, which is one line.
-        stderr: crate::util::one_line(&String::from_utf8_lossy(&o.stderr)),
-    })
+        crate::util::one_line(&String::from_utf8_lossy(&o.stderr)),
+    ))
 }
 
 /// What the environment can point a git call at other than the repository in
@@ -381,11 +397,19 @@ pub fn dirty(dir: &Path) -> Res<bool> {
 ///
 /// Not `git patch-id`: it ignores whitespace, so an indentation change made after
 /// review — a semantic change in Python or YAML — would pass as the reviewed one.
-/// This hashes the exact diff, binary content and modes included, with only the
-/// parts a rebase legitimately moves taken out: `index` blob lines and the line
-/// numbers in hunk headers. Context lines stay, so a rebase that changed text
-/// next to the change reads as different and asks for a fresh look — the safe way
-/// to be wrong.
+/// This hashes the exact diff, as bytes, binary content and modes included, with
+/// only the parts a rebase legitimately moves taken out: `index` blob lines and
+/// the line numbers in hunk headers. Context lines stay, so a rebase that changed
+/// text next to the change reads as different and asks for a fresh look — the
+/// safe way to be wrong.
+///
+/// A line number is replaced, not just dropped: a file can hold the lines a hunk
+/// replaces (its context and removed lines) more than once, and the same hunk
+/// applied at another copy is another change. The header keeps which copy — how
+/// many times those lines start earlier in the file it applies to — which a
+/// rebase changes only when the trunk added another copy above, and then it asks
+/// for a fresh look. The first copy, the usual case, adds nothing, so ids stay
+/// as they were.
 ///
 /// The diff is `diff-tree`, plumbing, with every setting a repository's config,
 /// attributes or environment could use to change its output pinned: a textconv
@@ -393,31 +417,108 @@ pub fn dirty(dir: &Path) -> Res<bool> {
 /// context, `diff.ignoreSubmodules` must not drop a gitlink.
 pub fn change_id(dir: &Path, base: &str, tip: &str) -> Res<String> {
     let mb = git(dir, &["merge-base", base, tip])?;
-    let diff = raw(
+    let (ok, diff, stderr) = raw_bytes(
         dir,
         &pinned_diff(&["-p", "--binary", "--full-index", &mb, tip]),
         &PINNED_ENV,
         None,
     )?;
-    if !diff.ok {
-        return Err(format!("git diff-tree {mb} {tip}: {}", diff.stderr.trim()));
+    if !ok {
+        return Err(format!("git diff-tree {mb} {tip}: {}", stderr.trim()));
     }
-    let mut norm = String::with_capacity(diff.stdout.len());
-    for line in diff.stdout.split_inclusive('\n') {
-        if line.starts_with("index ") {
+    let lines: Vec<&[u8]> = diff.split_inclusive(|b| *b == b'\n').collect();
+    // `index <old>..<new>[ <mode>]`: the blob each file's hunks apply to.
+    let old_of = |l: &[u8]| -> Option<String> {
+        let rest = std::str::from_utf8(l.strip_prefix(b"index ")?).ok()?;
+        Some(rest.split("..").next()?.to_string())
+    };
+    let olds: Vec<String> = lines.iter().filter_map(|l| old_of(l)).collect();
+    let blobs = blobs(dir, &olds)?;
+    let mut old: Option<&[u8]> = None;
+    let mut norm = Vec::with_capacity(diff.len());
+    for line in lines {
+        if line.starts_with(b"diff --git ") {
+            old = None;
+        }
+        if line.starts_with(b"index ") {
+            old = old_of(line).and_then(|o| blobs.get(&o)).map(Vec::as_slice);
             continue;
         }
-        if line.starts_with("@@ ")
-            && let Some(end) = line[3..].find(" @@")
+        if line.starts_with(b"@@ -")
+            && let Some(end) = find(&line[3..], b" @@")
         {
-            norm.push_str("@@");
-            norm.push_str(&line[3 + end + 3..]);
+            norm.extend_from_slice(b"@@");
+            let k = copies_above(old, &line[4..3 + end])
+                .ok_or_else(|| format!("git diff-tree {mb} {tip}: a hunk outside its file"))?;
+            if k > 0 {
+                norm.extend_from_slice(format!("#{k}").as_bytes());
+            }
+            norm.extend_from_slice(&line[3 + end + 3..]);
             continue;
         }
-        norm.push_str(line);
+        norm.extend_from_slice(line);
     }
-    let o = raw(dir, &["hash-object", "--stdin"], &[], Some(&norm))?;
-    Ok(o.stdout.trim().to_string())
+    let (_, o, _) = raw_bytes(dir, &["hash-object", "--stdin"], &[], Some(&norm))?;
+    Ok(String::from_utf8_lossy(&o).trim().to_string())
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// For a hunk header's `<old range> +<new range>`: how many times the lines the
+/// hunk replaces start earlier in `old`, the file it applies to. None when the
+/// range is not in the file. A gitlink's or a new file's has no blob: 0.
+fn copies_above(old: Option<&[u8]>, ranges: &[u8]) -> Option<usize> {
+    let range = std::str::from_utf8(ranges).ok()?.split(' ').next()?;
+    let (start, len) = match range.split_once(',') {
+        Some((s, n)) => (s.parse::<usize>().ok()?, n.parse::<usize>().ok()?),
+        None => (range.parse::<usize>().ok()?, 1),
+    };
+    let Some(old) = old.filter(|_| len > 0) else {
+        return Some(0);
+    };
+    let mut lines: Vec<&[u8]> = old.split(|b| *b == b'\n').collect();
+    if old.ends_with(b"\n") {
+        lines.pop();
+    }
+    let at = start.checked_sub(1)?;
+    let hunk = lines.get(at..at + len)?;
+    Some((0..at).filter(|&i| lines[i..i + len] == *hunk).count())
+}
+
+/// The content of each named object that is a blob, read in one call.
+fn blobs(dir: &Path, names: &[String]) -> Res<std::collections::HashMap<String, Vec<u8>>> {
+    let mut found = std::collections::HashMap::new();
+    if names.is_empty() {
+        return Ok(found);
+    }
+    let input: String = names.iter().map(|n| format!("{n}\n")).collect();
+    let (ok, out, stderr) = raw_bytes(dir, &["cat-file", "--batch"], &[], Some(input.as_bytes()))?;
+    if !ok {
+        return Err(format!("git cat-file --batch: {}", stderr.trim()));
+    }
+    // `<name> <type> <size>\n<content>\n`, or `<name> missing\n`.
+    let mut rest = out.as_slice();
+    while let Some(nl) = rest.iter().position(|b| *b == b'\n') {
+        let head = String::from_utf8_lossy(&rest[..nl]).into_owned();
+        rest = &rest[nl + 1..];
+        let f: Vec<&str> = head.split(' ').collect();
+        let [name, kind, size] = f.as_slice() else {
+            continue;
+        };
+        let size: usize = size
+            .parse()
+            .map_err(|_| format!("git cat-file --batch: {head}"))?;
+        if rest.len() < size + 1 {
+            return Err(format!("git cat-file --batch: {name} cut short"));
+        }
+        if *kind == "blob" {
+            found.insert(name.to_string(), rest[..size].to_vec());
+        }
+        rest = &rest[size + 1..];
+    }
+    Ok(found)
 }
 
 const PINNED_ENV: [(&str, &str); 2] = [("GIT_DIFF_OPTS", "--unified=3"), ("GIT_EXTERNAL_DIFF", "")];

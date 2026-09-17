@@ -1885,6 +1885,27 @@ fn a_whitespace_change_after_review_blocks_ship() {
     assert!(!out.contains("rebasing"), "{out}");
 }
 
+#[test]
+fn a_change_to_bytes_that_are_not_utf8_after_review_blocks_ship() {
+    let r = Repo::new("notutf8");
+    r.ok(&r.main, &["add", "feature"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    let commit = |bytes: &[u8]| {
+        std::fs::write(wt.join("f"), bytes).unwrap();
+        r.git(&wt, &["commit", "-qam", "f", "--allow-empty"]);
+    };
+    std::fs::write(wt.join("f"), b"").unwrap();
+    r.git(&wt, &["add", "f"]);
+    commit(b"limit = \xfe\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    // Text to git (no NUL), and read lossily both would be U+FFFD.
+    commit(b"limit = \xff\n");
+    let out = r.fails(&r.main, &["ship", "f/a", "--sync"]);
+    assert!(out.contains("is not the change #1 accepted"), "{out}");
+}
+
 /// A post-review change to `f` in a repository whose own diff settings might
 /// hide it: `setup` runs in the trunk checkout (whose .git/config the worktrees
 /// share) before the work starts. Ship must still refuse.
@@ -2013,6 +2034,67 @@ fn zero_diff_context_still_refuses_a_rebase_that_changed_nearby_lines() {
     r.commit_in(&r.main, "g", "1\n2\n33\n4\n5\n6\n7\n");
     let out = r.fails(&r.main, &["ship", "f/a", "--sync"]);
     assert!(out.contains("is not the change #1 accepted"), "{out}");
+}
+
+/// Two copies of the same lines, with nothing — not even a function name in a
+/// hunk header — to tell them apart: `1..6` twice. (Digits only, as above.)
+const TWIN_BLOCKS: &str = "1\n2\n3\n4\n5\n6\n1\n2\n3\n4\n5\n6\n";
+
+/// `TWIN_BLOCKS` with `line` added in the middle of the first copy (0) or the second (1).
+fn twin_blocks_with(copy: usize, line: &str) -> String {
+    let mut blocks = [
+        "1\n2\n3\n4\n5\n6\n".to_string(),
+        "1\n2\n3\n4\n5\n6\n".to_string(),
+    ];
+    blocks[copy] = format!("1\n2\n3\n{line}\n4\n5\n6\n");
+    blocks.concat()
+}
+
+#[test]
+fn a_reviewed_hunk_moved_to_an_identical_copy_blocks_ship_and_ci() {
+    let r = Repo::new("twins");
+    r.commit_in(&r.main, "g", TWIN_BLOCKS);
+    r.ok(&r.main, &["add", "feature", "branch:f/a"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "g", &twin_blocks_with(0, "check()"));
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    // The same hunk, byte for byte, in the copy nobody reviewed.
+    r.commit_in(&wt, "g", &twin_blocks_with(1, "check()"));
+    let o = r.cli(&r.main, &["ci", "--head", "f/a", "--branch", "f/a"]);
+    let text = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && text.contains("not the change accepted"),
+        "{text}"
+    );
+    let out = r.fails(&r.main, &["ship", "f/a", "--sync"]);
+    assert!(out.contains("is not the change #1 accepted"), "{out}");
+    assert_eq!(r.git(&r.main, &["show", "main:g"]), TWIN_BLOCKS.trim_end());
+}
+
+#[test]
+fn a_rebase_that_moves_a_hunk_in_an_identical_copy_down_still_ships() {
+    let r = Repo::new("twins-rebase");
+    r.commit_in(&r.main, "g", TWIN_BLOCKS);
+    r.ok(&r.main, &["add", "feature", "branch:f/a"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "g", &twin_blocks_with(1, "check()"));
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    // An unrelated trunk commit, and one that shifts every line of g down.
+    r.commit_in(&r.main, "other", "o\n");
+    r.commit_in(&r.main, "g", &format!("0\n0\n{TWIN_BLOCKS}"));
+    r.git(&wt, &["rebase", "-q", "main"]);
+    let o = r.cli(&r.main, &["ci", "--head", "f/a", "--branch", "f/a"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = r.ok(&r.main, &["ship", "f/a", "--sync"]);
+    assert!(out.contains("same change"), "{out}");
+    assert_eq!(
+        r.git(&r.main, &["show", "main:g"]),
+        format!("0\n0\n{}", twin_blocks_with(1, "check()")).trim_end()
+    );
 }
 
 #[test]
@@ -5392,6 +5474,65 @@ fn an_unpinned_gated_server_warns_and_refuses_a_trunk_rename() {
     );
     assert!(!err.contains("git config 5w.trunk"), "{err}");
     assert_eq!(r.git(&server, &["rev-parse", "master"]), before);
+
+#[test]
+fn gate_trunk_refuses_a_landing_that_put_the_reviewed_hunk_in_an_identical_copy() {
+    let r = Repo::new("gate-twins");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace("gate_trunk = false", "gate_trunk = true"),
+    )
+    .unwrap();
+    r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+    r.commit_in(&r.main, "g", TWIN_BLOCKS);
+    r.ok(&r.main, &["add", "feature"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    r.commit_in(&r.wt("f/a"), "g", &twin_blocks_with(0, "check()"));
+    r.ok(&r.main, &["submit", "1", "f/a"]);
+    r.ok(&r.main, &["accept", "1"]);
+    let accepted = r.git(&r.main, &["rev-parse", "HEAD"]);
+    let gate = |r: &Repo| {
+        r.cli(
+            &r.main,
+            &[
+                "ci",
+                "--base",
+                &accepted,
+                "--head",
+                "main",
+                "--ref",
+                "refs/heads/main",
+            ],
+        )
+    };
+
+    // A record over the reviewed hunk, landed in the other copy.
+    r.commit_in(&r.main, "g", &twin_blocks_with(1, "check()"));
+    let tip = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(
+        &r.main,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("chore(tasks): land #1\n\nLanded: {accepted}..{tip}"),
+        ],
+    );
+    let o = gate(&r);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("land #1 covers nothing"),
+        "{err}"
+    );
+
+    // Where it was reviewed, as ship lands it: covered.
+    r.git(&r.main, &["reset", "-q", "--hard", &accepted]);
+    let out = r.ok(&r.main, &["ship", "f/a", "--sync"]);
+    assert!(out.contains("landing of #1 recorded"), "{out}");
+    let o = gate(&r);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 #[test]
