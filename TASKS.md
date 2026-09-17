@@ -60,8 +60,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   #6 canonicalizes only the printed 'cd' line. The 'already exists' refusals in wt new/add and 'wt: <cmd> (in <dir>)' still show '..'. Normalize lexically in Repo::wt_root() instead; fs::canonicalize also follows symlinks (/tmp to /private/tmp on macOS).
 - [ ] #34 USAGE: one example invocation under the usage line, e.g. 5w ready area:output @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig 'lead with examples', adopted narrowly; missing from the doc's own follow-up list. No longer worked sequence.
-- [~] #13 Evaluate the Command Line Interface Guidelines (clig.dev) for 5w, alongside the AXI/TOON verdict @output !2 branch:output/task-13 submitted:1ba4fcdbfc4a
-  Source: https://github.com/cli-guidelines/cli-guidelines (published at clig.dev). Extend docs/agent-output.md from #12 (branch output/task-12; stack on it) with a section per guideline area: already met, adopt, or reject with reason — noting where clig (human-first) and AXI (agent-first) conflict and which 5w follows. Proposed follow-ups listed in the file, not queued.
 
 ## Done
 
@@ -82,3 +80,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Tool-neutral, read-only, works on any 5W repository (e.g. ara). Sources only what 5W already has: TASKS.md and archive history in git, .git/5w/last-failure.md and saved reports, doctor and lint findings.
   Report: tasks by lane/level/area; submit→accept time; reject and rework cycles with reasons; tasks reopened; blocked time on needs; branches shipped without a task (when require_task is off); queue edits made outside 5w (lint over history); recorded failures and refusals; context cost of delegate briefs (bytes/estimated tokens, largest first — same estimator as the benchmark).
   Compact by default, --json, --since <rev|date>. Refusal-free on a repo with no history. Design the report sections in the README before building.
+- [x] #13 Evaluate the Command Line Interface Guidelines (clig.dev) for 5w, alongside the AXI/TOON verdict @output !2 branch:output/task-13 submitted:1ba4fcdbfc4a via:review reviewed:1ba4fcdbfc4a
+  Source: https://github.com/cli-guidelines/cli-guidelines (published at clig.dev). Extend docs/agent-output.md from #12 (branch output/task-12; stack on it) with a section per guideline area: already met, adopt, or reject with reason — noting where clig (human-first) and AXI (agent-first) conflict and which 5w follows. Proposed follow-ups listed in the file, not queued.
