@@ -133,7 +133,10 @@ staged row (`checkout fixed: #1 matches main`), or moving a peer's staged row in
 (`checkout updated: #3`). Both working files are written aside (in the git dir, or beside the file
 where a rename from there is refused, as across bind mounts) before the commit and renamed into place after it, the archive first, so a moved row is never in neither: one that
 cannot be written (a directory in its place) refuses with nothing committed, and an archive in a
-directory the checkout lacks creates it. A temporary file or private index a killed run left in the
+directory the checkout lacks creates it. A queue or archive the trunk tracks as a symlink refuses
+queue writes, naming the `git rm` and copy that put the file in its place, and lint flags a commit
+that makes either a symlink or points one elsewhere: a retargeted link would aim
+queue writes at another file. A temporary file or private index a killed run left in the
 git dir (`5w-write-<pid>-<n>-<file>`, `5w-index-<pid>`) is removed by the next write, under the lock. If the checkout cannot take a change the trunk already has
 (its `index.lock` held), the refusal names the rows committed and a fix that applies that commit's
 own diff to the working files and index, keeping anything else in them (`--3way` where a hand

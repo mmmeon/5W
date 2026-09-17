@@ -361,6 +361,9 @@ fn begin(repo: &Repo) -> Res<(Lock, String, Option<PathBuf>, Copies, Copies)> {
     let Some(old) = git::rev(&repo.primary, &trunk_ref) else {
         bail!("no trunk branch {}", repo.trunk)
     };
+    for name in [&repo.cfg.file, &repo.cfg.archive] {
+        refuse_link(repo, &old, name)?;
+    }
     let checkout = repo.trunk_checkout()?;
     let q = copies(repo, checkout.as_deref(), &old, &repo.cfg.file)?;
     if q.old_blob.is_none() {
@@ -373,6 +376,29 @@ fn begin(repo: &Repo) -> Res<(Lock, String, Option<PathBuf>, Copies, Copies)> {
     }
     let a = copies(repo, checkout.as_deref(), &old, &repo.cfg.archive)?;
     Ok((lock, old, checkout, q, a))
+}
+
+/// Refuse a queue write where the trunk tracks `name` as a symlink: a commit to
+/// the link's path would turn it into a file, and one to the path it names would
+/// let a retargeted link aim queue writes at any file in the repository.
+fn refuse_link(repo: &Repo, old: &str, name: &str) -> Res<()> {
+    let entry =
+        git::opt(&repo.primary, &["ls-tree", "--full-tree", old, "--", name]).unwrap_or_default();
+    let mut fields = entry.split_whitespace();
+    let (Some("120000"), Some(_), Some(blob)) = (fields.next(), fields.next(), fields.next())
+    else {
+        return Ok(());
+    };
+    let to = git::git(&repo.primary, &["cat-file", "blob", blob])?;
+    let at = normalize(&Path::new(name).parent().unwrap_or(Path::new("")).join(&to));
+    // A copy, not `git mv`: the commit then touches the queue file alone, as lint
+    // asks of a queue edit; the file the link named can go in a commit of its own.
+    let (name_w, at_w) = (shell_word(name), shell_word(&at.to_string_lossy()));
+    let fix = format!("git rm -q {name_w} && cp {at_w} {name_w} && git add {name_w}");
+    bail!(
+        "{name} is a symlink on {}; replace it with the file (`{fix}`) and commit — 5w edits the queue file itself",
+        repo.trunk
+    )
 }
 
 /// Run `edits` — ordinary queue commands, each calling `transact` — as one

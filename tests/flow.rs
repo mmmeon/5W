@@ -2697,6 +2697,76 @@ fn follow_fix(r: &Repo, err: &str) {
     );
 }
 
+/// Move the queue to docs/TASKS.md and track TASKS.md as a symlink to it.
+fn link_queue(r: &Repo) {
+    std::fs::create_dir_all(r.main.join("docs")).unwrap();
+    r.git(&r.main, &["mv", "TASKS.md", "docs/TASKS.md"]);
+    std::os::unix::fs::symlink("docs/TASKS.md", r.main.join("TASKS.md")).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    r.git(
+        &r.main,
+        &["commit", "-qm", "queue lives in docs", "--no-verify"],
+    );
+}
+
+#[test]
+fn a_queue_tracked_as_a_symlink_refuses_writes_and_names_the_fix() {
+    let r = Repo::new("symlinked-queue");
+    r.ok(&r.main, &["add", "first"]);
+    link_queue(&r);
+    let head = r.git(&r.main, &["rev-parse", "main"]);
+    let err = r.refuses(&r.main, &["add", "second"]);
+    assert!(err.contains("TASKS.md is a symlink on main"), "{err}");
+    assert_eq!(r.git(&r.main, &["rev-parse", "main"]), head);
+    assert!(r.main.join("TASKS.md").is_symlink());
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    // Reads still go through the link.
+    assert!(r.ok(&r.main, &["show", "1"]).contains("first"));
+
+    follow_fix(&r, &err);
+    // The fix itself passes lint.
+    r.ok(&r.main, &["lint", "--staged"]);
+    r.git(&r.main, &["commit", "-qm", "queue back in place"]);
+    r.ok(&r.main, &["add", "second"]);
+    let entry = r.git(&r.main, &["ls-tree", "main", "TASKS.md"]);
+    assert!(entry.starts_with("100644 "), "{entry}");
+    assert!(r.tasks().contains("#2 second"), "{}", r.tasks());
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn lint_flags_a_queue_file_made_a_symlink() {
+    let r = Repo::new("lint-symlinked-queue");
+    r.ok(&r.main, &["add", "first"]);
+    link_queue(&r);
+    let err = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(
+        err.contains("TASKS.md") && err.contains("makes it a symlink"),
+        "{err}"
+    );
+}
+
+#[test]
+fn lint_flags_a_queue_symlink_pointed_elsewhere() {
+    let r = Repo::new("lint-retargeted-queue");
+    r.ok(&r.main, &["add", "first"]);
+    link_queue(&r);
+    // Retargeted at another file, the link shows no row change at all.
+    std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
+    std::os::unix::fs::symlink("README", r.main.join("TASKS.md")).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    r.git(&r.main, &["commit", "-qm", "retarget", "--no-verify"]);
+    let err = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(err.contains("points its symlink elsewhere"), "{err}");
+
+    // The same change staged.
+    std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
+    std::os::unix::fs::symlink(".5w.toml", r.main.join("TASKS.md")).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    let err = r.fails(&r.main, &["lint", "--staged"]);
+    assert!(err.contains("points its symlink elsewhere"), "{err}");
+}
+
 #[test]
 fn a_queue_write_removes_a_private_index_a_killed_run_left() {
     let r = Repo::new("stale-private-index");

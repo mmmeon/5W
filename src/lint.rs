@@ -100,6 +100,18 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 &mut problems,
             );
             let head = git::rev(&repo.cwd, "HEAD");
+            links(
+                repo,
+                |name| head.as_deref().and_then(|h| tree_entry(repo, h, name)),
+                |name| {
+                    let pathspec = format!(":(top){name}");
+                    let l = git::opt(&repo.cwd, &["ls-files", "-s", "--", &pathspec])?;
+                    let mut f = l.split_whitespace();
+                    Some((f.next()?.to_string(), f.next()?.to_string()))
+                },
+                "staged",
+                &mut problems,
+            );
             let old = at_rev(repo, head.as_deref());
             let new = Snap {
                 queue: show_index(repo, &env, &repo.cfg.file),
@@ -184,6 +196,13 @@ pub fn commits_on(
             problems,
         );
         let parent = git::rev(&repo.cwd, &format!("{c}^"));
+        links(
+            repo,
+            |name| parent.as_deref().and_then(|p| tree_entry(repo, p, name)),
+            |name| tree_entry(repo, c, name),
+            short,
+            problems,
+        );
         let old = at_rev(repo, parent.as_deref());
         let new = at_rev(repo, Some(c));
         let subject = git::git(&repo.cwd, &["log", "-1", "--format=%s", c])?;
@@ -224,6 +243,40 @@ fn show_index(repo: &Repo, env: &[(&str, &str)], name: &str) -> String {
         .filter(|o| o.ok)
         .map(|o| o.stdout)
         .unwrap_or_default()
+}
+
+/// A path's mode and blob in a commit's tree.
+fn tree_entry(repo: &Repo, rev: &str, name: &str) -> Option<(String, String)> {
+    let l = git::opt(&repo.cwd, &["ls-tree", "--full-tree", rev, "--", name])?;
+    let mut f = l.split_whitespace();
+    let mode = f.next()?.to_string();
+    f.next()?;
+    Some((mode, f.next()?.to_string()))
+}
+
+/// The queue file and archive are files: a change that makes either a symlink or
+/// points one elsewhere is a queue edit no row shows —
+/// retargeted, it would aim queue writes at another file.
+fn links(
+    repo: &Repo,
+    old: impl Fn(&str) -> Option<(String, String)>,
+    new: impl Fn(&str) -> Option<(String, String)>,
+    at: &str,
+    out: &mut Vec<String>,
+) {
+    const LINK: &str = "120000";
+    for name in [&repo.cfg.file, &repo.cfg.archive] {
+        let (old, new) = (old(name), new(name));
+        let is_link = |e: &Option<(String, String)>| e.as_ref().is_some_and(|(m, _)| m == LINK);
+        let what = match (is_link(&old), is_link(&new)) {
+            (false, true) => "makes it a symlink",
+            (true, true) if old != new => "points its symlink elsewhere",
+            _ => continue,
+        };
+        out.push(format!(
+            "{at}: {name} is the queue file itself — this {what}; keep it a plain file"
+        ));
+    }
 }
 
 fn touches_queue(cfg: &Config, files: &[&str]) -> bool {
