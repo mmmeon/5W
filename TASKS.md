@@ -35,6 +35,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   With close = "review" committed for a lane and that line removed only in the working copy, 5w done <id> --self commits close via:self on the trunk through commit-tree, which the pre-commit hook (#94) and ci would refuse. 5w lint <range> in a checkout likewise judges under the working-copy config. Queue writes and lint ranges should judge lane/close rules under the committed trunk config, as the hook does. Found in review of #94.
 - [ ] #100 An uncommitted trunk rename in the checkout redirects the pre-commit hook
   Changing trunk = "<other>" in the checkout .5w.toml without committing moves repo.trunk, so the pre-commit hook (#94) reads that other branch's committed config and treats it as the trunk. Local only (ci catches the push), but the hook should resolve the trunk from committed config too. Found in review of #94.
+- [ ] #101 An empty FIVEW_TRUNK skips init's not-the-trunk refusal
+  src/main.rs init_trunk counts FIVEW_TRUNK as naming the trunk with env::var("FIVEW_TRUNK").is_ok(), so an exported empty FIVEW_TRUNK counts; store.rs treats an empty one as unset. An empty FIVEW_TRUNK therefore skips init's "not the trunk" refusal on a feature branch. Treat empty as unset. Found in review of #96.
 
 ## Done
 
