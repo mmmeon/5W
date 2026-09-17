@@ -6650,6 +6650,30 @@ fn queue_writes_take_lanes_names_and_prefix_from_the_committed_trunk_config() {
 }
 
 #[test]
+fn a_crlf_checkout_of_the_committed_config_is_no_uncommitted_edit() {
+    let r = Repo::new("config-crlf");
+    r.ok(&r.main, &["add", "do it"]);
+    // git checks the config out with CRLF line ends, and calls it unchanged.
+    r.git(&r.main, &["config", "core.autocrlf", "true"]);
+    std::fs::remove_file(r.main.join(".5w.toml")).unwrap();
+    r.git(&r.main, &["checkout", "--", ".5w.toml"]);
+    let text = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(text.contains("\r\n"), "{text:?}");
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+
+    for args in [&["ready"][..], &["add", "more"], &["audit"]] {
+        let o = r.cli(&r.main, args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            o.status.success() && !err.contains("uncommitted"),
+            "{args:?}: {err}"
+        );
+    }
+    let out = r.ok(&r.main, &["doctor"]);
+    assert!(!out.contains("uncommitted"), "{out}");
+}
+
+#[test]
 fn a_trunk_config_broken_past_parsing_is_read_as_the_last_one_that_parsed() {
     let r = Repo::new("config-syntax");
     let server = server_of(&r);

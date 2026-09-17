@@ -727,7 +727,9 @@ pub fn under_committed_rules(repo: &Repo) -> (Option<Repo>, Option<String>) {
     let Some((text, Ok(mut cfg))) = committed_config_text(repo) else {
         return (None, None);
     };
-    let edited = (repo.cfg.checkout_text.as_deref()).filter(|t| t.trim() != text.trim());
+    // As git compares them: a checkout's CRLF line ends (`core.autocrlf`) are no edit.
+    let plain = |t: &str| t.replace("\r\n", "\n").trim().to_string();
+    let edited = (repo.cfg.checkout_text.as_deref()).filter(|t| plain(t) != plain(&text));
     let note = edited.map(|_| {
         format!(
             "{} on {} has uncommitted edits; queue commands read the committed one — commit it first",
