@@ -128,7 +128,9 @@ working file, and its index entry, on top of anything already staged there. A pe
 row stays uncommitted; it is never swept into your commit, never makes your command decline, and
 the next ordinary `git commit` in that checkout does not revert the queue. Writers take a lock, so
 parallel `add`s mint distinct ids, and state checks read the committed queue under that lock — a
-hand-edited `[~]` in a working copy does not make a task acceptable.
+hand-edited `[~]` in a working copy does not make a task acceptable. A command that names an
+uncommitted row commits it; `add` mints past uncommitted rows, so when a higher id is committed
+by then, that command refuses rather than commit a reused id, and names the id to renumber it to.
 
 **Closing says how.** `accept` records `via:review`. `done` refuses without the flag its lane
 names — `--decided` on a decision lane, `--self` on the rest — so closing an owner decision is never

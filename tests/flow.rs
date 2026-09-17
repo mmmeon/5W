@@ -249,6 +249,36 @@ fn a_peers_uncommitted_row_is_never_swept_into_a_commit() {
         !wdiff.contains("+- [ ] #8") && !wdiff.contains("-- [ ] #8"),
         "{wdiff}"
     );
+
+    // Naming the peer's row pulls it into a commit — but #7 now sits below the
+    // committed #8, and committing it would reuse an id: refused, nothing written.
+    let before = r.git(&r.main, &["rev-parse", "main"]);
+    let line = r.refuses(&r.main, &["set", "7", "level", "2"]);
+    assert!(line.contains("#7") && line.contains("#9"), "{line}");
+    assert_eq!(r.git(&r.main, &["rev-parse", "main"]), before);
+    assert!(r.line(7).contains("a peer's row") && !r.line(7).contains("!2"));
+
+    // Renumbered as the refusal says, it commits; every commit lints clean.
+    let renumbered = r.tasks().replace("#7 a peer's row", "#9 a peer's row");
+    std::fs::write(r.main.join("TASKS.md"), renumbered).unwrap();
+    r.ok(&r.main, &["set", "9", "level", "2"]);
+    let diff = r.git(&r.main, &["show", "--format=", "HEAD"]);
+    assert!(diff.contains("+- [ ] #9 a peer's row"), "{diff}");
+    r.lint_history();
+}
+
+#[test]
+fn a_named_uncommitted_row_above_the_committed_ids_is_pulled_in() {
+    let r = Repo::new("peer-above");
+    r.ok(&r.main, &["add", "first"]);
+    let with_hand = r
+        .tasks()
+        .replace("- [ ] #1 first", "- [ ] #1 first\n- [ ] #2 by hand");
+    std::fs::write(r.main.join("TASKS.md"), with_hand).unwrap();
+    r.ok(&r.main, &["set", "2", "level", "2"]);
+    let diff = r.git(&r.main, &["show", "--format=", "HEAD"]);
+    assert!(diff.contains("+- [ ] #2 by hand"), "{diff}");
+    r.lint_history();
 }
 
 #[test]

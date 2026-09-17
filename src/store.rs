@@ -525,6 +525,36 @@ fn rows_changed(old: [&str; 2], new: [&str; 2]) -> Vec<u64> {
     ids
 }
 
+/// Refuse to pull a named row from the working copy into a commit when its id is
+/// not above every id committed before that commit: minting skips uncommitted
+/// rows, so a later id may be committed already, and lint would call this one reused.
+fn refuse_reuse(repo: &Repo, q: &Copies, a: &Copies, ids: &[u64], next_id: u64) -> Res<()> {
+    let Some(w) = q.working.as_deref() else {
+        return Ok(());
+    };
+    // Lint judges the commit against the trunk as it was before any edit of a batch.
+    let max = |q: &Copies, a: &Copies| queue::max_id(&q.committed).max(queue::max_id(&a.committed));
+    let floor = BATCH
+        .with(|b| b.borrow().as_ref().map(|b| max(&b.orig[0], &b.orig[1])))
+        .unwrap_or_else(|| max(q, a));
+    let (queue_doc, archive_doc, working_doc) =
+        (Doc::new(&q.committed), Doc::new(&a.committed), Doc::new(w));
+    for &id in ids {
+        if id <= floor
+            && queue_doc.block(id).is_none()
+            && archive_doc.block(id).is_none()
+            && working_doc.block(id).is_some()
+        {
+            bail!(
+                "#{id} is uncommitted in {} and below #{floor} on {}, so committing it would reuse an id; renumber it #{next_id} there and retry",
+                repo.cfg.file,
+                repo.trunk
+            );
+        }
+    }
+    Ok(())
+}
+
 /// An edit worked out on every copy, before anything is written.
 struct Plan {
     message: String,
@@ -551,6 +581,7 @@ fn plan(
     let ctx = Ctx {
         next_id: texts.map(|t| queue::max_id(t)).max().unwrap_or(0) + 1,
     };
+    refuse_reuse(repo, q, a, ids, ctx.next_id)?;
 
     let carried = carry(repo, &q.committed, q.working.as_deref(), ids);
     if let Some(&id) = ids.first() {
