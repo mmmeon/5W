@@ -52,14 +52,18 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         bail!("--ref is a push, --branch a change request: give one");
     }
     let p = &repo.primary;
-    let trunk_ref = trunk_ref.or_else(|| {
-        [
+    // The trunk as a plain sha: a bad --trunk would read an empty queue.
+    let trunk_ref = match trunk_ref {
+        Some(t) => Some(git::rev(p, &t).ok_or_else(|| {
+            format!("ci: --trunk {t} is not a commit — pass a branch, tag or sha")
+        })?),
+        None => [
             format!("refs/heads/{}", repo.trunk),
             format!("refs/remotes/origin/{}", repo.trunk),
         ]
         .into_iter()
-        .find(|r| git::rev(p, r).is_some())
-    });
+        .find_map(|r| git::rev(p, &r)),
+    };
     let head = head.unwrap_or_else(|| "HEAD".into());
     let head = git::rev(p, &head)
         .ok_or_else(|| format!("ci: --head {head} is not a commit — pass a branch, tag or sha"))?;

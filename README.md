@@ -176,9 +176,10 @@ the same command runs under any CI, in a server hook, and by hand:
   the task is accepted; re-run it after `5w accept`.
 
 A missing or all-zero `--base` means the merge-base with the trunk. The checkout needs full history.
-`--head` and `--base` must each name one commit: a negation such as `^HEAD` or a range is refused,
-not read as an empty range that passes having checked nothing (`accept --at` and `audit --since`
-refuse it too).
+`--head`, `--base` and `--trunk` must each name one commit: a negation such as `^HEAD` or a range is
+refused, not read as an empty range that passes having checked nothing, or as a trunk with an empty
+queue that passes an unreviewed branch (`accept --at` and `audit --since` refuse it too). Without
+`--trunk`, the trunk is `refs/heads/<trunk>`, else `refs/remotes/origin/<trunk>`.
 
 | Where                                                                           | How                                                                                                                                                                                                                                  |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

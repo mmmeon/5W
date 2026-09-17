@@ -1464,6 +1464,12 @@ fn ci_refuses_a_revision_that_is_not_a_commit_in_one_line() {
             ),
             "{rev}"
         );
+        // A bad --trunk once read an empty queue: with require_task off, an unreviewed pass.
+        assert_eq!(
+            r.fails(&r.main, &["ci", "--branch", "x", "--trunk", rev]),
+            format!("5w: ci: --trunk {rev} is not a commit — pass a branch, tag or sha\n"),
+            "{rev}"
+        );
     }
     // Plain shas and a new ref's all-zeros base still resolve.
     let (head, prev) = (
@@ -1508,6 +1514,11 @@ fn ci_branch_mode_is_the_ship_check() {
     r.ok(&wt, &["submit", "1"]);
     r.ok(&r.main, &["accept", "1"]);
     let o = ci(&r);
+    assert!(o.status.success(), "{}", text(o));
+    let o = r.cli(
+        &r.main,
+        &["ci", "--head", "a/x", "--branch", "a/x", "--trunk", "main"],
+    );
     assert!(o.status.success(), "{}", text(o));
 
     // Rebased onto the moved trunk: still the reviewed change.
