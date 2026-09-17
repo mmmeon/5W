@@ -58,6 +58,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #25: in a scratch repo, 5w reject 1 <reason> on an open [ ] task succeeded. PROTOCOL.md's transition table has Reject as [~] to [ ] only. Refuse in one line naming the state (e.g. '#1 is open, not submitted: nothing to reject'); check lint's transition rules agree; test it.
 - [ ] #39 USAGE hook line omits [pre-commit | pre-receive], so hook --help under-describes it @output !1
   Found reviewing #25: tasks::USAGE has 'hook install | uninstall' while src/lint.rs refusals accept 'install | uninstall [pre-commit | pre-receive]'. Make USAGE match; command_usage() then prints it for 5w hook --help.
+- [ ] #40 lint: flag a row that gains rework: without going [~] to [ ] (hand-made reject of unsubmitted work) @queue !1 needs:#38
+  Found reviewing #38: src/lint.rs flags a missing rework: only on [~] to [ ]. An open row that stays [ ] and gains rework:, or a closed row reopened with rework: added, passes lint and pre-receive though 5w reject refuses it after #38. Flag only no-rework to rework outside [~] to [ ], so fixing a typo in an existing reason still passes.
 
 ## Done
 
