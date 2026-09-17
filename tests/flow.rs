@@ -726,12 +726,16 @@ fn over_long_text_becomes_title_and_body() {
         &format!("- [ ] #2 {long} @x !2\n- [ ] #1 Build"),
     );
     std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    // The hint spells the tool as the repository does.
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap()
+        + "\n[commands]\ntasks = \"tasks\"\n";
+    std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
     r.git(&r.main, &["commit", "-qam", "old row"]);
     // Until split, a listed row says how much it cut and where the rest is.
     let out = r.ok(&r.main, &["ready"]);
     let cut = long.chars().count() - 120;
     assert!(
-        out.contains(&format!("…(+{cut} chars: 5w show 2)")),
+        out.contains(&format!("…(+{cut} chars: tasks show 2)")),
         "{out}"
     );
     r.ok(&r.main, &["split"]);

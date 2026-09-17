@@ -232,9 +232,10 @@ impl<'a> Q<'a> {
             let len = t.text.chars().count();
             let title = if max > 0 && len > max {
                 format!(
-                    "{}(+{} chars: 5w show {})",
+                    "{}(+{} chars: {} show {})",
                     truncate(&t.text, max),
                     len - max,
+                    self.repo.cfg.cmd_tasks,
                     t.id
                 )
             } else {
