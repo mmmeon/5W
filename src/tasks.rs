@@ -9,6 +9,7 @@ use std::io::{IsTerminal, Read};
 pub const USAGE: &str = concat!(
     "\
 usage: 5w <command> [args]
+example  5w ready area:output
 
 read
   ready [filters] [out]   unblocked delegable work, easiest first (default)

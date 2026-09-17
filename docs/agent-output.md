@@ -324,6 +324,8 @@ tokens on every `--help` call for no benefit to the audience CLAUDE.md optimizes
 <id>` already hands a worker task-specific, ready-to-run commands (AXI principle 7, already in
 this file) — a generic example in global help is redundant with that, for an agent. **Adopt**: one
 line, e.g. `example: 5w ready @output` under the usage line. **Reject** a longer worked sequence.
+**Done (#34):** the full listing's second line is `example  5w ready area:output`; a command's
+`--help` does not repeat it.
 
 **Support path for feedback — already met.** `report <what happened>` saves locally, and
 `report send --gh` pre-populates a GitHub issue URL against `mmmeon/5W` (or `$FIVEW_ISSUES`) —
