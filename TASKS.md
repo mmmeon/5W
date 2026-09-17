@@ -37,6 +37,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #28: ship --bogus, ci 'unexpected', update-files, and tasks.rs 'text first' / 'unexpected' refusals print the error then a usage block on following lines (now all red on a colour terminal). CLAUDE.md: refusals one line naming the fix. Replace the block with a pointer such as '(5w <cmd> --help)', which #25 made print only that command's usage; test each.
 - [ ] #48 ci --trunk is never validated: a bad value reads an empty queue and, with require_task off, passes an unreviewed branch @ci !2
   Found reviewing #47: ci --trunk ^HEAD or a missing ref goes straight into merge-base and git show <trunk>:TASKS.md. With --branch, ship_check reads an empty queue; with require_task off it prints 'no task names X — unreviewed change' and passes even if a task names the branch unaccepted. Resolve --trunk through git::rev (plain sha) and refuse in one line; test ci --branch x --trunk nope refuses.
+- [ ] #49 ci/pre-receive: branch deletion in a SHA-256 repository is rejected (only 40 zeros treated as deletion) @ci !1
+  Found reviewing #47: ci/pre-receive skips a deletion only when the new sha is 40 zeros; SHA-256 uses 64, so a delete goes on to 5w ci --head 000…0, which refuses and rejects the push. Treat an all-zero sha of either length as null (hook script and ci's --base zero stripping); test with git init --object-format=sha256.
 
 ## Done
 
