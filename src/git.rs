@@ -153,6 +153,8 @@ pub fn change_id(dir: &Path, base: &str, tip: &str) -> Res<String> {
             "--no-color",
             "--no-ext-diff",
             "--no-renames",
+            // diff.ignoreSubmodules would hide a gitlink change from the gate.
+            "--ignore-submodules=none",
             "--binary",
             "--full-index",
             &mb,

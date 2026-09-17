@@ -590,8 +590,20 @@ fn landed_under(
         };
         // Names are compared here, never handed back to git: as pathspecs a
         // quoted non-ASCII name or a `:`-magic name would match nothing and pass.
+        // Submodules are listed whatever diff.ignoreSubmodules says.
         let names = |from: &str, to: &str| -> Res<HashSet<String>> {
-            let o = git::git(p, &["diff", "--name-only", "-z", "--no-renames", from, to])?;
+            let o = git::git(
+                p,
+                &[
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "--no-renames",
+                    "--ignore-submodules=none",
+                    from,
+                    to,
+                ],
+            )?;
             Ok(o.split('\0')
                 .filter(|n| !n.is_empty())
                 .map(String::from)

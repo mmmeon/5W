@@ -839,6 +839,46 @@ fn a_parent_that_never_landed_does_not_authorise_its_child_pathspec_magic_name()
 }
 
 #[test]
+fn a_parent_that_never_landed_does_not_authorise_its_child_when_it_changed_a_submodule() {
+    // A repository that hides submodules from diffs must not hide a parent
+    // whose only change is a gitlink.
+    let r = Repo::new("unlandedsub");
+    r.git(&r.main, &["config", "diff.ignoreSubmodules", "all"]);
+    r.ok(&r.main, &["add", "bottom"]);
+    r.ok(&r.main, &["add", "top"]);
+    r.ok(&r.main, &["wt", "new", "s/a"]);
+    let a = r.wt("s/a");
+    let sha = r.git(&a, &["rev-parse", "HEAD"]);
+    r.git(
+        &a,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sha},sub"),
+        ],
+    );
+    r.git(&a, &["commit", "-qm", "parent"]);
+    r.ok(&a, &["submit", "1"]);
+    r.ok(&r.main, &["wt", "new", "s/b", "--from", "s/a"]);
+    let b = r.wt("s/b");
+    r.commit_in(&b, "b", "b\n");
+    r.ok(&b, &["submit", "2"]);
+    r.ok(&r.main, &["accept", "1", "2"]);
+    let a_tip = r.git(&r.main, &["rev-parse", "s/a"]);
+    // The gitlink has no checkout, so the worktree reads as modified.
+    r.git(
+        &r.main,
+        &["worktree", "remove", "--force", a.to_str().unwrap()],
+    );
+    r.git(&r.main, &["branch", "-D", "s/a"]);
+    r.git(&b, &["rebase", "-q", "--onto", "main", &a_tip]);
+    let out = r.fails(&r.main, &["ship", "s/b"]);
+    assert!(out.contains("is not the change #2 accepted"), "{out}");
+    assert!(!r.main.join("b").exists());
+}
+
+#[test]
 fn a_stacked_branch_changed_after_review_is_refused_once_its_parent_landed() {
     let r = Repo::new("stackdrift");
     r.ok(&r.main, &["add", "bottom"]);
