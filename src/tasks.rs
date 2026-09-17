@@ -106,6 +106,8 @@ struct Opts {
     ids: bool,
     limit: Option<usize>,
     compact: bool,
+    /// `--full` given: JSON rows carry every field, not just the list's six.
+    full: bool,
     flags: Vec<String>,
 }
 
@@ -120,7 +122,10 @@ fn opts(args: &[String]) -> Res<Opts> {
         match a.as_str() {
             "--json" => o.json = true,
             "--ids" => o.ids = true,
-            "--full" => o.compact = false,
+            "--full" => {
+                o.compact = false;
+                o.full = true;
+            }
             "--limit" => {
                 let n = args.get(i + 1).ok_or("--limit needs a number")?;
                 o.limit = Some(n.parse().map_err(|_| format!("bad --limit {n}"))?);
@@ -312,8 +317,26 @@ impl<'a> Q<'a> {
         println!("{out}");
     }
 
-    fn json(&self, t: &Task, body: bool) -> String {
+    /// One task as a JSON object. A list row (`full` false) carries what picks a
+    /// task — id, state, level, area, title, branch; `full` adds lane, kind,
+    /// needs, unmet and rework, and `body` the body and the review fields.
+    fn json(&self, t: &Task, full: bool, body: bool) -> String {
         let opt = |v: &Option<String>| v.as_ref().map(|s| js(s)).unwrap_or("null".into());
+        let state = match t.state {
+            State::Open => "open",
+            State::Review => "review",
+            State::Done => "done",
+        };
+        let level = t.level.map(|l| l.to_string()).unwrap_or("null".into());
+        if !full {
+            return format!(
+                "{{\"id\":{},\"state\":\"{state}\",\"level\":{level},\"area\":{},\"title\":{},\"branch\":{}}}",
+                t.id,
+                opt(&t.area),
+                js(&t.text),
+                opt(&t.branch),
+            );
+        }
         let ids = |v: &[u64]| {
             format!(
                 "[{}]",
@@ -324,14 +347,8 @@ impl<'a> Q<'a> {
             )
         };
         let mut out = format!(
-            "{{\"id\":{},\"state\":\"{}\",\"level\":{},\"area\":{},\"lane\":{},\"kind\":{},\"title\":{},\"branch\":{},\"needs\":{},\"unmet\":{},\"rework\":{}",
+            "{{\"id\":{},\"state\":\"{state}\",\"level\":{level},\"area\":{},\"lane\":{},\"kind\":{},\"title\":{},\"branch\":{},\"needs\":{},\"unmet\":{},\"rework\":{}",
             t.id,
-            match t.state {
-                State::Open => "open",
-                State::Review => "review",
-                State::Done => "done",
-            },
-            t.level.map(|l| l.to_string()).unwrap_or("null".into()),
             opt(&t.area),
             js(self.lane(t)),
             js(self
@@ -365,7 +382,7 @@ impl<'a> Q<'a> {
         let shown = o.limit.unwrap_or(n).min(n);
         for (t, note) in rows.into_iter().take(shown) {
             if o.json {
-                println!("{}", self.json(t, false));
+                println!("{}", self.json(t, o.full, false));
             } else if o.ids {
                 println!("{}", t.id);
             } else {
@@ -567,7 +584,7 @@ fn next(repo: &Repo, args: &[String]) -> Res<()> {
         bail!("nothing ready under those filters");
     };
     if o.json {
-        println!("{}", q.json(t, true));
+        println!("{}", q.json(t, true, true));
     } else if o.ids {
         println!("{}", t.id);
     } else {
@@ -739,7 +756,7 @@ fn show(repo: &Repo, args: &[String]) -> Res<()> {
     let q = Q::load(repo)?;
     let t = q.get(parse_id(arg(args, 0, "show <id>")?)?)?;
     if o.json {
-        println!("{}", q.json(t, true));
+        println!("{}", q.json(t, true, true));
     } else {
         print_task(&q, t);
     }
@@ -1359,7 +1376,7 @@ fn review(repo: &Repo, args: &[String]) -> Res<()> {
         }
         if o.json {
             let num = |v: &Option<String>| v.clone().unwrap_or("null".into());
-            let j = q.json(t, true);
+            let j = q.json(t, o.full, true);
             println!(
                 "{},\"tip\":{},\"moved\":{},\"diff\":{},\"behind\":{}}}",
                 &j[..j.len() - 1],

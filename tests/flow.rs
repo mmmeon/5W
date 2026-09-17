@@ -304,8 +304,17 @@ fn review_json_is_one_object_per_submitted_task() {
             && j.contains(&format!("\"tip\":\"{}\"", tip.trim()))
             && j.contains("\"moved\":1,")
             && j.contains("\"diff\":\"1 file changed, 1 insertion(+)\"")
-            && j.contains("\"behind\":1}"),
+            && j.contains("\"behind\":1}")
+            && !j.contains("\"lane\"")
+            && !j.contains("\"body\""),
         "{j}"
+    );
+    let full = r.ok(&r.main, &["review", "--json", "--full"]);
+    assert!(
+        full.contains("\"lane\":")
+            && full.contains("\"body\":[]")
+            && full.contains("\"behind\":1}"),
+        "{full}"
     );
     assert_eq!(r.ok(&r.main, &["review", "--ids"]), "1\n");
     let plain = r.ok(&r.main, &["review"]);
@@ -961,10 +970,30 @@ fn compact_json_ids_limit_and_next() {
     assert!(hint.ends_with("→ 5w delegate 1\n"), "{hint}");
     let none = r.ok(&r.main, &["ready", "area:nowhere"]);
     assert!(!none.contains('→'), "{none}");
+    // A list's JSON row carries what picks a task; --full adds the rest.
     let json = r.ok(&r.main, &["ready", "--json"]);
-    assert!(
-        json.starts_with("{\"id\":2,\"state\":\"open\",\"level\":1,"),
+    assert_eq!(
+        json.lines().next(),
+        Some(
+            "{\"id\":2,\"state\":\"open\",\"level\":1,\"area\":null,\"title\":\"easy one\",\"branch\":null}"
+        ),
         "{json}"
+    );
+    for cmd in ["ready", "ls", "all", "blocked"] {
+        let rows = r.ok(&r.main, &[cmd, "--json"]);
+        assert!(!rows.contains("\"needs\""), "{cmd}: {rows}");
+    }
+    let full = r.ok(&r.main, &["ready", "--json", "--full"]);
+    assert!(
+        full.starts_with("{\"id\":2,\"state\":\"open\",\"level\":1,\"area\":null,\"lane\":")
+            && full.contains("\"kind\":")
+            && full.contains("\"needs\":[],\"unmet\":[],\"rework\":null}"),
+        "{full}"
+    );
+    // next and show print one task: always every field, body included.
+    assert!(
+        r.ok(&r.main, &["next", "--json"])
+            .contains("\"body\":[\"the details\"]")
     );
     let next = r.ok(&r.main, &["next"]);
     assert!(

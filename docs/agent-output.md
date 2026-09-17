@@ -48,7 +48,9 @@ area, title, branch), moving `kind`, `needs`, `unmet`, `rework` behind the exist
 (which already exists for the human/compact split and could gate JSON too). Measured effect: on
 the 12-task queue, dropping to 4 fields cuts a JSON array of these rows from 783 to 448 tokens
 (cl100k_base) — see the TOON section for the full table. This is a same-day change with the tools
-5w already has (`--full` already exists); it does not need a new format.
+5w already has (`--full` already exists); it does not need a new format. **Done (#22):** list
+rows (`ready`, `ls`, `blocked`, `all`, and `review`, which keeps its `tip`/`moved`/`diff`/`behind`)
+carry the six fields; `--full` restores the rest. `show` and `next` print one task and stay full.
 
 ### 3. Content truncation (truncate with a size hint, e.g. `--full` to see the rest)
 
@@ -619,7 +621,7 @@ explicit send).
 
 ## Proposed follow-up tasks (not added to the queue — for the reviewer)
 
-- `--json list rows: trim to id/state/level/area/title/branch by default, --full for the rest @output !2`
+- `--json list rows: trim to id/state/level/area/title/branch by default, --full for the rest @output !2` — done, #22
 - `opts(): refuse a flag a command doesn't understand instead of silently accepting it @output !2` — done, #23
 - `row(): append a size hint when a title is actually truncated, not just a bare … @output !1` — done, #24
 - `per-subcommand --help: print the one-line usage instead of the full global listing @output !1` — done, #25
