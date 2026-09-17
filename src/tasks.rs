@@ -1740,13 +1740,16 @@ fn reopen(repo: &Repo, id: &str) -> Res<()> {
 pub const ARCHIVE_HEADER: &str = "# Archive\n\nClosed tasks moved out of the queue by `5w archive`. Their ids stay taken, they still\nsatisfy `needs:`, and ship still reads their `branch:` and `reviewed:`.\n";
 
 /// Move every closed task out of the queue, in one commit touching both files.
+/// Only rows closed on the trunk are committed and counted; a row closed only in
+/// the checkout moves there, and with none closed on the trunk nothing is committed.
 fn archive(repo: &Repo) -> Res<()> {
     let q = Q::load(repo)?;
-    let n = q.tasks.iter().filter(|t| t.state == State::Done).count();
-    if n == 0 {
+    let closed = |tasks: &[queue::Task]| tasks.iter().filter(|t| t.state == State::Done).count();
+    if closed(&q.tasks) == 0 {
         println!("  nothing closed to archive");
         return Ok(());
     }
+    let n = closed(&queue::parse(&repo.committed()?.unwrap_or_default()));
     let msg = format!("{}: archive {n} closed tasks", repo.cfg.commit_prefix);
     let done = repo.cfg.done_section.clone();
     store::transact(
@@ -1756,7 +1759,7 @@ fn archive(repo: &Repo) -> Res<()> {
         |_| Ok(()),
         |f, _| {
             let blocks = f.queue.take(|t| t.state == State::Done);
-            if f.archive.lines.iter().all(|l| l.trim().is_empty()) {
+            if !blocks.is_empty() && f.archive.lines.iter().all(|l| l.trim().is_empty()) {
                 f.archive = queue::Doc::new(ARCHIVE_HEADER);
             }
             for b in blocks {
@@ -1765,7 +1768,10 @@ fn archive(repo: &Repo) -> Res<()> {
             Ok(())
         },
     )?;
-    println!("  archived {n} → {}", repo.cfg.archive);
+    match n {
+        0 => println!("  nothing closed on {} to archive", repo.trunk),
+        n => println!("  archived {n} → {}", repo.cfg.archive),
+    }
     Ok(())
 }
 

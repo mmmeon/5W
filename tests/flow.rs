@@ -2295,6 +2295,49 @@ fn an_archive_that_commits_nothing_stages_both_files_together() {
 }
 
 #[test]
+fn an_archive_with_nothing_closed_on_the_trunk_commits_nothing() {
+    let r = Repo::new("archive-working-only");
+    r.ok(&r.main, &["add", "first"]);
+    let root = r.git(&r.main, &["rev-list", "--max-parents=0", "HEAD"]);
+    let head = r.git(&r.main, &["rev-parse", "HEAD"]);
+
+    // #1 is closed only in the working copy: the trunk has nothing closed, so
+    // no commit (not even DONE.md's header) and no claim that anything was archived.
+    let t = r
+        .tasks()
+        .replace("- [ ] #1 first", "- [x] #1 first via:self");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    let out = r.ok(&r.main, &["archive"]);
+    assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), head, "{out}");
+    assert!(!out.contains("archived"), "{out}");
+    assert!(out.contains("  nothing closed on main to archive"), "{out}");
+    assert!(out.contains("  checkout updated: #1"), "{out}");
+    r.ok(&r.main, &["lint", "--staged"]);
+    r.ok(&r.main, &["lint", &format!("{root}..main")]);
+}
+
+#[test]
+fn an_archive_counts_only_the_rows_closed_on_the_trunk() {
+    let r = Repo::new("archive-count");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    let t = r
+        .tasks()
+        .replace("- [ ] #2 second", "- [x] #2 second via:self");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    let out = r.ok(&r.main, &["archive"]);
+    assert!(out.contains("archive 1 closed tasks"), "{out}");
+    assert!(out.contains("  archived 1 → DONE.md"), "{out}");
+    let done = r.git(&r.main, &["show", "HEAD:DONE.md"]);
+    assert!(
+        done.contains("#1 first") && !done.contains("#2 second"),
+        "{done}"
+    );
+    r.lint_history();
+}
+
+#[test]
 fn a_closed_row_is_immutable_but_may_be_reflowed_or_archived() {
     let r = Repo::new("immutable");
     r.ok(&r.main, &["add", "One sentence here. And a second sentence that is long enough to push well past the title limit of the queue for sure."]);
