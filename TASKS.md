@@ -16,7 +16,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 
 - [ ] #2 Create the report label on mmmeon/5W so 5w report send can apply it @report !1 >restricted
 - [ ] #3 Release 0.1.3: queue commits and squashes signed when the repository signs @release !1 >restricted
-- [~] #4 CI for 5W itself: cargo fmt, clippy and test on every push and change request, and the 5w ci check @ci !2 branch:ci/task-4 submitted:cb34177c53d1
 - [~] #5 Split titles cut at a word boundary end in a misleading …: the rest is in the body, not lost @queue !1 branch:queue/task-5 submitted:63eb9743ad45
 - [~] #6 Normalize worktree paths: wt new prints /home/who/r/ara/../ara-wt/… @wt !1 branch:wt/task-6 submitted:db3e29446261
 - [~] #7 Test the panic hook: a crash records last-failure.md and says how to report it @report !2 branch:report/task-7 submitted:cf6e3d7307ea
@@ -82,3 +81,4 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 ## Done
 
 - [x] #1 Attach SHA256SUMS.asc to v0.1.2: dist/SHA256SUMS.asc is signed, the gh token lacks Contents write @release !1 >restricted via:self
+- [x] #4 CI for 5W itself: cargo fmt, clippy and test on every push and change request, and the 5w ci check @ci !2 branch:ci/task-4 submitted:cb34177c53d1 via:review reviewed:cb34177c53d1
