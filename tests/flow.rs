@@ -462,6 +462,40 @@ fn a_flag_a_command_does_not_take_is_refused() {
 }
 
 #[test]
+fn no_color_is_global_but_never_eats_text() {
+    let r = Repo::new("nocolor");
+    // Before, after or among a command's arguments, on every tool.
+    r.ok(&r.main, &["--no-color", "add", "x", "--body", "--no-color"]);
+    r.ok(&r.main, &["add", "y", "--no-color", "@a"]);
+    assert!(r.tasks().contains("\n  --no-color\n"), "{}", r.tasks());
+    assert!(r.line(2).contains("@a"), "{}", r.line(2));
+    for args in [
+        &["ready", "--no-color"][..],
+        &["--no-color", "ready", "--json"],
+        &["show", "--no-color", "1"],
+        &["doctor", "--no-color"],
+        &["wt", "--no-color", "ls"],
+        &["report", "list", "--no-color"],
+    ] {
+        r.ok(&r.main, args);
+    }
+    r.ok(&r.main, &["wt", "new", "a/x", "--no-color"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "--no-color", "1"]);
+    // A reason is text once it begins.
+    r.ok(
+        &r.main,
+        &["reject", "--no-color", "1", "fails", "--no-color"],
+    );
+    assert!(
+        r.line(1).contains("rework:\"fails --no-color\""),
+        "{}",
+        r.line(1)
+    );
+}
+
+#[test]
 fn accept_refuses_work_that_was_never_submitted() {
     let r = Repo::new("unsubmitted");
     r.ok(&r.main, &["add", "x"]);

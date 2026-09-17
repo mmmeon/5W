@@ -49,7 +49,7 @@ branches
   init
 
 filters  @area !level >lane — or area:x level:n lane:x (no quoting)
-out      --json  --ids  --limit N  --full
+out      --json  --ids  --limit N  --full  --no-color (any command; also NO_COLOR, TERM=dumb)
 ids      14 or #14. Output is compact when not on a terminal or FIVEW_AGENT=1.
 docs     ",
     env!("CARGO_PKG_REPOSITORY"),

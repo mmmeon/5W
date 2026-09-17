@@ -245,6 +245,10 @@ The queue is read by agents, so every read is priced in tokens.
   not ignored: an agent that invents a flag learns so, instead of trusting output the flag never
   shaped. `done`'s flags are the lanes' close words; text (`reject`'s reason, `--body`) may still
   start with `--`.
+- **Colour only for a person:** styling is off when stdout is not a terminal, under `NO_COLOR` or
+  `TERM=dumb`, and with `--no-color`. That flag is global — any command, any position — except where
+  it is text: a `--body`, `--expected` or `-m` value, `reject`'s reason and `report`'s text once
+  they begin, and anything after `--`.
 - **The brief is the worker's only document.** `delegate` prints the task, the rework note, the
   steps and the rules, and names the sections the text cites (`refs: client/FINDINGS.md #779`) so the
   worker reads those rather than whole files. `review` prints its checklist once, on

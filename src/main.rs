@@ -52,6 +52,10 @@ fn main() {
         "ship" => args.insert(0, "ship".into()),
         _ => {}
     }
+    let (args, no_color) = take_no_color(args);
+    if no_color {
+        util::NO_COLOR_FLAG.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let reporting = args.first().is_some_and(|a| a == "report");
     if let Err(e) = dispatch(args.clone()) {
         if !reporting {
@@ -60,6 +64,41 @@ fn main() {
         eprintln!("5w: {e}");
         std::process::exit(1);
     }
+}
+
+/// `--no-color` is global: taken out wherever it stands as its own argument,
+/// so every command accepts it, except where it is text — the value of a flag
+/// that takes one (`--body`, `--expected`, `-m`/`--message`), `reject`'s reason
+/// and `report`'s text once they begin, and anything after `--`.
+fn take_no_color(args: Vec<String>) -> (Vec<String>, bool) {
+    let mut out: Vec<String> = Vec::with_capacity(args.len());
+    let (mut found, mut text, mut value) = (false, false, false);
+    for a in args {
+        if text || value {
+            value = false;
+            out.push(a);
+            continue;
+        }
+        if a == "--no-color" {
+            found = true;
+            continue;
+        }
+        text = a == "--"
+            || match out.first().map(String::as_str) {
+                Some("reject") => out.len() == 2,
+                Some("report") => {
+                    out.len() == 1
+                        && !matches!(
+                            a.as_str(),
+                            "list" | "ls" | "show" | "rm" | "send" | "help" | "-h" | "--help"
+                        )
+                }
+                _ => false,
+            };
+        value = matches!(a.as_str(), "--body" | "--expected" | "-m" | "--message");
+        out.push(a);
+    }
+    (out, found)
 }
 
 fn dispatch(args: Vec<String>) -> Res<()> {

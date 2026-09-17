@@ -624,7 +624,7 @@ explicit send).
 - `row(): append a size hint when a title is actually truncated, not just a bare … @output !1` — done, #24
 - `per-subcommand --help: print the one-line usage instead of the full global listing @output !1` — done, #25
 - `ready/review: append a → 5w delegate|accept next-step hint to the summary line, like next already does @output !1` — done, #26
-- `Sty::new(): also disable color for TERM=dumb, and wire up an explicit --no-color flag (currently swallowed by the opts() unknown-flag bug) @output !1`
+- `Sty::new(): also disable color for TERM=dumb, and wire up an explicit --no-color flag (currently swallowed by the opts() unknown-flag bug) @output !1` — done, #27
 - `main.rs: color the "5w: {e}" refusal red when stderr is a terminal and NO_COLOR is unset @output !1`
 - `tasks::USAGE: add one line pointing at the web docs (README.md's URL), per clig's "link to web docs in help text" @output !1` — done, #29
 - `wt rm: parse --force by scanning args like tasks::opts() does, instead of a positional rest.get(1) check @output !1`
