@@ -35,7 +35,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #58 A queue commit whose index update fails (index.lock held) leaves the trunk moved but the checkout stale @queue !2
   and the refusal doesn't say the commit landed
   Found reviewing #57: the trunk ref moves first, then the checkout's index/working copy is mirrored; if the index write fails (index.lock), 5w exits 1 with git's error, the commit is on main, and the checkout's staged copy now reads as a revert of it. Make the refusal say the commit landed and name the fix (retry mirroring: e.g. a 5w command or 'git restore --staged TASKS.md' guidance), or retry the lock briefly; test with a held index.lock.
-- [~] #59 archive commits DONE.md's header with 'archive 1 closed tasks' when nothing closed is on the trunk @queue !1 branch:queue/task-59 submitted:83688234523c
+- [ ] #59 archive commits DONE.md's header with 'archive 1 closed tasks' when nothing closed is on the trunk @queue !1 branch:queue/task-59 rework:"archive's count is read before transact's lock, so a concurrent close can commit a real move as 'archive 0' and print 'nothing closed': count inside the plan from the locked committed copy"
   Found reviewing #57: on a fresh repo with a closed row only in the working copy and none on the trunk, 5w archive commits DONE.md's header with subject 'archive 1 closed tasks'. Count and move only rows closed on the committed trunk; with none, commit nothing and say so; test it.
 
 ## Done
