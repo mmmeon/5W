@@ -85,6 +85,14 @@ cd "$(5w wt path faces/header)"
 5w ship faces/header --sync     # rebase, verify, fast-forward, clean up
 ```
 
+A round of reviews batches: `5w accept 14 15 16` accepts each in turn — every check, one commit
+each — and stops at the first refusal, naming what was accepted and what was not tried (`--at`
+names one commit, so it takes one id). `5w ship --accepted --sync` then ships every branch an
+accepted task names that still exists, parents before their children (from the recorded stack),
+each exactly as `ship <branch>` would, and stops at the first refusal with the branch it stopped at
+and what already landed. It takes `--sync`, `--squash` and `--discard-ignored` for every branch;
+not `-m` or `--force`, which belong to one branch.
+
 Ids need no quoting: `14` and `'#14'` are the same. Filters and fields have shell-safe spellings —
 `lane:owner` for `'>owner'`, `level:3` for `'!3'`, `area:x` for `@x` — because an unquoted `>agent`
 is a redirect that silently creates a file called `agent`.
@@ -116,7 +124,10 @@ added at the reviewed commit — whitespace, modes and binary content included, 
 hunk line numbers normalised away. Not `git patch-id`, which ignores whitespace and would pass an
 indentation change made after review. A clean rebase passes. A commit added after review, or a
 rebase that changed the lines next to the change, does not, and a refused `--sync` puts the branch
-back where it was. The check runs before anything rewrites the branch, and again after the rebase.
+back where it was. The check runs before anything rewrites the branch, and again after the rebase. A
+stacked branch was reviewed on top of its parent; once the parent has landed, the change compared is
+what the branch added on top of the parent's reviewed commit — allowed only when that parent's
+branch is gone and the trunk holds the parent's version of every path the parent changed.
 
 **Ship refuses before it acts**, naming the fix: trunk or perennial branch; not accepted; stacked on
 an unshipped parent (ship the bottom first; children are reparented after); behind the trunk (use

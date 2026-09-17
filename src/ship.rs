@@ -21,26 +21,42 @@ use crate::util::{Res, short};
 use crate::wt;
 
 pub const USAGE: &str = "\
-usage: 5w ship [<branch>] [--sync] [--squash] [-m <message>] [--discard-ignored] [--force]
+usage: 5w ship [<branch> | --accepted] [--sync] [--squash] [-m <message>] [--discard-ignored] [--force]
 
+  --accepted every accepted task's branch, bottom of each stack first; stops at the first refusal
   --sync     rebase the branch onto the trunk first, in its worktree
   --squash   land one commit (message from -m, or composed from the branch's commits)
   --discard-ignored   delete gitignored files in the branch's worktree with it
   --force    override the review gate only — never the safety checks";
 
+struct Opts {
+    sync: bool,
+    squash: bool,
+    force: bool,
+    discard_ignored: bool,
+    message: Option<String>,
+}
+
 pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     let mut branch = None;
-    let (mut sync, mut squash, mut force, mut discard_ignored) = (false, false, false, false);
-    let mut message = None;
+    let mut accepted = false;
+    let mut o = Opts {
+        sync: false,
+        squash: false,
+        force: false,
+        discard_ignored: false,
+        message: None,
+    };
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--sync" => sync = true,
-            "--squash" => squash = true,
-            "--force" => force = true,
-            "--discard-ignored" => discard_ignored = true,
+            "--sync" => o.sync = true,
+            "--squash" => o.squash = true,
+            "--force" => o.force = true,
+            "--discard-ignored" => o.discard_ignored = true,
+            "--accepted" => accepted = true,
             "-m" | "--message" => {
-                message = Some(args.get(i + 1).ok_or("-m needs a message")?.clone());
+                o.message = Some(args.get(i + 1).ok_or("-m needs a message")?.clone());
                 i += 1;
             }
             "-h" | "--help" | "help" => {
@@ -50,20 +66,103 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             a if a.starts_with('-') => bail!("unknown flag {a}\n{USAGE}"),
             a => {
                 if branch.is_some() {
-                    bail!("one branch at a time");
+                    bail!("one branch at a time (every accepted one: --accepted)");
                 }
                 branch = Some(a.to_string());
             }
         }
         i += 1;
     }
-    if message.is_some() && !squash {
+    if o.message.is_some() && !o.squash {
         bail!("-m only applies with --squash");
+    }
+    if accepted {
+        if branch.is_some() {
+            bail!(
+                "--accepted ships every accepted branch; drop the branch name, or drop --accepted"
+            );
+        }
+        if o.message.is_some() {
+            bail!("-m would give every branch one message; drop it (--squash composes each)");
+        }
+        if o.force {
+            bail!("--accepted ships only accepted work; --force one branch by name");
+        }
+        return ship_accepted(repo, &o);
     }
     let branch = match branch.or_else(|| git::current_branch(&repo.cwd)) {
         Some(b) => b,
         None => bail!("{USAGE}"),
     };
+    ship(repo, &branch, &o)
+}
+
+/// Every branch an accepted task names that still exists, parents before their
+/// children, each shipped as `ship <branch>` would; the first refusal stops the run.
+fn ship_accepted(repo: &Repo, o: &Opts) -> Res<()> {
+    let p = &repo.primary;
+    let committed = repo.committed()?.unwrap_or_default();
+    let archived = repo.committed_file(&repo.cfg.archive)?.unwrap_or_default();
+    let mut branches: Vec<String> = Vec::new();
+    for t in queue::parse(&committed)
+        .into_iter()
+        .chain(queue::parse(&archived))
+    {
+        if t.state != State::Done || t.via.as_deref() != Some("review") {
+            continue;
+        }
+        let Some(b) = t.branch else { continue };
+        if b != repo.trunk
+            && !branches.contains(&b)
+            && !repo.is_perennial(&b)
+            && git::branch_exists(p, &b)
+        {
+            branches.push(b);
+        }
+    }
+    // Depth in the recorded stack: a branch ships after every parent it has.
+    let limit = branches.len();
+    let depth = |b: &String| {
+        let mut n = 0;
+        let mut cur = b.clone();
+        while let Some(parent) = git::parent_of(p, &cur) {
+            if parent == repo.trunk || !git::branch_exists(p, &parent) || n > limit {
+                break;
+            }
+            n += 1;
+            cur = parent;
+        }
+        n
+    };
+    let mut order: Vec<(usize, String)> = branches.into_iter().map(|b| (depth(&b), b)).collect();
+    order.sort_by_key(|(d, _)| *d);
+    if order.is_empty() {
+        println!("ship: no accepted branch left to ship");
+        return Ok(());
+    }
+    let mut shipped: Vec<String> = Vec::new();
+    for (_, b) in &order {
+        if let Err(e) = ship(repo, b, o) {
+            let done = match shipped.is_empty() {
+                true => "none shipped".to_string(),
+                false => format!("shipped {}", shipped.join(" ")),
+            };
+            bail!("stopped at {b}: {e} ({done})");
+        }
+        shipped.push(b.clone());
+    }
+    Ok(())
+}
+
+fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
+    let branch = branch.to_string();
+    let Opts {
+        sync,
+        squash,
+        force,
+        discard_ignored,
+        ref message,
+    } = *o;
     let p = &repo.primary;
     let trunk = &repo.trunk;
     let tasks = &repo.cfg.cmd_tasks;
@@ -98,10 +197,14 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     // Archived rows count: an accepted task moved out by `archive` still
     // authorises its branch, and still records what was reviewed.
     let archived = repo.committed_file(&repo.cfg.archive)?.unwrap_or_default();
-    let rows: Vec<_> = queue::parse(&committed)
+    let all: Vec<_> = queue::parse(&committed)
         .into_iter()
         .chain(queue::parse(&archived))
+        .collect();
+    let rows: Vec<_> = all
+        .iter()
         .filter(|t| t.branch.as_deref() == Some(branch.as_str()))
+        .cloned()
         .collect();
     if rows.is_empty() {
         if repo.cfg.require_task && !force {
@@ -177,7 +280,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
 
     // Before anything rewrites the branch, and again after a rebase has.
     let behind = !git::ok(p, &["merge-base", "--is-ancestor", trunk, &branch]);
-    verify_reviewed(repo, &rows, &branch, force, behind && sync)?;
+    verify_reviewed(repo, &all, &rows, &branch, force, behind && sync)?;
 
     if behind {
         if !sync {
@@ -202,7 +305,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 w.display()
             );
         }
-        if let Err(e) = verify_reviewed(repo, &rows, &branch, force, false) {
+        if let Err(e) = verify_reviewed(repo, &all, &rows, &branch, force, false) {
             // The rebase bought nothing; do not leave the branch rewritten.
             let _ = git::raw(w, &["reset", "--hard", "--quiet", &before], &[], None);
             bail!(
@@ -387,6 +490,7 @@ pub fn ignored_files(repo: &Repo, w: &std::path::Path) -> Res<Vec<String>> {
 /// rebase passes and anything added or altered after the review does not.
 fn verify_reviewed(
     repo: &Repo,
+    all: &[queue::Task],
     rows: &[queue::Task],
     branch: &str,
     force: bool,
@@ -426,6 +530,11 @@ fn verify_reviewed(
                         "ship: authorised by #{} via:review at {r} (rebased since; same change)",
                         t.id
                     );
+                } else if let Some(under) = landed_under(repo, all, t.id, &reviewed, &now)? {
+                    say!(
+                        "ship: authorised by #{} via:review at {r} (on #{under}, which landed; same change)",
+                        t.id
+                    );
                 } else if force {
                     eprintln!(
                         "ship: #{}'s branch changed since review at {r}; --force",
@@ -443,4 +552,57 @@ fn verify_reviewed(
     }
 
     Ok(())
+}
+
+/// A stacked branch was reviewed on top of its parent, so what it added then
+/// includes the parent's change; once the parent has landed (rebased, or
+/// squashed) that no longer compares. The parent's accepted row records the
+/// commit reviewed under it: when that commit is below the reviewed one, its
+/// branch is gone, and the trunk holds that commit's version of every path the
+/// parent changed, the change to compare is what the branch added on top of it.
+/// Returns the parent task's id when that change is `now`.
+fn landed_under(
+    repo: &Repo,
+    all: &[queue::Task],
+    id: u64,
+    reviewed: &str,
+    now: &str,
+) -> Res<Option<u64>> {
+    let p = &repo.primary;
+    let trunk = &repo.trunk;
+    for t in all.iter().filter(|t| t.id != id && t.state == State::Done) {
+        let (Some(r), Some(b)) = (&t.reviewed, &t.branch) else {
+            continue;
+        };
+        if git::branch_exists(p, b) {
+            continue;
+        }
+        let Some(base) = git::rev(p, r) else { continue };
+        if base == reviewed
+            || !git::ok(p, &["merge-base", "--is-ancestor", &base, reviewed])
+            || git::ok(p, &["merge-base", "--is-ancestor", &base, trunk])
+        {
+            continue;
+        }
+        let Some(mb) = git::opt(p, &["merge-base", trunk, &base]) else {
+            continue;
+        };
+        let paths = git::git(p, &["diff", "--name-only", "--no-renames", &mb, &base])?;
+        let mut args = vec![
+            "diff",
+            "--quiet",
+            "--no-renames",
+            &base,
+            trunk.as_str(),
+            "--",
+        ];
+        args.extend(paths.lines());
+        if !git::ok(p, &args) {
+            continue;
+        }
+        if git::change_id(p, &base, reviewed)? == now {
+            return Ok(Some(t.id));
+        }
+    }
+    Ok(None)
 }

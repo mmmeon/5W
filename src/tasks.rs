@@ -26,7 +26,7 @@ write (each commits itself to the trunk, and only itself)
   add <text> [fields] [--body <text>|-]   over-long text is split into title + body
   set <id> <area|level|lane|needs|branch> <value|->
   submit <id> [branch]    worker: hand it back
-  accept <id> [--at <rev>] [--force]
+  accept <id>... [--at <rev>] [--force]   several ids: one commit each, stops at a refusal
   reject <id> <reason>
   done <id> --<close>     close without review; flag per lane (--self, --decided)
   open <id>
@@ -1426,8 +1426,8 @@ fn review(repo: &Repo, args: &[String]) -> Res<()> {
 }
 
 fn accept(repo: &Repo, args: &[String]) -> Res<()> {
-    let usage = "usage: 5w accept <id> [--at <rev>] [--force]";
-    let mut id = None;
+    let usage = "usage: 5w accept <id>... [--at <rev>] [--force]";
+    let mut ids = Vec::new();
     let mut at = None;
     let mut force = false;
     let mut i = 0;
@@ -1439,12 +1439,40 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
             }
             "--force" => force = true,
             a if a.starts_with("--") => return Err(unknown_flag(repo, "accept", a)),
-            a if id.is_none() => id = Some(parse_id(a)?),
-            a => bail!("unexpected {a:?}\n{usage}"),
+            a => ids.push(parse_id(a)?),
         }
         i += 1;
     }
-    let id = id.ok_or(usage)?;
+    if ids.is_empty() {
+        bail!("{usage}");
+    }
+    if at.is_some() && ids.len() > 1 {
+        bail!("--at names one reviewed commit: accept one id with it");
+    }
+    // Each id is its own accept, with every check and its own commit. The
+    // first refusal stops the rest, as ship does: what follows may depend on it.
+    let mut accepted: Vec<u64> = Vec::new();
+    for (n, &id) in ids.iter().enumerate() {
+        if let Err(e) = accept_one(repo, id, at.as_deref(), force) {
+            if ids.len() == 1 {
+                return Err(e);
+            }
+            let done = match accepted.is_empty() {
+                true => "none accepted".to_string(),
+                false => format!("accepted {}", ids_str(&accepted)),
+            };
+            let rest = match &ids[n + 1..] {
+                [] => String::new(),
+                r => format!("; not tried {}", ids_str(r)),
+            };
+            bail!("{e} ({done}{rest})");
+        }
+        accepted.push(id);
+    }
+    Ok(())
+}
+
+fn accept_one(repo: &Repo, id: u64, at: Option<&str>, force: bool) -> Res<()> {
     let tasks = &repo.cfg.cmd_tasks;
     let q = Q::load(repo)?;
     let t = q.get(id)?;
@@ -1461,7 +1489,7 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
     let mut reviewed = None;
     if let Some(b) = &t.branch {
         let tip = git::rev(&repo.primary, &format!("refs/heads/{b}"));
-        match (&at, tip) {
+        match (at, tip) {
             (Some(r), _) => {
                 reviewed =
                     Some(git::rev(&repo.primary, r).ok_or_else(|| format!("cannot resolve {r}"))?)

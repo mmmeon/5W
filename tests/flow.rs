@@ -284,6 +284,43 @@ fn commits_after_submit_block_accept_until_reviewed() {
 }
 
 #[test]
+fn accept_takes_several_ids_one_commit_each_and_stops_at_a_refusal() {
+    let r = Repo::new("batchaccept");
+    for (n, b) in [(1, "a/one"), (2, "a/two"), (3, "a/three"), (4, "a/four")] {
+        r.ok(&r.main, &["add", &format!("task {n}")]);
+        r.ok(&r.main, &["wt", "new", b]);
+        let wt = r.wt(b);
+        r.commit_in(&wt, "f", &format!("{n}\n"));
+        if n != 3 {
+            r.ok(&wt, &["submit", &n.to_string()]);
+        }
+    }
+    let before = r.git(&r.main, &["rev-list", "--count", "main"]);
+    // #3 was never submitted: #1 and #2 are accepted, #4 is not tried.
+    let out = r.fails(&r.main, &["accept", "1", "2", "3", "4"]);
+    assert!(out.contains("never submitted"), "{out}");
+    assert!(
+        out.contains("accepted #1 #2") && out.contains("not tried #4"),
+        "{out}"
+    );
+    assert!(r.line(1).starts_with("- [x] #1") && r.line(1).contains("reviewed:"));
+    assert!(r.line(2).starts_with("- [x] #2"));
+    assert!(r.line(4).starts_with("- [~] #4"));
+    let after = r.git(&r.main, &["rev-list", "--count", "main"]);
+    assert_eq!(
+        after.parse::<u32>().unwrap(),
+        before.parse::<u32>().unwrap() + 2
+    );
+    // --at names one reviewed commit, so it takes one id.
+    assert!(
+        r.fails(&r.main, &["accept", "4", "1", "--at", "a/four"])
+            .contains("one id")
+    );
+    r.ok(&r.main, &["accept", "4"]);
+    r.lint_history();
+}
+
+#[test]
 fn review_json_is_one_object_per_submitted_task() {
     let r = Repo::new("reviewjson");
     assert_eq!(r.ok(&r.main, &["review", "--json"]), "");
@@ -701,6 +738,125 @@ fn stacks_ship_bottom_first_and_children_reparent() {
 }
 
 #[test]
+fn ship_accepted_lands_every_accepted_branch_bottom_of_stack_first() {
+    let r = Repo::new("shipaccepted");
+    r.ok(&r.main, &["add", "bottom"]);
+    r.ok(&r.main, &["add", "top"]);
+    r.ok(&r.main, &["add", "apart"]);
+    r.ok(&r.main, &["add", "unreviewed"]);
+    // Named so that name order and stack order disagree.
+    r.ok(&r.main, &["wt", "new", "z/bottom"]);
+    let bottom = r.wt("z/bottom");
+    r.commit_in(&bottom, "bottom", "b\n");
+    r.ok(&bottom, &["submit", "1"]);
+    r.ok(&r.main, &["wt", "new", "a/top", "--from", "z/bottom"]);
+    let top = r.wt("a/top");
+    r.commit_in(&top, "top", "t\n");
+    r.ok(&top, &["submit", "2"]);
+    r.ok(&r.main, &["wt", "new", "m/apart"]);
+    let apart = r.wt("m/apart");
+    r.commit_in(&apart, "apart", "a\n");
+    r.ok(&apart, &["submit", "3"]);
+    r.ok(&r.main, &["wt", "new", "u/open"]);
+    let open = r.wt("u/open");
+    r.commit_in(&open, "open", "o\n");
+    r.ok(&open, &["submit", "4"]);
+    r.ok(&r.main, &["accept", "2", "1", "3"]);
+
+    assert!(
+        r.fails(&r.main, &["ship", "--accepted", "-m", "x", "--squash"])
+            .contains("drop it")
+    );
+    assert!(
+        r.fails(&r.main, &["ship", "--accepted", "z/bottom"])
+            .contains("drop the branch name")
+    );
+
+    let out = r.ok(&r.main, &["ship", "--accepted", "--sync"]);
+    let at = |b: &str| {
+        out.find(&format!("ship: {b} is on main"))
+            .unwrap_or(usize::MAX)
+    };
+    assert!(at("z/bottom") < at("a/top"), "{out}");
+    assert!(at("m/apart") < usize::MAX, "{out}");
+    for f in ["bottom", "top", "apart"] {
+        assert!(r.main.join(f).exists(), "{f} not landed:\n{out}");
+    }
+    assert!(!r.main.join("open").exists());
+    r.git(
+        &r.main,
+        &["rev-parse", "--verify", "-q", "refs/heads/u/open"],
+    );
+    assert!(
+        r.ok(&r.main, &["ship", "--accepted"])
+            .contains("no accepted branch")
+    );
+}
+
+#[test]
+fn a_stacked_branch_changed_after_review_is_refused_once_its_parent_landed() {
+    let r = Repo::new("stackdrift");
+    r.ok(&r.main, &["add", "bottom"]);
+    r.ok(&r.main, &["add", "top"]);
+    r.ok(&r.main, &["wt", "new", "s/a"]);
+    let a = r.wt("s/a");
+    r.commit_in(&a, "a", "a\n");
+    r.ok(&a, &["submit", "1"]);
+    r.ok(&r.main, &["wt", "new", "s/b", "--from", "s/a"]);
+    let b = r.wt("s/b");
+    r.commit_in(&b, "b", "b\n");
+    r.ok(&b, &["submit", "2"]);
+    r.ok(&r.main, &["accept", "1", "2"]);
+    r.commit_in(&b, "b", "b, after review\n");
+    let out = r.fails(&r.main, &["ship", "--accepted", "--sync"]);
+    assert!(
+        out.contains("stopped at s/b: s/b is not the change #2 accepted")
+            && out.contains("(shipped s/a)"),
+        "{out}"
+    );
+}
+
+#[test]
+fn ship_accepted_stops_at_the_first_refusal_naming_the_branch() {
+    let r = Repo::new("shipacceptedstop");
+    r.ok(&r.main, &["add", "one"]);
+    r.ok(&r.main, &["add", "two"]);
+    for (id, b) in [("1", "a/one"), ("2", "b/two")] {
+        r.ok(&r.main, &["wt", "new", b]);
+        let wt = r.wt(b);
+        r.commit_in(&wt, id, "x\n");
+        r.ok(&wt, &["submit", id]);
+    }
+    r.ok(&r.main, &["accept", "1", "2"]);
+    // Without --sync both are behind main: the first one refuses, nothing lands.
+    let out = r.fails(&r.main, &["ship", "--accepted"]);
+    let refusal = out.lines().last().unwrap_or("");
+    assert!(
+        refusal.starts_with("5w: stopped at a/one: ")
+            && refusal.contains("--sync")
+            && refusal.contains("none shipped"),
+        "{out}"
+    );
+    assert!(!r.main.join("1").exists());
+    // A dirty worktree stops b/two after a/one landed; the refusal says both.
+    std::fs::write(r.wt("b/two").join("stray"), "s\n").unwrap();
+    r.git(&r.wt("b/two"), &["add", "stray"]);
+    let out = r.fails(&r.main, &["ship", "--accepted", "--sync"]);
+    let refusal = out.lines().last().unwrap_or("");
+    assert!(
+        refusal.starts_with("5w: stopped at b/two: ")
+            && refusal.contains("uncommitted")
+            && refusal.contains("(shipped a/one)"),
+        "{out}"
+    );
+    assert!(r.main.join("1").exists() && !r.main.join("2").exists());
+    r.git(
+        &r.main,
+        &["rev-parse", "--verify", "-q", "refs/heads/b/two"],
+    );
+}
+
+#[test]
 fn duplicate_ids_stop_every_command() {
     let r = Repo::new("dup");
     r.ok(&r.main, &["add", "one"]);
@@ -719,7 +875,7 @@ fn a_subcommand_help_prints_only_that_command() {
     for (cmd, want) in [
         ("add", "usage: 5w add <text> [fields]"),
         ("submit", "usage: 5w submit <id> [branch]"),
-        ("accept", "usage: 5w accept <id> [--at <rev>] [--force]"),
+        ("accept", "usage: 5w accept <id>... [--at <rev>] [--force]"),
         ("reject", "usage: 5w reject <id> <reason>"),
         ("show", "usage: 5w show <id> [--json]"),
         ("ready", "usage: 5w ready [filters] [out]"),
