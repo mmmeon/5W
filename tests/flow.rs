@@ -1183,6 +1183,49 @@ fn ignored_submodules_do_not_hide_a_gitlink_added_after_review() {
     );
 }
 
+/// A replace ref makes git show one object as another: the post-review commit
+/// or its blob dressed up as the reviewed one must not pass as the same change.
+fn a_replace_ref_does_not_disguise_a_change_after_review(commit: bool) {
+    let r = Repo::new("replace");
+    r.ok(&r.main, &["add", "feature"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.commit_in(&wt, "f", "f\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.git(&wt, &["rebase", "-q", "main"]);
+    let rebased = r.git(&r.main, &["rev-parse", "f/a"]);
+    r.commit_in(&wt, "f", "evil\n");
+    let evil = r.git(&r.main, &["rev-parse", "f/a"]);
+    if commit {
+        r.git(
+            &r.main,
+            &["worktree", "remove", "--force", wt.to_str().unwrap()],
+        );
+        r.git(&r.main, &["replace", &evil, &rebased]);
+    } else {
+        let blob = |c: &str| r.git(&r.main, &["rev-parse", &format!("{c}:f")]);
+        r.git(&r.main, &["replace", &blob(&evil), &blob(&rebased)]);
+    }
+    let out = r.fails(&r.main, &["ship", "f/a"]);
+    assert!(out.contains("is not the change #1 accepted"), "{out}");
+    assert_ne!(
+        r.git(&r.main, &["rev-parse", "main"]),
+        evil,
+        "main moved to the post-review commit"
+    );
+}
+
+#[test]
+fn a_replaced_blob_does_not_disguise_a_change_after_review() {
+    a_replace_ref_does_not_disguise_a_change_after_review(false);
+}
+
+#[test]
+fn a_replaced_commit_does_not_disguise_a_change_after_review() {
+    a_replace_ref_does_not_disguise_a_change_after_review(true);
+}
+
 #[test]
 fn zero_diff_context_still_refuses_a_rebase_that_changed_nearby_lines() {
     let r = Repo::new("context0");

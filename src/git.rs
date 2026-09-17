@@ -12,6 +12,12 @@ pub struct Out {
 pub fn raw(dir: &Path, args: &[&str], env: &[(&str, &str)], input: Option<&str>) -> Res<Out> {
     let mut c = Command::new("git");
     c.arg("-C").arg(dir).args(args);
+    // Every object is what it is: a replace ref (which can be pushed) must not
+    // dress a post-review commit or blob up as the reviewed one, nor a graft
+    // rewrite ancestry. The graft file is a path that cannot exist: an existing
+    // one, even empty, prints git's deprecation hint on every call.
+    c.env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_GRAFT_FILE", "/dev/null/no-grafts");
     for (k, v) in env {
         c.env(k, v);
     }
