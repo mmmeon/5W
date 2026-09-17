@@ -4886,6 +4886,7 @@ fn gate_trunk_lets_only_recorded_landings_of_reviewed_changes_onto_the_trunk() {
     r.ok(&r.main, &["submit", "1", "f/one"]);
     r.ok(&r.main, &["submit", "2", "f/two"]);
     r.ok(&r.main, &["accept", "1", "2"]);
+    let accepted = r.git(&r.main, &["rev-parse", "HEAD"]);
     let out = r.ok(&r.main, &["ship", "f/one", "--sync"]);
     assert!(out.contains("landing of #1 recorded"), "{out}");
     assert!(out.contains("refs/5w/reviewed/1"), "{out}");
@@ -4905,6 +4906,29 @@ fn gate_trunk_lets_only_recorded_landings_of_reviewed_changes_onto_the_trunk() {
         .to_string();
     let (ok, err) = push(&["main", &format!("{reviewed}:refs/5w/reviewed/1")]);
     assert!(ok, "{err}");
+
+    // A record cannot reach back over landings the trunk already has: from before
+    // both, "trunk + #1" is #1's change, and would cover taking #2 back out.
+    let pushed = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(&r.main, &["rm", "-q", "two.txt", "two-more.txt"]);
+    r.git(&r.main, &["commit", "-qm", "roll back two"]);
+    let tip = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(
+        &r.main,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("chore(tasks): land #1\n\nLanded: {accepted}..{tip}"),
+        ],
+    );
+    let (ok, err) = push(&["main"]);
+    assert!(
+        !ok && err.contains("already on main") && err.contains("no landing record covers"),
+        "{err}"
+    );
+    r.git(&r.main, &["reset", "-q", "--hard", &pushed]);
 
     // A record naming an accepted task over code it did not accept covers nothing.
     let base = r.git(&r.main, &["rev-parse", "HEAD"]);
@@ -4937,13 +4961,24 @@ fn gate_trunk_lets_only_recorded_landings_of_reviewed_changes_onto_the_trunk() {
     assert!(ok, "{err}");
     r.ok(&r.main, &["submit", "3", "f/three"]);
     r.ok(&r.main, &["accept", "3"]);
-    let accepted = r.git(&r.main, &["rev-parse", "HEAD"]);
+    let accepted3 = r.git(&r.main, &["rev-parse", "HEAD"]);
     r.ok(&r.main, &["ship", "f/three", "--sync"]);
     let landed = r.git(&r.main, &["rev-parse", "HEAD"]);
-    r.git(&r.main, &["reset", "-q", "--hard", &accepted]);
+    r.git(&r.main, &["reset", "-q", "--hard", &accepted3]);
     r.ok(&r.main, &["add", "four"]);
     r.git(&r.main, &["merge", "-q", "--no-edit", &landed]);
     let (ok, err) = push(&["main"]);
+    assert!(ok, "{err}");
+
+    // Deleting the trunk, to push an orphan history in its place, is refused; a branch is not.
+    r.git(&server, &["config", "receive.denyDeleteCurrent", "false"]);
+    let (ok, err) = push(&[":main"]);
+    assert!(!ok && err.contains("refused under gate_trunk"), "{err}");
+    assert!(
+        !r.git(&server, &["rev-parse", "--verify", "main"])
+            .is_empty()
+    );
+    let (ok, err) = push(&[":f/two"]);
     assert!(ok, "{err}");
 
     // A merge of an unreviewed branch brings code no record covers.

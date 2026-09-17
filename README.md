@@ -201,7 +201,10 @@ stacked branch was reviewed on top of its parent; once the parent has landed, th
 what the branch added on top of the parent's reviewed commit — allowed only when that parent's
 branch is gone and the trunk holds the parent's version of every path the parent changed.
 
-**With `gate_trunk`, code reaches the trunk only as a recorded landing.** Ship's check runs where
+**With `gate_trunk`, code reaches the trunk only as a recorded landing of an accepted change.** What
+it proves is that each landing has an accepted row in the queue and matches that row's reviewed
+change on the server — not that anyone but the pusher reviewed it: whoever may push queue accepts
+can accept their own change. Ship's check runs where
 ship runs; a plain `git push origin main` of commits nobody shipped skips it. So with `gate_trunk =
 true`, ship follows each fast-forward with a *landing record*, an empty commit on the trunk:
 
@@ -216,14 +219,18 @@ and `5w ci --ref refs/heads/<trunk>` — the pre-receive hook, a push job — re
 push brings to the trunk that no record in the push covers. The record is where to look, not
 evidence: the server recomputes everything from the pushed objects, and `Change:` is for a reader.
 A record covers every commit in its `Landed:` range only when its one parent is the range's end and
-its tree that parent's (it adds nothing), the range's start is an ancestor of its end, the queue at
+its tree that parent's (it adds nothing), the range's start is an ancestor of its end, every commit
+in the range is new in this push (a start reaching back over what the trunk already has could make
+"the trunk plus #1" out of taking a later landing back out), the queue at
 the record holds its task `[x] via:review` with a `reviewed:` commit the server has, and the range
 adds exactly what that commit added over the range's start — or, for a stacked branch, over a
 landed parent's reviewed commit, by the rule above (the parent's branch may still be on the
-server). So a record naming another task, a wider or narrower range, or a change nobody accepted
-covers nothing; a hand-written one (`git commit --allow-empty`), for a landing made without ship,
+server). So a record naming another task, a wider or narrower range, or a change no accepted row
+records covers nothing; a hand-written one (`git commit --allow-empty`), for a landing made without ship,
 passes on the same terms. `--sync` and `--squash` change nothing here: the range is what landed,
 compared with the review as ship compared it, and several ships pushed at once are several records.
+Rebasing the trunk over a record (`git pull --rebase`) breaks it, since its range names the old
+commits; merge instead, or ship again.
 
 - **Needs no record:** a commit that changes only the queue and archive, or nothing; a two-parent
   merge whose tree is the clean merge of its parents (`git merge-tree`) outside those files. The
@@ -235,10 +242,12 @@ compared with the review as ship compared it, and several ships pushed at once a
 - **The reviewed commit must be on the server.** Shipped as reviewed, it is what landed. After
   `--sync` or `--squash` it is not on the trunk: keep its branch pushed, or push it with the trunk
   (`git push origin main <sha>:refs/5w/reviewed/11`) — ship names it.
-- **Only a review lands under the gate.** `--force`, or a task closed without review, records no
-  landing, and the push is refused.
-- **What it does not check.** Who accepted: the accept may arrive in the same push, and who may push
-  one is the queue's own trust (see *Forge events*). A forge's merge button records no landing; its
+- **Only a `via:review` row lands under the gate.** `--force`, or a task closed without review,
+  records no landing, and the push is refused.
+- **The trunk cannot be deleted** under the gate: a push re-creating it would have no trunk to be
+  judged against. Turn the gate off through a shipped change first.
+- **What it does not check.** Who reviewed: the accept may arrive in the same push as the landing,
+  and who may push one is the queue's own trust (see *Forge events*). A forge's merge button records no landing; its
   push job goes red after the fact, which only a server hook prevents. Coverage is of the range's
   net change, as ship's check is, and one accepted change may land more than once.
 

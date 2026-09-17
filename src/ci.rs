@@ -110,6 +110,26 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         .into_iter()
         .find_map(|r| git::rev(p, &r)),
     };
+    let zeros = |r: &Option<String>| r.as_ref().is_some_and(|r| r.bytes().all(|c| c == b'0'));
+    if zeros(&head) {
+        // A deletion carries no commits. Under the gate the trunk's is refused: a
+        // push re-creating it has no trunk to judge against, and would land anything.
+        let trunk_ref = format!("refs/heads/{}", repo.trunk);
+        let Some(r) = refname.filter(|r| *r == trunk_ref) else {
+            println!("5w ci: a deletion: nothing to check");
+            return Ok(());
+        };
+        let old = base
+            .filter(|b| !b.bytes().all(|c| c == b'0'))
+            .and_then(|b| git::rev(p, &b));
+        if gate_settings(repo, old.as_slice())?.values().any(|on| *on) {
+            bail!(
+                "deleting {r} is refused under gate_trunk — ship a change that turns gate_trunk off first"
+            );
+        }
+        println!("5w ci: deletion of {r}: nothing to check");
+        return Ok(());
+    }
     let head = head.unwrap_or_else(|| "HEAD".into());
     let head = git::rev(p, &head)
         .ok_or_else(|| format!("ci: --head {head} is not a commit — pass a branch, tag or sha"))?;
@@ -261,12 +281,8 @@ fn trunk_gate(
             .strip_prefix(&prefix)
             .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
         {
-            match landing(repo, c, k, id, &commits) {
-                Ok((base, tip)) => covered.extend(
-                    git::git(p, &["rev-list", &format!("{base}..{tip}")])?
-                        .lines()
-                        .map(String::from),
-                ),
+            match landing(repo, c, k, id, &commits, &in_range) {
+                Ok(landed) => covered.extend(landed),
                 Err(why) => out.push(format!("{}: land #{id} covers nothing — {why}", short(c))),
             }
         }
@@ -340,14 +356,15 @@ fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> 
     Ok(on)
 }
 
-/// A landing record's range, `(base, tip)`, when the record holds: see `trunk_gate`.
+/// The commits a landing record covers, when it holds: see `trunk_gate`.
 fn landing(
     repo: &Repo,
     sha: &str,
     k: &Commit,
     id: &str,
     commits: &HashMap<String, Commit>,
-) -> Result<(String, String), String> {
+    in_range: &HashSet<&str>,
+) -> Result<Vec<String>, String> {
     let p = &repo.primary;
     let raw = git::git(p, &["cat-file", "commit", sha])?;
     let body = raw.split_once("\n\n").map(|(_, b)| b).unwrap_or("");
@@ -382,6 +399,21 @@ fn landing(
     {
         return Err(format!("{} is not below {}", short(base), short(tip)));
     }
+    // Only what this push brings: a range reaching back over commits the trunk
+    // already has compares a stale start, and could cover taking a landing back out.
+    let landed: Vec<String> = git::git(p, &["rev-list", &format!("{base}..{tip}")])?
+        .lines()
+        .map(String::from)
+        .collect();
+    if let Some(old) = landed.iter().find(|c| !in_range.contains(c.as_str())) {
+        return Err(format!(
+            "{}..{} reaches {}, already on {}",
+            short(base),
+            short(tip),
+            short(old),
+            repo.trunk
+        ));
+    }
     let show = |f: &str| git::opt(p, &["show", &format!("{sha}:{f}")]).unwrap_or_default();
     let all: Vec<Task> = queue::parse(&show(&repo.cfg.file))
         .into_iter()
@@ -409,7 +441,7 @@ fn landing(
     if git::change_id(p, base, &reviewed)? == now
         || crate::ship::landed_under(repo, &all, &reviewed, &now, base, false)?.is_some()
     {
-        return Ok((base.to_string(), tip.to_string()));
+        return Ok(landed);
     }
     Err(format!(
         "{}..{} is not the change #{id} accepted at {}",
