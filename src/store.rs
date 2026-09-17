@@ -663,7 +663,24 @@ fn plan(
                 repo.cfg.file
             )
         })?;
-        Some((fs_.queue.text(), fs_.archive.text()))
+        let sa = fs_.archive.text();
+        // An archive file on neither the trunk nor the index is staged new with
+        // the staged copy's rows (see `mirror_index`) — never over an untracked
+        // file of the user's own, whose content that would leave half-tracked.
+        if a.old_blob.is_none()
+            && a.staged_blob.is_none()
+            && !sa.is_empty()
+            && sa != new_a
+            && a.working.as_deref().is_some_and(|w| !w.trim().is_empty())
+        {
+            bail!(
+                "{} is untracked and not on {}; `git add {}` or move it aside, then retry",
+                repo.cfg.archive,
+                repo.trunk,
+                repo.cfg.archive
+            );
+        }
+        Some((fs_.queue.text(), sa))
     } else {
         None
     };
@@ -839,8 +856,15 @@ fn mirror_index(repo: &Repo, w: &Path, changes: &[Change], blobs: &[Option<Strin
     for ((c, _, _, new_staged), blob) in changes.iter().zip(blobs) {
         // A planned staged copy is staged whole, even where the entry matched the
         // commit: a row moving between the files moves in both entries or neither.
+        // A file the trunk lacks is staged new once the plan gives it rows.
         let entry = match (new_staged, blob) {
-            (Some(ns), _) if c.staged.is_some() || c.staged_blob.is_some() => hash_blob(repo, ns)?,
+            (Some(ns), _)
+                if c.staged.is_some()
+                    || c.staged_blob.is_some()
+                    || (c.old_blob.is_none() && !ns.is_empty()) =>
+            {
+                hash_blob(repo, ns)?
+            }
             (_, Some(b)) if c.staged_blob.is_some() || c.old_blob.is_none() => b.clone(),
             _ => continue,
         };

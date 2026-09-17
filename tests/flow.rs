@@ -2295,6 +2295,69 @@ fn an_archive_that_commits_nothing_stages_both_files_together() {
 }
 
 #[test]
+fn an_archive_of_a_staged_close_stages_a_done_file_the_trunk_lacks() {
+    let r = Repo::new("archive-staged-no-done");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    let head = r.git(&r.main, &["rev-parse", "HEAD"]);
+    assert!(r.git(&r.main, &["ls-files", "DONE.md"]).is_empty());
+
+    // #2 is closed only in the staged copy and DONE.md is on neither the trunk
+    // nor the index: the staged move takes a new DONE.md holding just that row.
+    hand_edit(&r, "- [ ] #2 second", "- [x] #2 second via:self");
+    let out = r.ok(&r.main, &["archive"]);
+    assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), head, "{out}");
+    let (sq, sa) = (
+        r.git(&r.main, &["show", ":TASKS.md"]),
+        r.git(&r.main, &["show", ":DONE.md"]),
+    );
+    assert!(
+        !sq.contains("#2 second") && sa.contains("- [x] #2 second") && !sa.contains("#1"),
+        "{sq}\n{sa}"
+    );
+    r.ok(&r.main, &["lint", "--staged"]);
+    r.lint_history();
+
+    // An untracked DONE.md of the user's own is never staged: archive refuses
+    // with nothing written.
+    let r = Repo::new("archive-staged-untracked-done");
+    r.ok(&r.main, &["add", "first"]);
+    hand_edit(&r, "- [ ] #1 first", "- [x] #1 first via:self");
+    std::fs::write(r.main.join("DONE.md"), "my notes\n").unwrap();
+    let (tasks, index) = (r.tasks(), r.git(&r.main, &["show", ":TASKS.md"]));
+    let err = r.fails(&r.main, &["archive"]);
+    assert!(err.contains("DONE.md is untracked"), "{err}");
+    assert_eq!(err.trim().lines().count(), 1, "{err}");
+    assert_eq!(r.tasks(), tasks);
+    assert_eq!(r.git(&r.main, &["show", ":TASKS.md"]), index);
+    assert_eq!(
+        std::fs::read_to_string(r.main.join("DONE.md")).unwrap(),
+        "my notes\n"
+    );
+    r.ok(&r.main, &["lint", "--staged"]);
+}
+
+#[test]
+fn an_archive_names_rows_closed_on_the_trunk_but_reopened_in_the_checkout() {
+    let r = Repo::new("archive-reopened-by-hand");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    let head = r.git(&r.main, &["rev-parse", "HEAD"]);
+    let t = r
+        .tasks()
+        .replace("- [x] #1 first via:self", "- [ ] #1 first");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    let err = r.fails(&r.main, &["archive"]);
+    assert!(!err.contains("nothing closed"), "{err}");
+    assert!(
+        err.contains("main has 1 closed row the checkout shows open"),
+        "{err}"
+    );
+    assert_eq!(err.trim().lines().count(), 1, "{err}");
+    assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
 fn an_archive_with_nothing_closed_on_the_trunk_commits_nothing() {
     let r = Repo::new("archive-working-only");
     r.ok(&r.main, &["add", "first"]);

@@ -1753,6 +1753,23 @@ pub const ARCHIVE_HEADER: &str = "# Archive\n\nClosed tasks moved out of the que
 fn archive(repo: &Repo) -> Res<()> {
     let q = Q::load(repo)?;
     if !q.tasks.iter().any(|t| t.state == State::Done) {
+        // Rows closed on the trunk but open in the checkout were reopened by
+        // hand: archiving them would move rows the checkout says are open.
+        let closed = queue::parse(&repo.committed()?.unwrap_or_default())
+            .iter()
+            .filter(|t| t.state == State::Done)
+            .count();
+        if closed > 0 {
+            bail!(
+                "{} has {closed} closed row{} the checkout shows open; `{} reopen <id>` to reopen on {}, or `git checkout {} -- {}` to take its copy",
+                repo.trunk,
+                if closed == 1 { "" } else { "s" },
+                repo.cfg.cmd_tasks,
+                repo.trunk,
+                repo.trunk,
+                repo.cfg.file
+            );
+        }
         println!("  nothing closed to archive");
         return Ok(());
     }
