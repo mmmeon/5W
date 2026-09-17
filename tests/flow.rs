@@ -5522,6 +5522,7 @@ fn an_unpinned_gated_server_warns_and_refuses_a_trunk_rename() {
     );
     assert!(!err.contains("git config 5w.trunk"), "{err}");
     assert_eq!(r.git(&server, &["rev-parse", "master"]), before);
+}
 
 #[test]
 fn gate_trunk_refuses_a_landing_that_put_the_reviewed_hunk_in_an_identical_copy() {
