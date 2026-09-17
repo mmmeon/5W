@@ -7541,6 +7541,8 @@ fn a_break_mixing_a_moved_queue_and_an_archive_renamed_in_place_names_each_repai
         assert!(names(&err) && err.contains("an admin"), "{err}");
 
         // The pre-commit hook takes exactly that repair: any other name is refused.
+        // One giving back only some of the names to restore (#117) is refused by the
+        // hook and by ship naming them all, not told to keep the broken ones.
         let commit = |text: &str, msg: &str| {
             std::fs::write(r.main.join(".5w.toml"), text).unwrap();
             r.git_path(&r.main, &path_with_5w(), &["commit", "-qam", msg])
@@ -7550,20 +7552,46 @@ fn a_break_mixing_a_moved_queue_and_an_archive_renamed_in_place_names_each_repai
             (
                 named(&other(file, "Q.md", "TASKS.md"), archive, prefix),
                 format!("keeps file = \"{file}\""),
+                !moved,
             ),
             (
                 named(file, &other(archive, "DONE.md", "DONE2.md"), prefix),
                 format!("keeps archive = \"{archive}\""),
+                archived,
             ),
             (
                 named(file, archive, "queue"),
                 format!("keeps commit_prefix = \"{prefix}\""),
+                true,
             ),
         ];
-        for (text, want) in &wrong {
+        for (i, (text, want, partial)) in wrong.iter().enumerate() {
             let o = commit(text, "a wrong repair");
             let err = String::from_utf8_lossy(&o.stderr);
-            assert!(!o.status.success() && err.contains(want), "{text}\n{err}");
+            let named_fix = match partial {
+                true => names(&err) && err.contains("an admin") && !err.contains("later commit"),
+                false => err.contains(want),
+            };
+            assert!(!o.status.success() && named_fix, "{text}\n{err}");
+            if !partial {
+                continue;
+            }
+            let branch = format!("f/partial-{i}");
+            r.git(
+                &r.main,
+                &["commit", "--no-verify", "-qam", "a partial repair"],
+            );
+            r.git(&r.main, &["branch", &branch]);
+            r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+            let before = r.git(&r.main, &["rev-parse", "main"]);
+            let err = r.refuses(&r.main, &["ship", &branch, "--sync"]);
+            assert!(
+                names(&err)
+                    && err.contains("past the server's hook")
+                    && !err.contains("later commit"),
+                "{text}\n{err}"
+            );
+            assert_eq!(r.git(&r.main, &["rev-parse", "main"]), before);
         }
         let o = commit(&named(file, archive, prefix), "repair the config");
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));

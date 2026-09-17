@@ -797,8 +797,16 @@ fn staged_repair(repo: &Repo, err: &str, env: &[(&str, &str)]) -> Res<Repo> {
         )
     };
     // One that keeps every broken name is taken as any repair is: the refusal
-    // names the other, which restores a queue or archive renamed in place.
+    // names the other, which restores a queue or archive renamed in place. One
+    // restoring only some of those names is refused naming them all.
     let restores = restores_accepted_names(repo);
+    if partly_restores(&restores, &cfg) {
+        // Gated as the server reads the trunk, not by the broken names' defaults.
+        let tip = trunk_tip(&repo.primary, &repo.trunk);
+        let gated = crate::ci::setting_on(&repo.primary, tip.as_deref(), "gate_trunk");
+        let refusal = crate::store::restore_refusal(&repo.trunk, &restores, gated, err);
+        bail!("{refusal}");
+    }
     if kept(&repo.cfg, &[], &cfg).is_some()
         && let Some((key, want)) = kept(&repo.cfg, &restores, &cfg)
     {
@@ -874,6 +882,30 @@ pub(crate) fn restored_name(
 ) -> Option<Vec<Restore>> {
     let restores = names_to_restore(dir, tip, broken);
     (!restores.is_empty() && kept(broken, &restores, cfg).is_none()).then_some(restores)
+}
+
+/// Whether `cfg` gives back some, but not all, of the names a repair restores
+/// (`restores`): its fix is every one of them, not a rename in a later commit.
+pub(crate) fn partly_restores(restores: &[Restore], cfg: &Config) -> bool {
+    let given = restores
+        .iter()
+        .filter(|(key, _, accepted)| {
+            let name = match *key {
+                "file" => &cfg.file,
+                "archive" => &cfg.archive,
+                _ => &cfg.commit_prefix,
+            };
+            name == accepted
+        })
+        .count();
+    given > 0 && given < restores.len()
+}
+
+/// Whether `cfg`, over the names in `broken`, restores names renamed in place
+/// (`restores`): all of them, keeping the rest, or only some.
+pub(crate) fn restores_any(broken: &Config, restores: &[Restore], cfg: &Config) -> bool {
+    !restores.is_empty()
+        && (kept(broken, restores, cfg).is_none() || partly_restores(restores, cfg))
 }
 
 /// The first name `cfg` does not give as a repair restoring `restores` over the

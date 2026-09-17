@@ -485,7 +485,9 @@ their accepted rows stop authorising a ship. The repair restores, from the trunk
 parsed, each of `file` and `archive` the trunk's tip holds nothing under by its broken name but holds
 under the old one, and then `commit_prefix` too; a name whose file moved with it stays. The
 refusals, the server's included, name every one of them; the pre-commit hook takes that repair, and
-no other name. `ship` of a branch holding it refuses naming the same admin push, not a rename.
+no other name. One giving back only some of them is refused naming them all, by the hook and `ship`,
+not told to keep the rest; `ship` of a branch holding the whole repair refuses naming the same admin
+push, not a rename.
 
 A forge's check is judged the same way: `5w ci --branch` on a change request whose head commits a
 config that parses (or none) runs the ship check under that config, with the trunk's queue file,

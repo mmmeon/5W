@@ -130,7 +130,17 @@ pub(crate) fn restore_fix(
     if !restores.iter().any(|(k, ..)| *k == key) {
         return None;
     }
-    let (what, names) = crate::lint::describe_restore(&restores);
+    Some(restore_refusal(trunk, &restores, gate_trunk, err))
+}
+
+/// `restore_fix`'s refusal for the names a repair restores (`restores`).
+pub(crate) fn restore_refusal(
+    trunk: &str,
+    restores: &[crate::lint::Restore],
+    gate_trunk: bool,
+    err: &str,
+) -> String {
+    let (what, names) = crate::lint::describe_restore(restores);
     let t = trunk;
     let fix = match gate_trunk {
         true => format!(
@@ -138,9 +148,7 @@ pub(crate) fn restore_fix(
         ),
         false => format!("commit a {CONFIG_FILE} that parses with {names} on {t} and push it"),
     };
-    Some(format!(
-        "{CONFIG_FILE} on {t} is broken ({err}) and names {what} — {fix}"
-    ))
+    format!("{CONFIG_FILE} on {t} is broken ({err}) and names {what} — {fix}")
 }
 
 /// A name a trunk config that `from_toml` refuses gives `key` (the trunk, the
@@ -446,8 +454,9 @@ impl Repo {
     /// Why a ship of `tip` onto a trunk whose committed config does not parse is
     /// refused: what would land, `tip` merged onto the trunk, must commit a config
     /// that parses (or none) and keeps the queue names the trunk's gate reads.
-    /// A repair restoring names renamed in place (`restore_fix`) is refused too,
-    /// naming the admin's push. None: the trunk reads, or `tip` lands such a repair.
+    /// A repair restoring names renamed in place (`restore_fix`), all or only some
+    /// of them, is refused too, naming the admin's push. None: the trunk reads, or
+    /// `tip` lands such a repair.
     pub fn unrepaired(&self, tip: &str) -> Option<String> {
         let e = self.broken.as_ref()?;
         let (p, t) = (&self.primary, &self.trunk);
@@ -490,9 +499,11 @@ impl Repo {
         let was = &self.cfg;
         // One restoring the names renamed in place (#113) keeps none of the broken
         // names, and no landing covers it: its record would go in a file the trunk
-        // lacks. Refuse naming the admin's push past the hook, as reads do.
-        if let Some(restores) = crate::lint::restored_name(p, &trunk, was, &cfg) {
-            return restore_fix(p, t, &trunk, was, was.gate_trunk, e, restores[0].0);
+        // lacks. Refuse naming the admin's push past the hook, as reads do — and so
+        // for one restoring only some of them, whose fix is the rest, not a rename.
+        let restores = crate::lint::names_to_restore(p, &trunk, was);
+        if crate::lint::restores_any(was, &restores, &cfg) {
+            return Some(restore_refusal(t, &restores, was.gate_trunk, e));
         }
         [
             ("file", &was.file, &cfg.file),
