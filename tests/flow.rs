@@ -1975,6 +1975,54 @@ fn ignored_submodules_do_not_hide_a_gitlink_added_after_review() {
     );
 }
 
+/// A branch that takes a submodule out, or makes its path a file: a gitlink's
+/// commit is another repository's, not here, and ship must not ask for it.
+fn a_branch_that_replaces_a_submodule_ships(with_file: bool) {
+    let r = Repo::new("unsub");
+    let gone = "1234567890123456789012345678901234567890";
+    r.git(
+        &r.main,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{gone},sub"),
+        ],
+    );
+    r.git(&r.main, &["commit", "-qm", "submodule"]);
+    // An uninitialised submodule: an empty directory.
+    std::fs::create_dir(r.main.join("sub")).unwrap();
+    r.ok(&r.main, &["add", "feature"]);
+    r.ok(&r.main, &["wt", "new", "f/a"]);
+    let wt = r.wt("f/a");
+    r.git(&wt, &["rm", "-q", "--cached", "sub"]);
+    if with_file {
+        let _ = std::fs::remove_dir(wt.join("sub"));
+        std::fs::write(wt.join("sub"), "file\n").unwrap();
+        r.git(&wt, &["add", "sub"]);
+    }
+    r.git(&wt, &["commit", "-qm", "no submodule"]);
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.ok(&r.main, &["ship", "f/a", "--sync"]);
+    let entry = r.git(&r.main, &["ls-tree", "main", "sub"]);
+    if with_file {
+        assert!(entry.starts_with("100644 blob"), "{entry}");
+    } else {
+        assert_eq!(entry, "");
+    }
+}
+
+#[test]
+fn a_branch_that_removes_a_submodule_ships() {
+    a_branch_that_replaces_a_submodule_ships(false);
+}
+
+#[test]
+fn a_branch_that_turns_a_submodule_into_a_file_ships() {
+    a_branch_that_replaces_a_submodule_ships(true);
+}
+
 /// A replace ref makes git show one object as another: the post-review commit
 /// or its blob dressed up as the reviewed one must not pass as the same change.
 fn a_replace_ref_does_not_disguise_a_change_after_review(commit: bool) {

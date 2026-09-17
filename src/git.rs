@@ -434,9 +434,12 @@ pub fn change_id(dir: &Path, base: &str, tip: &str) -> Res<String> {
     // Each file's pre-image blob, from `index <old>..<new>[ <mode>]`, and its
     // hunks as (line in the diff, first pre-image line, pre-image length). A
     // gitlink's hunk is a `Subproject commit` line and a new file's is empty:
-    // neither has a blob to count copies in.
+    // neither has a blob to count copies in. A gitlink's mode is on the `index`
+    // line, or, added or deleted, on its own `new file mode` / `deleted file
+    // mode` line; its commit is another repository's, rarely here.
     struct File {
         old: Option<String>,
+        gitlink: bool,
         hunks: Vec<(usize, usize, usize)>,
     }
     let mut files: Vec<File> = Vec::new();
@@ -444,16 +447,23 @@ pub fn change_id(dir: &Path, base: &str, tip: &str) -> Res<String> {
         if line.starts_with(b"diff --git ") {
             files.push(File {
                 old: None,
+                gitlink: false,
                 hunks: Vec::new(),
             });
+        } else if (line.starts_with(b"deleted file mode ")
+            || line.starts_with(b"new file mode ")
+            || line.starts_with(b"old mode "))
+            && line.trim_ascii_end().ends_with(b" 160000")
+            && let Some(f) = files.last_mut()
+        {
+            f.gitlink = true;
         } else if let Some(rest) = line.strip_prefix(b"index ")
             && let Some(f) = files.last_mut()
         {
             let rest = String::from_utf8_lossy(rest);
             let rest = rest.trim_end();
-            if !rest.ends_with(" 160000") {
-                f.old = rest.split("..").next().map(String::from);
-            }
+            f.gitlink |= rest.ends_with(" 160000");
+            f.old = rest.split("..").next().map(String::from);
         } else if line.starts_with(b"@@ -")
             && let Some(f) = files.last_mut()
         {
@@ -465,18 +475,22 @@ pub fn change_id(dir: &Path, base: &str, tip: &str) -> Res<String> {
     }
     let mut wanted: Vec<String> = files
         .iter()
-        .filter(|f| !f.hunks.is_empty())
+        .filter(|f| !f.hunks.is_empty() && !f.gitlink)
         .filter_map(|f| f.old.clone())
         .collect();
     wanted.sort_unstable();
     wanted.dedup();
     let blobs = blobs(dir, &wanted)?;
     let mut copies: HashMap<usize, usize> = HashMap::new();
-    for f in files.iter().filter(|f| !f.hunks.is_empty()) {
+    for f in files.iter().filter(|f| !f.hunks.is_empty() && !f.gitlink) {
         let Some(old) = &f.old else { continue };
-        let blob = blobs
+        // Missing refuses; an object that is there but not a blob has no lines.
+        let Some(blob) = blobs
             .get(old)
-            .ok_or_else(|| format!("blob {old} missing: fetch full history"))?;
+            .ok_or_else(|| format!("blob {old} missing: fetch full history"))?
+        else {
+            continue;
+        };
         copies.extend(copies_above(blob, &f.hunks).ok_or_else(bad)?);
     }
 
@@ -587,8 +601,9 @@ fn copies_above(old: &[u8], hunks: &[(usize, usize, usize)]) -> Option<Vec<(usiz
     Some(out)
 }
 
-/// The content of each named object that is a blob, read in one call.
-fn blobs(dir: &Path, names: &[String]) -> Res<HashMap<String, Vec<u8>>> {
+/// Each named object that exists, read in one call: its content when it is a
+/// blob, None when it is another kind of object.
+fn blobs(dir: &Path, names: &[String]) -> Res<HashMap<String, Option<Vec<u8>>>> {
     let mut found = HashMap::new();
     if names.is_empty() {
         return Ok(found);
@@ -613,9 +628,8 @@ fn blobs(dir: &Path, names: &[String]) -> Res<HashMap<String, Vec<u8>>> {
         if rest.len() < size + 1 {
             return Err(format!("git cat-file --batch: {name} cut short"));
         }
-        if *kind == "blob" {
-            found.insert(name.to_string(), rest[..size].to_vec());
-        }
+        let content = (*kind == "blob").then(|| rest[..size].to_vec());
+        found.insert(name.to_string(), content);
         rest = &rest[size + 1..];
     }
     Ok(found)
