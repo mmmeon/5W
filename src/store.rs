@@ -611,6 +611,27 @@ fn refuse_reuse(repo: &Repo, q: &Copies, a: &Copies, ids: &[u64], next_id: u64) 
     Ok(())
 }
 
+/// An edit of a row the trunk has archived, which the checkout's queue still
+/// holds: carried onto the trunk, the row would sit in both files.
+fn refuse_archived(repo: &Repo, q: &Copies, a: &Copies, ids: &[u64]) -> Res<()> {
+    let (queue_doc, archive_doc) = (Doc::new(&q.committed), Doc::new(&a.committed));
+    match ids
+        .iter()
+        .find(|&&id| queue_doc.block(id).is_none() && archive_doc.block(id).is_some())
+    {
+        Some(&id) => Err(archived(repo, id)),
+        None => Ok(()),
+    }
+}
+
+/// The refusal for an edit of an archived row: only a hand edit brings it back.
+pub fn archived(repo: &Repo, id: u64) -> String {
+    format!(
+        "#{id} is archived; move its block from {} back to {} by hand",
+        repo.cfg.archive, repo.cfg.file
+    )
+}
+
 /// An edit worked out on every copy, before anything is written.
 struct Plan {
     message: String,
@@ -638,6 +659,7 @@ fn plan(
         next_id: texts.map(|t| queue::max_id(t)).max().unwrap_or(0) + 1,
     };
     refuse_reuse(repo, q, a, ids, ctx.next_id)?;
+    refuse_archived(repo, q, a, ids)?;
 
     let carried = carry(repo, &q.committed, q.working.as_deref(), ids);
     if let Some(&id) = ids.first() {

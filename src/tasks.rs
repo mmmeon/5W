@@ -1749,11 +1749,7 @@ fn reopen(repo: &Repo, id: &str) -> Res<()> {
     let q = Q::load(repo)?;
     let t = q.get(id)?;
     if q.is_archived(id) {
-        bail!(
-            "#{id} is archived; move its block from {} back to {} by hand",
-            repo.cfg.archive,
-            repo.cfg.file
-        );
+        return Err(store::archived(repo, id));
     }
     let section = repo.cfg.section_for(q.lane(t));
     let msg = format!("{}: reopen #{id}", repo.cfg.commit_prefix);

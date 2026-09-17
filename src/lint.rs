@@ -173,6 +173,7 @@ pub fn commits_on(
     for c in commits {
         let c = c.as_str();
         let short = &c[..c.len().min(12)];
+        merged_into_both(repo, c, short, problems)?;
         let files = git::git(
             &repo.cwd,
             &[
@@ -215,6 +216,32 @@ pub fn commits_on(
             short,
             problems,
         );
+    }
+    Ok(())
+}
+
+/// A merge changes no file against itself as git lists one, so the rows of its
+/// tree go unjudged: flag an id the merge leaves in both the queue and the
+/// archive that no parent had in both.
+fn merged_into_both(repo: &Repo, c: &str, at: &str, out: &mut Vec<String>) -> Res<()> {
+    let line = git::git(&repo.cwd, &["rev-list", "--parents", "-n", "1", c])?;
+    let parents: Vec<&str> = line.split_whitespace().skip(1).collect();
+    if parents.len() < 2 {
+        return Ok(());
+    }
+    let both = |rev: &str| -> BTreeSet<u64> {
+        let (q, a) = at_rev(repo, Some(rev)).tasks();
+        a.iter()
+            .filter(|t| q.iter().any(|x| x.id == t.id))
+            .map(|t| t.id)
+            .collect()
+    };
+    let before: BTreeSet<u64> = parents.iter().flat_map(|p| both(p)).collect();
+    for id in both(c).difference(&before) {
+        out.push(format!(
+            "{at} #{id}: in both {} and {}",
+            repo.cfg.file, repo.cfg.archive
+        ));
     }
     Ok(())
 }

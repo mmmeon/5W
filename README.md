@@ -210,7 +210,7 @@ Hand edits are checked, not trusted:
   `rework:`, and nothing else gains one. A `submitted:` or `reviewed:` written or changed is a full sha
   (a 12-digit prefix passes only in a submit or accept commit, as releases through 0.1.3 wrote them);
   a prefix is read only while it names exactly one commit, and one under 7 digits never. Closed rows are immutable except to reopen, reflow (`split`)
-  or archive; no row is deleted and no id reused; a queue edit is its own commit on the trunk. A
+  or archive; no row is deleted, no id reused and none in both files (in a merge's tree too); a queue edit is its own commit on the trunk. A
   single edit's subject (`chore(tasks): set #4 level 1`) names the only row its commit may change, and
   a batch's names exactly the rows it changes; a line rewritten to read the same is no change. Every
   commit `5w` itself makes passes it — a `reject` commit may gain `rework:` from any state, as
@@ -390,7 +390,8 @@ The queue is read by agents, so every read is priced in tokens.
   archived, and a note names it; one the checkout deleted by hand still lands in its `DONE.md` as the
   trunk has it. On a 900-task queue that took `TASKS.md` from 649 KB to 52 KB.
   Archived ids stay taken, still satisfy `needs:`, still show under `5w show`, and ship still reads
-  their `branch:` and `reviewed:`.
+  their `branch:` and `reviewed:`. `5w` edits no archived row — not even where the checkout's
+  `TASKS.md` still holds it; a reopen or edit of one says to move its block back by hand.
 - **Titles are short; detail is body.** Text over `title_max` (120) is split at the first sentence
   into a title and an indented body, by `add` and, for existing rows, by `5w split`. Lists print
   titles; `show`, `next` and `delegate` print bodies.

@@ -2341,6 +2341,46 @@ fn lint_flags_rework_gained_outside_a_reject() {
 }
 
 #[test]
+fn lint_of_a_commit_or_range_flags_an_id_in_both_files_even_from_a_merge() {
+    let r = Repo::new("lint-both");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    let closed = r.tasks();
+    r.git(&r.main, &["branch", "side"]);
+    r.ok(&r.main, &["archive"]);
+    r.lint_history();
+    let root = r.git(&r.main, &["rev-list", "--max-parents=0", "main"]);
+    let range = format!("{root}..main");
+
+    // A commit that puts the archived row back in TASKS.md.
+    std::fs::write(r.main.join("TASKS.md"), &closed).unwrap();
+    r.git(&r.main, &["commit", "-qam", "restore the row"]);
+    for args in [&["lint", "HEAD"][..], &["lint", &range]] {
+        let out = r.fails(&r.main, args);
+        assert!(out.contains("#1: in both TASKS.md and DONE.md"), "{out}");
+    }
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // A merge whose resolution does the same, changing neither file against
+    // one parent: lint reads the tree it makes, not only what it changed.
+    r.git(&r.main, &["checkout", "-q", "side"]);
+    r.commit_in(&r.main, "f", "1\n");
+    r.git(&r.main, &["checkout", "-q", "main"]);
+    r.git(
+        &r.main,
+        &["merge", "-q", "--no-commit", "-s", "ours", "side"],
+    );
+    std::fs::write(r.main.join("TASKS.md"), &closed).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    r.git(&r.main, &["commit", "-qm", "merge side"]);
+    for args in [&["lint", "HEAD"][..], &["lint", &range]] {
+        let out = r.fails(&r.main, args);
+        assert!(out.contains("#1: in both TASKS.md and DONE.md"), "{out}");
+    }
+}
+
+#[test]
 fn a_single_edit_subject_may_rewrite_its_own_row_but_changes_no_other() {
     let r = Repo::new("lint-single-subject");
     r.ok(&r.main, &["add", "first"]);
@@ -2958,6 +2998,37 @@ fn an_archive_skips_a_trunk_closed_row_the_checkout_reopened() {
     r.ok(&r.main, &["list"]);
     r.lint_history();
     r.ok(&r.main, &["lint", "--staged"]);
+}
+
+#[test]
+fn an_edit_of_a_row_archived_on_the_trunk_is_refused_even_when_the_checkout_still_has_it() {
+    let r = Repo::new("reopen-archived");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["archive"]);
+    let head = r.git(&r.main, &["rev-parse", "HEAD"]);
+    let fix = "5w: #1 is archived; move its block from DONE.md back to TASKS.md by hand\n";
+    // Archived in the checkout too: refused, naming the move back.
+    assert_eq!(r.refuses(&r.main, &["reopen", "1"]), fix);
+    // The checkout's copies still show #1 open in TASKS.md and not in DONE.md:
+    // no edit may carry the row onto the trunk beside its archived copy.
+    let tasks = r.tasks().replace("## Done", "- [ ] #1 first\n\n## Done");
+    std::fs::write(r.main.join("TASKS.md"), tasks).unwrap();
+    let done = r
+        .git(&r.main, &["show", "HEAD:DONE.md"])
+        .replace("- [x] #1 first via:self", "");
+    std::fs::write(r.main.join("DONE.md"), done).unwrap();
+    r.ok(&r.main, &["list"]);
+    for args in [
+        &["reopen", "1"][..],
+        &["open", "1"],
+        &["set", "1", "level", "2"],
+    ] {
+        assert_eq!(r.refuses(&r.main, args), fix, "{args:?}");
+    }
+    assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), head);
+    r.lint_history();
 }
 
 #[test]

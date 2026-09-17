@@ -21,7 +21,7 @@ If `5w` is installed, use it instead of editing.
   `decision` (the owner's call). A `decision` lane closes `via:decided`, every other `via:self`.
   No `>lane` means the default lane, `>agent` unless configured.
 - Open rows sit under `## Open` (or their lane's own heading); closed rows under `## Done` or in the
-  archive file `DONE.md`. Lines inside ``` fences are never rows.
+  archive file `DONE.md`, never in both. Lines inside ``` fences are never rows.
 - A `<sha>` is the full commit name, `git rev-parse <branch>`. A shorter prefix (7 or more hex
   digits) that an older row already holds still reads, while exactly one commit starts with it.
 
