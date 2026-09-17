@@ -330,7 +330,9 @@ finished is measured from the submit. Blocked time still running is measured to 
 5w wt ls | path | rm | link | install | setup
 ```
 
-Worktrees go in `worktrees.root` (default `../<repo>-wt`, or `$FIVEW_WT_ROOT`). `.worktree-links`
+Worktrees go in `worktrees.root` (default `../<repo>-wt`, or `$FIVEW_WT_ROOT`); a relative root is
+read from the primary checkout, and its `..` is resolved as written (symlinks are kept) so every path
+5w prints is clean. `.worktree-links`
 lists gitignored paths or globs to symlink in from the primary — `.env`, a dev database, large
 samples. **Links are shared, not copied**; a branch that must change one copies it. Globs expand
 file by file so a directory with tracked content is never shadowed. `node_modules` is never linked;

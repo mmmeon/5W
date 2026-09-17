@@ -1387,11 +1387,15 @@ fn worktree_paths_are_normalized() {
     // Configure the worktree root to use a relative path to trigger the normalization issue
     let config_path = r.main.join(".5w.toml");
     let mut config = std::fs::read_to_string(&config_path).unwrap();
-    config = config.replace("[worktrees]", "[worktrees]\nroot = \"../wt-rel\"");
+    config = config.replace(
+        "[worktrees]",
+        "[worktrees]\nroot = \"../wt-rel\"\ninstall = \"true\"",
+    );
     std::fs::write(&config_path, config).unwrap();
 
-    // Create a new worktree using the relative path configuration
-    let output = r.ok_with_relative_wt(&r.main, &["wt", "new", "feature/test"]);
+    // Create a new worktree using the relative path configuration; --install prints its directory
+    let output = r.ok_with_relative_wt(&r.main, &["wt", "new", "feature/test", "--install"]);
+    assert!(output.contains("(in "), "{output}");
 
     // Verify the output path is normalized (no .. components)
     assert!(
@@ -1407,6 +1411,20 @@ fn worktree_paths_are_normalized() {
         "wt path output should not contain .. components, got: {}",
         path_output
     );
+
+    // Refusals naming a directory under the root print it clean too
+    std::fs::create_dir_all(r.root.join("wt-rel/feature-fresh")).unwrap();
+    std::fs::create_dir_all(r.root.join("wt-rel/feature-taken")).unwrap();
+    r.git(&r.main, &["branch", "feature/taken"]);
+    for args in [
+        &["wt", "new", "feature/fresh"][..],
+        &["wt", "add", "feature/taken"][..],
+    ] {
+        let o = r.cli_with_relative_wt(&r.main, args);
+        let out = String::from_utf8_lossy(&o.stderr).to_string();
+        assert!(!o.status.success() && out.contains("exists"), "{out}");
+        assert!(!out.contains(".."), "{args:?}: {out}");
+    }
 }
 
 #[test]

@@ -34,6 +34,26 @@ pub struct Repo {
 
 pub const CONFIG_FILE: &str = ".5w.toml";
 
+/// Resolve `.` and `..` components without touching the filesystem.
+fn normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 impl Repo {
     pub fn open() -> Res<Repo> {
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
@@ -148,11 +168,18 @@ impl Repo {
         Ok(self.load_file(&self.cfg.archive)?.unwrap_or_default())
     }
 
-    /// Worktree root for new branches.
+    /// Worktree root for new branches, with `.` and `..` resolved lexically so every path
+    /// printed under it is clean. Lexical, not `fs::canonicalize`: symlinks stay as written.
     pub fn wt_root(&self) -> PathBuf {
-        if let Some(r) = std::env::var_os("FIVEW_WT_ROOT") {
-            return PathBuf::from(r);
-        }
+        let root = if let Some(r) = std::env::var_os("FIVEW_WT_ROOT") {
+            PathBuf::from(r)
+        } else {
+            self.configured_wt_root()
+        };
+        normalize(&root)
+    }
+
+    fn configured_wt_root(&self) -> PathBuf {
         match &self.cfg.wt_root {
             Some(r) if Path::new(r).is_absolute() => PathBuf::from(r),
             Some(r) => self.primary.join(r),
