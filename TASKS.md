@@ -31,7 +31,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Whether to put an interface over #16's named operations (trunk tip, queue commit + CAS ref update, worktree add/rm/ls, rebase onto, diff fingerprint, parent record, dirty, ref validation, signing), which system is second (jj the obvious candidate), and whether git-town's config keys stay the parent record.
 - [ ] #22 JSON list rows: trim to id, state, level, area, title, branch by default; --full for the rest @output !2 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 2: rows carry 11 fields today.
-- [ ] #23 opts(): refuse a flag a command does not understand instead of silently accepting it @output !2 needs:#13
+- [~] #23 opts(): refuse a flag a command does not understand instead of silently accepting it @output !2 needs:#13 branch:output/task-23 submitted:eaace9e5fe2e
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. 5w ready --bogus exits 0 because opts() pushes unknown flags into o.flags. Refusal one line naming the fix.
 - [ ] #27 Color: disable for TERM=dumb and add an explicit --no-color flag @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. Sty::new() checks only isatty and NO_COLOR; --no-color is swallowed today by the opts() unknown-flag bug.
