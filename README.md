@@ -450,8 +450,9 @@ gives (rename in a later commit), and its queue edits are checked as any.
 
 In a checkout, the repair goes through the queue like any change. When the trunk's committed
 `.5w.toml` is what is broken (not an edit in the trunk's working copy), the queue commands, `wt`
-and `ship` read the newest config on the trunk's first-parent line that 5w accepts, with the queue
-file, archive and commit prefix as the server reads them, and `gate_trunk` and `require_task` on
+and `ship` read the newest config on the trunk's first-parent line that 5w accepts, with the trunk,
+queue file, archive and commit prefix as the server reads them (from the newest config that parses,
+even one 5w rejects; a name it does not give is the default), and `gate_trunk` and `require_task` on
 unless the config says `false`; they note on stderr that the trunk's config is broken — upgrade
 5w (the key may be a newer one's), or ship the repair. So `add`, `wt new`, `submit`, `accept` and
 `ship` land the reviewed repair with its landing record, and one push of the trunk (with

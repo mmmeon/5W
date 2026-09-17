@@ -6814,6 +6814,78 @@ fn a_gated_trunk_whose_config_broke_lands_its_repair_through_5w() {
 }
 
 #[test]
+fn a_repair_after_two_renaming_breaks_is_landed_under_the_names_the_server_reads() {
+    let r = Repo::new("config-two-breaks");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+        .unwrap()
+        .replace("gate_trunk = false", "gate_trunk = true");
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+    let server = server_of(&r);
+    let hook = server.join("hooks/pre-receive");
+    let unhooked = |msg: &str| {
+        r.git(&r.main, &["commit", "-qam", msg]);
+        std::fs::rename(&hook, server.join("hook-off")).unwrap();
+        assert!(push_to(&r, &["main"]).0);
+        std::fs::rename(server.join("hook-off"), &hook).unwrap();
+    };
+    // The names the gate reads from here on.
+    let renamed = cfg
+        .replace("file = \"TASKS.md\"", "file = \"QUEUE.md\"")
+        .replace(
+            "commit_prefix = \"chore(tasks)\"",
+            "commit_prefix = \"chore(queue)\"",
+        );
+    assert!(renamed.contains("QUEUE.md") && renamed.contains("chore(queue)"));
+    // First break: it parses, 5w rejects a key, and it renames the queue.
+    let first = renamed.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n");
+    assert_ne!(first, renamed);
+    std::fs::write(r.main.join(".5w.toml"), &first).unwrap();
+    r.git(&r.main, &["mv", "TASKS.md", "QUEUE.md"]);
+    unhooked("break the config, rename the queue");
+    // Second break: past parsing, so the rename it spells says nothing.
+    let second = first
+        .replace("QUEUE.md", "Q2.md")
+        .replace("title_max = 120", "title_max = = 1");
+    assert!(second.contains("Q2.md") && second.contains("= = 1"));
+    std::fs::write(r.main.join(".5w.toml"), &second).unwrap();
+    unhooked("break the syntax too");
+
+    // The client reads the queue by the names the server does.
+    r.ok(&r.main, &["add", "repair the config"]);
+    let queue = std::fs::read_to_string(r.main.join("QUEUE.md")).unwrap();
+    assert!(queue.contains("repair the config"), "{queue}");
+    assert!(!r.main.join("TASKS.md").exists());
+    r.ok(&r.main, &["wt", "new", "f/fix"]);
+    // The broken-config note goes to stderr: the path is stdout.
+    let o = r.cli(&r.main, &["wt", "path", "f/fix"]);
+    let fix = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+    r.commit_in(&fix, ".5w.toml", &renamed);
+    r.ok(&r.main, &["submit", "1", "f/fix"]);
+    r.ok(&r.main, &["accept", "1"]);
+    let out = r.ok(&r.main, &["ship", "f/fix", "--sync"]);
+    assert!(out.contains("landing of #1 recorded"), "{out}");
+    let subject = r.git(&r.main, &["log", "-1", "--format=%s", "main"]);
+    assert!(subject.starts_with("chore(queue): land #1"), "{subject}");
+    let queue = std::fs::read_to_string(r.main.join("QUEUE.md")).unwrap();
+    let reviewed = queue
+        .lines()
+        .find(|l| l.contains("] #1 "))
+        .and_then(|l| {
+            l.split_whitespace()
+                .find_map(|w| w.strip_prefix("reviewed:"))
+        })
+        .unwrap_or_else(|| panic!("{queue}"))
+        .to_string();
+    let (ok, err) = push_to(&r, &["main", &format!("{reviewed}:refs/5w/reviewed/1")]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        r.git(&server, &["rev-parse", "main"]),
+        r.git(&r.main, &["rev-parse", "main"])
+    );
+}
+
+#[test]
 fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
     let r = Repo::new("config-bricked-x");
     let server = server_of(&r);

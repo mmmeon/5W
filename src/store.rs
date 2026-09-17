@@ -136,6 +136,32 @@ pub(crate) fn said(
     says(&text).flatten()
 }
 
+/// The trunk and the names the gate tells queue edits and landings by, for a
+/// trunk config `text` that `from_toml` refuses on commit `tip`: one resolution,
+/// so a server judges by the names a checkout's repair records under. What the
+/// text says where it parses, as the config reads it (the last key winning);
+/// text that does not parse says nothing, and the trunk's last config that does
+/// speaks for it (even one 5w rejects); a name no such text gives is the default.
+/// The rest of the returned config is the defaults.
+pub(crate) fn broken_names(dir: &Path, text: &str, tip: Option<&str>) -> Config {
+    let kv = crate::config::parse_toml(text)
+        .ok()
+        .or_else(|| {
+            tip.and_then(|t| last_readable_config(dir, t))
+                .and_then(|t| crate::config::parse_toml(&t).ok())
+        })
+        .unwrap_or_default();
+    let said = |key: &str| said(dir, &kv, tip, key);
+    let d = Config::default();
+    Config {
+        trunk: said("trunk"),
+        file: said("file").unwrap_or(d.file.clone()),
+        archive: said("archive").unwrap_or(d.archive.clone()),
+        commit_prefix: said("commit_prefix").unwrap_or(d.commit_prefix.clone()),
+        ..d
+    }
+}
+
 /// How `open` meets a trunk config that does not parse.
 #[derive(Clone, Copy, PartialEq)]
 enum Broken {
@@ -155,11 +181,11 @@ pub fn repair_fix() -> &'static str {
 }
 
 /// A checkout's config over a trunk commit whose `.5w.toml` does not parse: the
-/// newest one on its first-parent line that does, with the names and the
-/// `gate_trunk` and `require_task` settings read as the server's gate reads them
-/// (failing closed). None: a server, no such trunk commit, a working copy that
-/// differs from it (fixed in place), a `requires` newer than this 5w, or no
-/// config on the line that reads.
+/// newest one on its first-parent line that does, with the names (`broken_names`,
+/// the server's own resolution) and the `gate_trunk` and `require_task` settings
+/// read as the server's gate reads them (failing closed). None: a server, no
+/// such trunk commit, a working copy that differs from it (fixed in place), a
+/// `requires` newer than this 5w, or no config on the line that reads.
 fn repair_config(primary: &Path, trunk: &str, bare: bool) -> Option<Config> {
     if bare {
         return None;
@@ -184,16 +210,14 @@ fn repair_config(primary: &Path, trunk: &str, bare: bool) -> Option<Config> {
         return None;
     }
     let base = last_config_where(primary, &tip, |t| Config::from_toml(t).is_ok())?;
-    let mut cfg = Config::from_toml(&base).ok()?;
-    let kv = crate::config::parse_toml(&text)
-        .ok()
-        .or_else(|| crate::config::parse_toml(&base).ok())
-        .unwrap_or_default();
-    let said = |key: &str| said(primary, &kv, Some(&tip), key);
-    cfg.trunk = said("trunk").or(cfg.trunk);
-    cfg.file = said("file").unwrap_or(cfg.file);
-    cfg.archive = said("archive").unwrap_or(cfg.archive);
-    cfg.commit_prefix = said("commit_prefix").unwrap_or(cfg.commit_prefix);
+    let names = broken_names(primary, &text, Some(&tip));
+    let mut cfg = Config {
+        trunk: names.trunk,
+        file: names.file,
+        archive: names.archive,
+        commit_prefix: names.commit_prefix,
+        ..Config::from_toml(&base).ok()?
+    };
     cfg.gate_trunk = crate::ci::setting_on(primary, Some(&tip), "gate_trunk");
     cfg.require_task = crate::ci::setting_on(primary, Some(&tip), "require_task");
     Some(cfg)
@@ -327,34 +351,13 @@ impl Repo {
                 },
                 Err(e) if mode == Broken::Judge => {
                     broken = Some(e);
-                    // What the text says where it can be read, as the config reads
-                    // it (the last key winning): the trunk, and the names the gate
-                    // tells queue edits and landings by. A repair must not rename them.
-                    // Text that does not parse says nothing: the trunk's last config
-                    // that does, else the defaults.
                     let tip = [
                         format!("refs/heads/{guess}"),
                         format!("refs/remotes/origin/{guess}"),
                     ]
                     .iter()
                     .find_map(|r| git::rev(&primary, r));
-                    let kv = crate::config::parse_toml(&s)
-                        .ok()
-                        .or_else(|| {
-                            tip.as_deref()
-                                .and_then(|t| last_readable_config(&primary, t))
-                                .and_then(|text| crate::config::parse_toml(&text).ok())
-                        })
-                        .unwrap_or_default();
-                    let said = |key: &str| said(&primary, &kv, tip.as_deref(), key);
-                    let d = Config::default();
-                    Config {
-                        trunk: said("trunk"),
-                        file: said("file").unwrap_or(d.file.clone()),
-                        archive: said("archive").unwrap_or(d.archive.clone()),
-                        commit_prefix: said("commit_prefix").unwrap_or(d.commit_prefix.clone()),
-                        ..d
-                    }
+                    broken_names(&primary, &s, tip.as_deref())
                 }
                 Err(e) => return Err(e),
             },
