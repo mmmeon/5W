@@ -997,6 +997,30 @@ fn lint_flags_rework_gained_outside_a_reject() {
     r.ok(&r.main, &["lint", "HEAD"]);
     hand_edit(&r, "rework:\"bad\"", "rework:\"worse\"");
     r.ok(&r.main, &["lint"]);
+    r.git(&r.main, &["reset", "-q", "--hard"]);
+
+    // Released versions through 0.1.3 let `5w reject` send back an open task:
+    // that commit is the tool's, and a range lint of old history passes it.
+    r.ok(&r.main, &["add", "third"]);
+    hand_edit(&r, "- [ ] #3 third", "- [ ] #3 third rework:\"old\"");
+    r.git(&r.main, &["commit", "-qm", "chore(tasks): reject #3"]);
+    r.lint_history();
+    // The same edit under any other message is a hand edit, and a range names it.
+    r.ok(&r.main, &["add", "fourth"]);
+    hand_edit(&r, "- [ ] #4 fourth", "- [ ] #4 fourth rework:\"old\"");
+    r.git(&r.main, &["commit", "-qm", "chore(tasks): note #4"]);
+    let out = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(out.contains("#4: gained rework:"), "{out}");
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // A new row cannot arrive with a reason either.
+    hand_edit(
+        &r,
+        "- [ ] #4 fourth",
+        "- [ ] #4 fourth\n- [ ] #5 new rework:\"x\"",
+    );
+    let out = r.fails(&r.main, &["lint"]);
+    assert!(out.contains("#5: a new row carries rework:"), "{out}");
 }
 
 #[test]

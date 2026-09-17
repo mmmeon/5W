@@ -86,7 +86,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 queue: show_index(repo, &repo.cfg.file),
                 archive: show_index(repo, &repo.cfg.archive),
             };
-            check(&repo.cfg, repo, &old, &new, "staged", &mut problems);
+            check(&repo.cfg, repo, &old, &new, None, "staged", &mut problems);
         }
         range => {
             let commits = if range.contains("..") {
@@ -153,7 +153,16 @@ pub fn commits_on(
         let parent = git::rev(&repo.cwd, &format!("{c}^"));
         let old = at_rev(repo, parent.as_deref());
         let new = at_rev(repo, Some(c));
-        check(&repo.cfg, repo, &old, &new, short, problems);
+        let subject = git::git(&repo.cwd, &["log", "-1", "--format=%s", c])?;
+        check(
+            &repo.cfg,
+            repo,
+            &old,
+            &new,
+            Some(subject.trim()),
+            short,
+            problems,
+        );
     }
     Ok(())
 }
@@ -164,6 +173,7 @@ pub fn check_texts(
     repo: &Repo,
     old: [String; 2],
     new: [String; 2],
+    subject: &str,
     at: &str,
     out: &mut Vec<String>,
 ) {
@@ -171,7 +181,7 @@ pub fn check_texts(
     let old = Snap { queue, archive };
     let [queue, archive] = new;
     let new = Snap { queue, archive };
-    check(&repo.cfg, repo, &old, &new, at, out);
+    check(&repo.cfg, repo, &old, &new, Some(subject), at, out);
 }
 
 fn show_index(repo: &Repo, name: &str) -> String {
@@ -262,7 +272,20 @@ fn is_sha(s: Option<&str>) -> bool {
     s.is_some_and(|s| s.len() >= 7 && s.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-fn check(cfg: &Config, repo: &Repo, old: &Snap, new: &Snap, at: &str, out: &mut Vec<String>) {
+/// `subject` is the commit's subject line, when there is a commit: a commit
+/// `5w reject` made is let gain `rework:` from any state, because released
+/// versions through 0.1.3 rejected open and closed tasks, and lint passes every
+/// commit the tool made. The staged edit has no subject, so a hand edit is
+/// always judged.
+fn check(
+    cfg: &Config,
+    repo: &Repo,
+    old: &Snap,
+    new: &Snap,
+    subject: Option<&str>,
+    at: &str,
+    out: &mut Vec<String>,
+) {
     let (oq, oa) = old.tasks();
     let (nq, na) = new.tasks();
     let mut say = |id: u64, m: String| out.push(format!("{at} #{id}: {m}"));
@@ -358,6 +381,12 @@ fn check(cfg: &Config, repo: &Repo, old: &Snap, new: &Snap, at: &str, out: &mut 
                     "a new row is open, with no via:, submitted: or reviewed:".into(),
                 );
             }
+            if n.rework.is_some() {
+                say(
+                    id,
+                    "a new row carries rework: — only a reject adds one".into(),
+                );
+            }
             continue;
         };
 
@@ -366,6 +395,7 @@ fn check(cfg: &Config, repo: &Repo, old: &Snap, new: &Snap, at: &str, out: &mut 
             && n.rework.is_some()
             && n.state != State::Done
             && (o.state, n.state) != (State::Review, State::Open)
+            && subject != Some(format!("{}: reject #{id}", cfg.commit_prefix).as_str())
         {
             say(id, "gained rework: outside a reject ([~]→[ ])".into());
         }

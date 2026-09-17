@@ -520,6 +520,7 @@ fn replay(repo: &Repo, trunk_ref: &str, since: &Since) -> Res<(Found, HashMap<u6
                 repo,
                 old,
                 [fs[0].text(), fs[1].text()],
+                &c.subject,
                 short(&c.sha),
                 &mut lint,
             );

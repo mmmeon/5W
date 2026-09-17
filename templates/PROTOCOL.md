@@ -27,7 +27,7 @@ If `5w` is installed, use it instead of editing.
 
 | Change | Mark | The row must |
 |---|---|---|
-| Add | new `[ ]` | take an id greater than every id in `TASKS.md` and `DONE.md`, fenced ones included; carry no `via:`, `submitted:` or `reviewed:` |
+| Add | new `[ ]` | take an id greater than every id in `TASKS.md` and `DONE.md`, fenced ones included; carry no `via:`, `submitted:`, `reviewed:` or `rework:` |
 | Submit (whoever did the work) | `[ ]`→`[~]` | gain `branch:` and `submitted:` = that branch's tip. The branch has no uncommitted work |
 | Accept (the reviewer) | `[~]`→`[x]` | gain `via:review` and `reviewed:` = the commit you reviewed; lose `rework:`; move to `## Done` |
 | Reject (the reviewer) | `[~]`→`[ ]` | gain `rework:"why"`; lose `submitted:` |
