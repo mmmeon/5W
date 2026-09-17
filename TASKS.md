@@ -24,9 +24,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   About 50 call sites in 10 modules pass raw git arguments (ship 12, wt 11, lint 5, queue 4, store 3). Move each into a named function in src/git.rs. No behaviour change: tests/flow.rs and the #14 bench baseline prove it. Groundwork for the admin commands and a version-control shim.
 - [ ] #17 wt prune: remove worktrees and branches with no commits past their parent, no changes, and no task naming them @wt !2
   Lists what it would remove; --yes removes. Found in the 2026-09-16 supervisor round: test/branch, test/check-normalization, test/check-without-fix, test/normalize-paths needed raw git worktree remove and git branch -D. wt rm keeps the branch. Admin chores belong in 5w, not raw git.
-- [~] #18 doctor: name a trunk checkout holding an exact copy of a branch's diff @doctor !1 rework:"discard-copy still loses data: refuse paths starting with a double quote or containing CR (hash-object --stdin-paths misreads them), and refuse when anything exists on disk (e.g. ignored dir/file) where the branch deletes a path" branch:doctor/task-18 submitted:1ac01d00671a
-  with a command that restores those files only on an exact match
-  Found 2026-09-16: main held uncommitted src/wt.rs and tests/flow.rs identical to wt/task-6's diff, which blocks ship. Restoring must refuse unless the working changes equal the branch diff byte for byte.
 - [ ] #19 Batch accept (accept 4 5 6) and ship --accepted: land every accepted branch bottom of stack first @queue !2
   stop at the first refusal
   A supervisor round of 8 accepted tasks meant 8 accepts and 8 ships with the stack order (#12 before #13, #14 before #15) worked out by hand. Each accept keeps its own checks; ship --accepted keeps every ship refusal.
@@ -94,3 +91,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. add/submit/accept/reject --help print the ~40-line USAGE; wt/ship/lint/ci/report already have their own.
 - [x] #38 reject accepts a task that was never submitted: PROTOCOL.md allows reject only from [~] @queue !1 branch:queue/task-38 submitted:cfd866abdd3e via:review reviewed:cfd866abdd3e
   Found reviewing #25: in a scratch repo, 5w reject 1 <reason> on an open [ ] task succeeded. PROTOCOL.md's transition table has Reject as [~] to [ ] only. Refuse in one line naming the state (e.g. '#1 is open, not submitted: nothing to reject'); check lint's transition rules agree; test it.
+- [x] #18 doctor: name a trunk checkout holding an exact copy of a branch's diff @doctor !1 branch:doctor/task-18 submitted:1ac01d00671a via:review reviewed:1ac01d00671a
+  with a command that restores those files only on an exact match
+  Found 2026-09-16: main held uncommitted src/wt.rs and tests/flow.rs identical to wt/task-6's diff, which blocks ship. Restoring must refuse unless the working changes equal the branch diff byte for byte.
