@@ -22,7 +22,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4
 - [ ] #16 Move git calls behind named operations in src/git.rs: no raw git argv outside it, output unchanged @vcs !3
   About 50 call sites in 10 modules pass raw git arguments (ship 12, wt 11, lint 5, queue 4, store 3). Move each into a named function in src/git.rs. No behaviour change: tests/flow.rs and the #14 bench baseline prove it. Groundwork for the admin commands and a version-control shim.
-- [ ] #17 wt prune: remove worktrees and branches with no commits past their parent, no changes, and no task naming them @wt !2
+- [~] #17 wt prune: remove worktrees and branches with no commits past their parent, no changes, and no task naming them @wt !2 branch:wt/task-17 submitted:4dafc20b1f5b
   Lists what it would remove; --yes removes. Found in the 2026-09-16 supervisor round: test/branch, test/check-normalization, test/check-without-fix, test/normalize-paths needed raw git worktree remove and git branch -D. wt rm keeps the branch. Admin chores belong in 5w, not raw git.
 - [ ] #19 Batch accept (accept 4 5 6) and ship --accepted: land every accepted branch bottom of stack first @queue !2
   stop at the first refusal
