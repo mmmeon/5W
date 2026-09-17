@@ -49,6 +49,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Owner wish (2026-09-16): in git history the closure and the merge should be one commit. Today it cannot be: PROTOCOL.md says a queue edit is its own commit touching only TASKS.md/DONE.md, and lint --staged, the pre-commit hook and pre-receive refuse a commit that mixes the queue with code; accept must also precede ship, which checks it. Options: (a) ship --squash folds the accept row into the landing commit, and the protocol allows exactly that shape (one row going [~] to [x] via:review with reviewed: equal to the squashed tree's source); (b) keep separate commits but have ship write the landing sha into the row (landed:<sha>) so history links them; (c) leave as is. (a) weakens the queue-commit-alone guarantee that keeps peer rows and code apart; (b) keeps it. Skipped for the current queue run; commits there stay separate.
 - [ ] #41 wt prune: keep any <area>/task-<id> branch of an open task, not only the currently suggested name @wt !1
   Found reviewing #17: after 5w set <id> area <new>, the untouched <old>/task-<id> worktree is listed for removal because the suggestion changed. Keep any branch whose last component is task-<id> for a task not closed; test with set area after wt new.
+- [ ] #42 FIVEW_WT_ROOT set but empty puts worktrees inside the primary checkout: treat empty as unset @wt !1
+  Found reviewing #37: FIVEW_WT_ROOT="" counts as set, so Repo::wt_root() joins '' onto the primary and worktrees land at <primary>/<slug>, inside the repository. Treat an empty value as unset (fall back to worktrees.root / the default); test it.
 
 ## Done
 
