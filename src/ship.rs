@@ -193,10 +193,12 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
 
     // --- the review gate, read from the trunk's committed queue ------------------------
     let committed = repo.committed()?.ok_or_else(|| {
-        format!(
-            "{trunk} has no {} — refusing to guess what is reviewed",
-            repo.cfg.file
-        )
+        repo.origin_only_fix().unwrap_or_else(|| {
+            format!(
+                "{trunk} has no {} — refusing to guess what is reviewed",
+                repo.cfg.file
+            )
+        })
     })?;
     // Archived rows count: an accepted task moved out by `archive` still
     // authorises its branch, and still records what was reviewed.

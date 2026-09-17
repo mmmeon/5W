@@ -1154,6 +1154,15 @@ fn a_clone_without_a_local_trunk_reads_origin_and_names_the_branch_fix() {
     let msg = origin.refuses(&c, &["add", "y"]);
     assert!(!msg.contains("init"), "{msg}");
     assert!(msg.contains("git branch master origin/master"), "{msg}");
+    // Submitting and shipping a branch name the same fix, in one line.
+    origin.git(&c, &["branch", "f/x", "origin/master"]);
+    for args in [&["submit", "1", "f/x"][..], &["ship", "f/x"]] {
+        let msg = origin.refuses(&c, args);
+        assert!(
+            msg.contains("git branch master origin/master"),
+            "{args:?}: {msg}"
+        );
+    }
     origin.git(&c, &["branch", "master", "origin/master"]);
     origin.ok(&c, &["add", "y"]);
     assert!(origin.git(&c, &["show", "master:TASKS.md"]).contains("y"));

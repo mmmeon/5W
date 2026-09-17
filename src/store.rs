@@ -317,7 +317,7 @@ impl Repo {
     }
 
     /// The fix for a trunk that exists only as origin's, when it does.
-    fn origin_only_fix(&self) -> Option<String> {
+    pub fn origin_only_fix(&self) -> Option<String> {
         let t = &self.trunk;
         (!self.local_trunk()
             && git::rev(&self.primary, &format!("refs/remotes/origin/{t}")).is_some())

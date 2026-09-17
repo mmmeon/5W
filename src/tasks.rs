@@ -1382,10 +1382,17 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
 /// Submit `t` as `branch` at `tip`: the commit `submit` and `ci --event submit` share.
 pub fn submit_at(repo: &Repo, t: &Task, branch: &str, tip: &str) -> Res<()> {
     let id = t.id;
+    if let Some(fix) = repo.origin_only_fix() {
+        bail!("{fix}");
+    }
     let branch = branch.to_string();
     let ahead = git::git(
         &repo.primary,
-        &["rev-list", "--count", &format!("{}..{tip}", repo.trunk)],
+        &[
+            "rev-list",
+            "--count",
+            &format!("refs/heads/{}..{tip}", repo.trunk),
+        ],
     )?;
     if ahead == "0" {
         eprintln!("warning: {branch} has nothing {} lacks", repo.trunk);
