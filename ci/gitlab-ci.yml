@@ -76,7 +76,7 @@
 # - Turn on "Remove all approvals when commits are added": GitLab records who
 #   approved, not which commit, so an approval must not survive a push. The job
 #   refuses to accept while that setting is off.
-# - An approval counts only if given after the current head arrived (the versions
+# - An approval counts only if given after the current head last arrived (versions
 #   API), by someone with at least Developer access who neither opened the merge
 #   request nor authored or committed its commits (by the emails GitLab shows the
 #   token); a merge request with changes requested is not accepted.
@@ -122,8 +122,20 @@
       rm -rf "$tmp"
   script:
     - |
-      set -eu
-      api() { curl -fsS --header "PRIVATE-TOKEN: $FIVEW_QUEUE_TOKEN" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/$1"; }
+      set -eu -o pipefail
+      # The token goes to curl on stdin, never in its arguments.
+      api() { printf 'PRIVATE-TOKEN: %s\n' "$FIVEW_QUEUE_TOKEN" | curl -fsS -H @- "$CI_API_V4_URL/projects/$CI_PROJECT_ID/$1"; }
+      # Every page of a list, as one array; $1 ends in ? or &. Stops at an empty page.
+      # A failed page fails the list: a partial one could hide a version or a commit.
+      pages() {
+        n=1; out=
+        while :; do
+          r=$(api "${1}per_page=100&page=$n") || return 1
+          [ "$(printf '%s' "$r" | jq length)" != 0 ] || break
+          out="$out$r"; n=$((n + 1))
+        done
+        printf '%s' "$out" | jq -s 'add // []'
+      }
       trunk=$CI_DEFAULT_BRANCH
       [ "$(api approvals | jq -r .reset_approvals_on_push)" = true ] \
         || { echo "5w: turn on \"Remove all approvals when commits are added\" before accepting from CI" >&2; exit 1; }
@@ -139,24 +151,19 @@
       # ISO 8601 times as epoch seconds, fractions and offsets allowed.
       epoch='sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601'
       status=0
-      page=1
-      while :; do
-        mrs=$(api "merge_requests?state=opened&target_branch=$trunk&per_page=100&page=$page" \
-          | jq -r --argjson p "$CI_PROJECT_ID" '.[] | select(.source_project_id == $p) | .iid')
-        [ -n "$mrs" ] || break
-        all="${all:-} $mrs"
-        page=$((page + 1))
-      done
-      for mr in ${all:-}; do
+      all=$(pages "merge_requests?state=opened&target_branch=$trunk&" \
+        | jq -r --argjson p "$CI_PROJECT_ID" '.[] | select(.source_project_id == $p) | .iid')
+      for mr in $all; do
         m=$(api "merge_requests/$mr")
         head=$(printf '%s' "$m" | jq -r .sha); branch=$(printf '%s' "$m" | jq -r .source_branch)
         author=$(printf '%s' "$m" | jq -r .author.id)
-        # When the current head arrived: an approval from before it is of an older commit,
-        # whatever the approval reset has caught up with.
-        since=$(api "merge_requests/$mr/versions" | jq -r --arg h "$head" \
-          "[.[] | select(.head_commit_sha == \$h) | .created_at | $epoch] | min // empty")
+        # When the current head last arrived: an approval from before that is of another
+        # commit, whatever the approval reset has caught up with — even when a force-push
+        # brought back a head seen before.
+        since=$(pages "merge_requests/$mr/versions?" | jq -r --arg h "$head" \
+          "[.[] | select(.head_commit_sha == \$h) | .created_at | $epoch] | max // empty")
         # Emails of whoever wrote or committed the change: they do not approve it.
-        makers=$(api "merge_requests/$mr/commits?per_page=100" \
+        makers=$(pages "merge_requests/$mr/commits?" \
           | jq -c '[.[] | .author_email, .committer_email | select(. != null) | ascii_downcase] | unique')
         approver=
         if [ "$(printf '%s' "$m" | jq -r .detailed_merge_status)" = requested_changes ]; then

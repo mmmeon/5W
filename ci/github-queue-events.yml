@@ -86,8 +86,9 @@ jobs:
       - name: submit, and accept an approval of the tip
         env:
           FIVEW_PUSH_TOKEN: ${{ secrets.FIVEW_PUSH_TOKEN }}
+        shell: bash
         run: |
-          set -eu
+          set -eu -o pipefail
           # git with a token for this one command: in its environment, not its
           # arguments, and never stored in the clone (checkout stored none).
           git_as() (
