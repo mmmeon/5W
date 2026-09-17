@@ -384,10 +384,25 @@ impl Repo {
             return None;
         }
         let fix = format!("{CONFIG_FILE} on {t} is broken ({e}) — {}", repair_fix());
-        // A conflicting merge lands nothing: the repair must merge cleanly.
-        let Some(tree) = git::opt(p, &["merge-tree", "--write-tree", &trunk, tip])
-            .and_then(|o| o.lines().next().map(String::from))
+        // A conflicting merge lands nothing: a repair must merge cleanly, so one
+        // that conflicts (typically forked before the break) is rebased first.
+        let Ok(merged) = git::raw(p, &["merge-tree", "--write-tree", &trunk, tip], &[], None)
         else {
+            return Some(fix);
+        };
+        if !merged.ok {
+            let repairs = git::opt(p, &["merge-base", &trunk, tip]).is_some_and(|base| {
+                !git::ok(p, &["diff", "--quiet", &base, tip, "--", CONFIG_FILE])
+            });
+            return Some(if repairs {
+                format!(
+                    "{CONFIG_FILE} on {t} is broken ({e}) — the repair conflicts with {t}; rebase it onto {t}"
+                )
+            } else {
+                fix
+            });
+        }
+        let Some(tree) = merged.stdout.lines().next().map(String::from) else {
             return Some(fix);
         };
         let cfg = match show(&tree) {

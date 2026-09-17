@@ -6534,6 +6534,16 @@ fn a_gated_trunk_whose_config_broke_lands_its_repair_through_5w() {
         r.ok(&r.main, &["add", "early code"]);
         r.ok(&r.main, &["wt", "new", "f/early"]);
         r.commit_in(&path("f/early"), "early.txt", "x\n");
+        // And a repair started before the break, whose edit conflicts with it.
+        r.ok(&r.main, &["add", "early repair"]);
+        r.ok(&r.main, &["wt", "new", "f/stale"]);
+        let stale = if syntax {
+            cfg.replace("title_max = 120", "title_max = 100")
+        } else {
+            cfg.replace("[sections]\n", "[sections]\n# repaired\n")
+        };
+        assert_ne!(stale, cfg);
+        r.commit_in(&path("f/stale"), ".5w.toml", &stale);
         let broken = if syntax {
             cfg.replace("title_max = 120", "title_max = = 1")
         } else {
@@ -6568,13 +6578,14 @@ fn a_gated_trunk_whose_config_broke_lands_its_repair_through_5w() {
         );
         for (id, b) in [
             ("1", "f/early"),
-            ("2", "f/fix"),
-            ("3", "f/code"),
-            ("4", "f/rename"),
+            ("2", "f/stale"),
+            ("3", "f/fix"),
+            ("4", "f/code"),
+            ("5", "f/rename"),
         ] {
             r.ok(&r.main, &["submit", id, b]);
         }
-        r.ok(&r.main, &["accept", "1", "2", "3", "4"]);
+        r.ok(&r.main, &["accept", "1", "2", "3", "4", "5"]);
         // Lint still reports the broken config, and says nothing of the repair open.
         assert!(
             !r.fails(&r.main, &["lint"])
@@ -6594,6 +6605,14 @@ fn a_gated_trunk_whose_config_broke_lands_its_repair_through_5w() {
                 "{err}"
             );
         }
+        // A repair whose merge conflicts lands nothing: rebasing it is the fix.
+        let err = r.refuses(&r.main, &["ship", "f/stale", "--sync"]);
+        assert!(
+            err.contains(".5w.toml on main is broken")
+                && err.contains("rebase it onto main")
+                && !err.contains("ship the repair"),
+            "{err}"
+        );
         // Nor a repair that renames what the gate reads the queue by.
         let err = r.refuses(&r.main, &["ship", "f/rename", "--sync"]);
         assert!(
@@ -6605,26 +6624,27 @@ fn a_gated_trunk_whose_config_broke_lands_its_repair_through_5w() {
         // The gate still reads as on: the landing is recorded, and the server takes it.
         let out = r.ok(&r.main, &["ship", "--accepted", "--sync"]);
         assert!(
-            out.contains("landing of #2 recorded")
+            out.contains("landing of #3 recorded")
                 && out.contains("again ships the rest")
-                && !out.contains("landing of #1"),
+                && !out.contains("landing of #1")
+                && !out.contains("landing of #2"),
             "{out}"
         );
         assert_eq!(r.git(&r.main, &["show", "main:.5w.toml"]), cfg.trim_end());
         let reviewed = r
-            .line(2)
+            .line(3)
             .split_whitespace()
             .find_map(|w| w.strip_prefix("reviewed:"))
             .unwrap()
             .to_string();
-        let (ok, err) = push_to(&r, &["main", &format!("{reviewed}:refs/5w/reviewed/2")]);
+        let (ok, err) = push_to(&r, &["main", &format!("{reviewed}:refs/5w/reviewed/3")]);
         assert!(ok, "{err}");
         assert_eq!(
             r.git(&server, &["rev-parse", "main"]),
             r.git(&r.main, &["rev-parse", "main"])
         );
         // Repaired, 5w opens as before and the rest ships normally.
-        for (b, id) in [("f/early", 1), ("f/code", 3)] {
+        for (b, id) in [("f/early", 1), ("f/code", 4)] {
             let out = r.ok(&r.main, &["ship", b, "--sync"]);
             assert!(
                 out.contains(&format!("landing of #{id} recorded")) && !out.contains("broken"),

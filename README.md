@@ -455,7 +455,8 @@ unless the config says `false`; they note on stderr that the trunk's config is b
 `refs/5w/reviewed/<id>` when the server lacks the reviewed commit) takes it. `ship` judges what
 would land — the branch merged onto the trunk — and refuses it unless its `.5w.toml` parses (or is
 gone) and keeps the trunk's queue file, archive and commit prefix (rename in a later commit): a
-branch from before the break, which still commits the old config, is not a repair. `ship
+branch from before the break, which still commits the old config, is not a repair; a repair whose
+merge conflicts with the trunk lands nothing, and is refused naming the rebase onto the trunk. `ship
 --accepted` ships the repair first and stops after it, so the trunk is pushed with the repair
 alone. `lint` (but for the repair commit, see `lint --staged`), `audit`, `doctor`, `hook`,
 `update-files` and a `requires` newer than this 5w still refuse on the broken config.
