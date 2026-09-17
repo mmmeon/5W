@@ -2258,6 +2258,16 @@ impl Releases {
     }
 
     fn run(&self, cwd: &Path, path: &str, args: &[&str]) -> (bool, String) {
+        self.run_with(cwd, path, args, &[])
+    }
+
+    fn run_with(
+        &self,
+        cwd: &Path,
+        path: &str,
+        args: &[&str],
+        extra: &[(&str, &str)],
+    ) -> (bool, String) {
         let o = Command::new(&self.exe)
             .args(args)
             .current_dir(cwd)
@@ -2270,6 +2280,7 @@ impl Releases {
                 format!("file://{}", self.root.join("releases").display()),
             )
             .env("FIVEW_RELEASE_KEY", self.root.join("key.asc"))
+            .envs(extra.iter().copied())
             .output()
             .unwrap();
         let out = format!(
@@ -2278,6 +2289,22 @@ impl Releases {
             String::from_utf8_lossy(&o.stderr)
         );
         (o.status.success(), out)
+    }
+}
+
+impl Drop for Releases {
+    fn drop(&mut self) {
+        if let Ok(dirs) = std::fs::read_dir(&self.root) {
+            for d in dirs.flatten() {
+                if d.file_name().to_string_lossy().starts_with("gnupg-") {
+                    let _ = Command::new("gpgconf")
+                        .args(["--kill", "all"])
+                        .env("GNUPGHOME", d.path())
+                        .output();
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -2342,6 +2369,7 @@ fn version_latest_reports_the_newest_release_and_changes_nothing() {
     assert_eq!(std::fs::read(&rel.exe).unwrap(), before);
 
     // A release with no SHA256SUMS.asc is not installed.
+    std::fs::write(rel.root.join("key.asc"), "").unwrap();
     let (ok, out) = rel.run(&rel.root, &path, &["self-update", "--latest"]);
     assert!(!ok && out.contains("no SHA256SUMS.asc"), "{out}");
     assert_eq!(std::fs::read(&rel.exe).unwrap(), before);
@@ -2411,6 +2439,20 @@ fn self_update_installs_only_a_signed_matching_release() {
         assert_eq!(left.len(), 1, "{out}");
     };
 
+    // A key from the environment is not trusted for a download from the network.
+    let (ok, out) = rel.run_with(
+        &rel.root,
+        &path,
+        &["self-update", "--latest"],
+        &[("FIVEW_RELEASES_URL", "https://example.invalid/releases")],
+    );
+    assert!(
+        !ok && out.contains("FIVEW_RELEASE_KEY is honoured only with a file://")
+            && out.lines().count() == 1,
+        "{out}"
+    );
+    untouched(&out);
+
     // Signed by a key that is not the release key.
     sign(&other);
     let (ok, out) = rel.run(&rel.root, &path, &["self-update", "--latest"]);
@@ -2420,11 +2462,138 @@ fn self_update_installs_only_a_signed_matching_release() {
     );
     untouched(&out);
 
-    // Signed, but the binary is not the one the sums name.
+    // Two signatures, one of them the release key's.
+    let asc = rel.dir().join("SHA256SUMS.asc");
+    let other_sig = std::fs::read(&asc).unwrap();
     sign(&release);
+    let mut both = std::fs::read(&asc).unwrap();
+    both.extend(other_sig);
+    std::fs::write(&asc, both).unwrap();
+    let (ok, out) = rel.run(&rel.root, &path, &["self-update", "--latest"]);
+    assert!(
+        !ok && out.contains("not signed by the 5W release key"),
+        "{out}"
+    );
+    untouched(&out);
+
+    // Signed by the release key, but not SHA256SUMS as a release writes it:
+    // every such file is refused whole.
+    let good_sums = std::fs::read_to_string(&sums).unwrap();
+    let line = good_sums.trim_end();
+    for bad in [
+        format!("{good_sums}\n"),
+        format!("{good_sums}# note\n"),
+        format!("{good_sums}{good_sums}"),
+        line.to_string(),
+        good_sums.replacen("  ", " ", 1),
+        good_sums.replacen("  5w-", "  ../5w-", 1),
+        good_sums.replacen("  5w-", " *5w-", 1),
+        good_sums.replacen(FAKE, "9.9.9-rc1", 1),
+    ] {
+        std::fs::write(&sums, &bad).unwrap();
+        sign(&release);
+        let (ok, out) = rel.run(&rel.root, &path, &["self-update", "--latest"]);
+        assert!(
+            !ok && out.contains("not in the release format"),
+            "{bad:?}: {out}"
+        );
+        untouched(&out);
+    }
+
+    // A signed commit is text the release key signed that can carry a sums line:
+    // its payload as SHA256SUMS, its signature as SHA256SUMS.asc.
     let asset = rel.dir().join(Releases::asset());
     let good = std::fs::read(&asset).unwrap();
-    std::fs::write(&asset, b"#!/bin/sh\necho evil\n").unwrap();
+    let evil = b"#!/bin/sh\necho evil\n";
+    let o = Command::new("sha256sum")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut c| {
+            use std::io::Write;
+            c.stdin.take().unwrap().write_all(evil)?;
+            c.wait_with_output()
+        })
+        .unwrap();
+    let evil_hash = String::from_utf8_lossy(&o.stdout)[..64].to_string();
+    let git = |args: &[&str]| {
+        let o = Command::new("git")
+            .args(args)
+            .current_dir(rel.root.join("commit"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GNUPGHOME", rel.root.join("gnupg-key"))
+            .env("GIT_AUTHOR_NAME", "key")
+            .env("GIT_AUTHOR_EMAIL", "key@example.com")
+            .env("GIT_COMMITTER_NAME", "key")
+            .env("GIT_COMMITTER_EMAIL", "key@example.com")
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    std::fs::create_dir_all(rel.root.join("commit")).unwrap();
+    git(&["init", "-q"]);
+    let fpr = String::from_utf8_lossy(&release(&["--with-colons", "--list-secret-keys"]).stdout)
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("fpr:")
+                .map(|f| f.trim_matches(':').to_string())
+        })
+        .unwrap();
+    let msg = format!("{evil_hash}  {}\n", Releases::asset());
+    git(&[
+        "-c",
+        &format!("user.signingkey={fpr}"),
+        "commit",
+        "-q",
+        "-S",
+        "--allow-empty",
+        "-m",
+        &msg,
+    ]);
+    let raw = git(&["cat-file", "commit", "HEAD"]);
+    let (mut payload, mut signature, mut in_sig) = (String::new(), String::new(), false);
+    for l in raw.split_inclusive('\n') {
+        if let Some(first) = l.strip_prefix("gpgsig ") {
+            signature.push_str(first);
+            in_sig = true;
+        } else if in_sig && l.starts_with(' ') {
+            signature.push_str(&l[1..]);
+        } else {
+            in_sig = false;
+            payload.push_str(l);
+        }
+    }
+    assert!(
+        payload.contains(&msg) && signature.contains("BEGIN PGP SIGNATURE"),
+        "{raw}"
+    );
+    std::fs::write(&sums, &payload).unwrap();
+    std::fs::write(&asc, &signature).unwrap();
+    std::fs::write(&asset, evil).unwrap();
+    let (ok, out) = rel.run(&rel.root, &path, &["self-update", "--latest"]);
+    // The signature is good; the text is not a release's.
+    assert!(!ok && out.contains("not in the release format"), "{out}");
+    untouched(&out);
+    // Served as the latest release's sums too.
+    let latest = rel.root.join("releases/latest/download/SHA256SUMS");
+    let good_latest = std::fs::read(&latest).unwrap();
+    std::fs::write(&latest, &payload).unwrap();
+    let (ok, out) = rel.run(&rel.root, &path, &["version", "--latest"]);
+    assert!(!ok && out.contains("is not a 5w SHA256SUMS"), "{out}");
+    std::fs::write(&latest, good_latest).unwrap();
+    std::fs::write(&asset, &good).unwrap();
+    std::fs::write(&sums, &good_sums).unwrap();
+
+    // Signed, but the binary is not the one the sums name.
+    sign(&release);
+    std::fs::write(&asset, evil).unwrap();
     let (ok, out) = rel.run(&rel.root, &path, &["self-update", "--latest"]);
     assert!(!ok && out.contains("does not match SHA256SUMS"), "{out}");
     untouched(&out);

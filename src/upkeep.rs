@@ -19,8 +19,14 @@ const PROTOCOL_TEMPLATE: &str = include_str!("../templates/PROTOCOL.md");
 const PRE_RECEIVE: &str = include_str!("../ci/pre-receive");
 pub const HOOK_MARK: &str = "# installed by 5w";
 const RELEASES: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/releases");
-/// The key release sums are signed with, as the repository ships it.
+/// The key release sums are signed with, as the repository ships it, and the
+/// fingerprint of its signing subkey — the one ci/install-5w.sh pins.
 const SIGNING_KEY: &str = include_str!("../SIGNING_KEY.asc");
+const SIGNING_FPR: &str = "1125DC32ECA09CA21A1810DE3491A839212CC7DB";
+/// Download ceilings: SHA256SUMS and its signature are a few hundred bytes, a
+/// binary about 1 MB.
+const SMALL: u64 = 64 * 1024;
+const BINARY: u64 = 32 * 1024 * 1024;
 
 pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     let mut it = s.trim().trim_start_matches('v').split('.');
@@ -204,8 +210,10 @@ pub fn update_files(repo: &Repo, args: &[String]) -> Res<()> {
 // for a mirror): `latest/download/SHA256SUMS` names the newest version in its
 // asset names, and `download/v<version>/` holds the binaries, SHA256SUMS and
 // SHA256SUMS.asc. curl fetches, gpg checks the signature against the key built
-// into this binary (FIVEW_RELEASE_KEY names another armored key), and the hash
-// is computed here.
+// into this binary, and the hash is computed here. FIVEW_RELEASE_KEY names
+// another armored key, honoured only for a file:// FIVEW_RELEASES_URL (tests,
+// a local mirror): a key from the environment must not redirect trust for a
+// network download.
 
 fn releases_url() -> String {
     std::env::var("FIVEW_RELEASES_URL")
@@ -234,8 +242,9 @@ fn need(tool: &str, what: &str) -> Res<()> {
     }
 }
 
-/// Download `url` to `to`; `Ok(false)` when the server has no such file.
-fn fetch(url: &str, to: &Path) -> Res<bool> {
+/// Download `url` to `to`, at most `max` bytes; `Ok(false)` when the server has
+/// no such file.
+fn fetch(url: &str, to: &Path, max: u64) -> Res<bool> {
     let o = std::process::Command::new("curl")
         .args([
             "-fsSL",
@@ -243,18 +252,28 @@ fn fetch(url: &str, to: &Path) -> Res<bool> {
             "=https,file",
             "--proto-redir",
             "=https",
-            "-o",
+            "--connect-timeout",
+            "20",
+            "--max-time",
+            "300",
+            "--max-filesize",
         ])
+        .arg(max.to_string())
+        .arg("-o")
         .arg(to)
+        // As --url's value, a URL starting with `-` cannot be read as an option.
+        .arg("--url")
         .arg(url)
         .output()
         .map_err(|e| format!("curl: {e}"))?;
     if o.status.success() {
         return Ok(true);
     }
-    // 22: an HTTP error (404); 37: a file:// path that does not exist.
-    if matches!(o.status.code(), Some(22) | Some(37)) {
-        return Ok(false);
+    match o.status.code() {
+        // 22: an HTTP error (404); 37: a file:// path that does not exist.
+        Some(22) | Some(37) => return Ok(false),
+        Some(63) => bail!("{url} is over {max} bytes; not a 5w release file"),
+        _ => {}
     }
     let err = String::from_utf8_lossy(&o.stderr);
     bail!(
@@ -295,20 +314,53 @@ impl Drop for Scratch {
     }
 }
 
+/// SHA256SUMS exactly as ci/release.sh writes it: one or more lines of
+/// `<64 lowercase hex>  5w-<x.y.z>-<arch>-unknown-linux-musl`, each ending in a
+/// newline, one version throughout, no name twice. Anything else — a blank
+/// line, another kind of line, a path — refuses the whole file, so a signed
+/// text that merely contains such a line (a commit, say) is not a release.
+/// Returns the version and the (name, hash) pairs.
+fn parse_sums(text: &str) -> Option<(String, Vec<(String, String)>)> {
+    let body = text.strip_suffix('\n')?;
+    let mut version: Option<String> = None;
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in body.split('\n') {
+        let (hash, name) = line.split_once("  ")?;
+        if hash.len() != 64 || !hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return None;
+        }
+        let rest = name.strip_prefix("5w-")?;
+        let (v, target) = rest.split_once('-')?;
+        let canonical =
+            v.bytes().all(|b| b.is_ascii_digit() || b == b'.') && parse_version(v).is_some();
+        let arch = target.strip_suffix("-unknown-linux-musl")?;
+        let arch_ok = !arch.is_empty()
+            && arch
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+        if !canonical || !arch_ok || version.as_deref().is_some_and(|x| x != v) {
+            return None;
+        }
+        if out.iter().any(|(n, _)| n == name) {
+            return None;
+        }
+        version = Some(v.to_string());
+        out.push((name.to_string(), hash.to_string()));
+    }
+    Some((version?, out))
+}
+
 /// The newest release's version, from the asset names in its SHA256SUMS.
 fn latest(tmp: &Path) -> Res<String> {
     let url = format!("{}/latest/download/SHA256SUMS", releases_url());
     let to = tmp.join("latest-SHA256SUMS");
-    if !fetch(&url, &to)? {
+    if !fetch(&url, &to, SMALL)? {
         bail!("no release found at {url}");
     }
-    let text = fs::read_to_string(&to).map_err(|e| e.to_string())?;
-    text.lines()
-        .filter_map(|l| l.split_whitespace().nth(1)?.strip_prefix("5w-"))
-        .filter_map(|rest| rest.split('-').next())
-        .find(|v| parse_version(v).is_some())
-        .map(str::to_string)
-        .ok_or_else(|| format!("{url} names no 5w version"))
+    let text = fs::read_to_string(&to).unwrap_or_default();
+    parse_sums(&text)
+        .map(|(v, _)| v)
+        .ok_or_else(|| format!("{url} is not a 5w SHA256SUMS; refusing it"))
 }
 
 pub fn own_version_line() -> String {
@@ -379,6 +431,7 @@ pub fn self_update(args: &[String]) -> Res<()> {
     }
     need("curl", "self-update")?;
     need("gpg", "self-update")?;
+    let trust = release_key()?;
     let tmp = Scratch::new()?;
     let have = parse_version(VERSION);
     let target = if want_latest {
@@ -416,27 +469,26 @@ pub fn self_update(args: &[String]) -> Res<()> {
     let sums = tmp.0.join("SHA256SUMS");
     let sig = tmp.0.join("SHA256SUMS.asc");
     let bin = tmp.0.join(&asset);
-    if !fetch(&format!("{base}/SHA256SUMS"), &sums)? {
+    if !fetch(&format!("{base}/SHA256SUMS"), &sums, SMALL)? {
         bail!("no release v{target} at {base}");
     }
-    if !fetch(&format!("{base}/SHA256SUMS.asc"), &sig)? {
+    if !fetch(&format!("{base}/SHA256SUMS.asc"), &sig, SMALL)? {
         bail!("release v{target} has no SHA256SUMS.asc (not signed yet); nothing installed");
     }
-    if !fetch(&format!("{base}/{asset}"), &bin)? {
+    if !fetch(&format!("{base}/{asset}"), &bin, BINARY)? {
         bail!("release v{target} has no {asset}; nothing installed");
     }
 
-    verify_signature(&tmp.0, &sums, &sig)
+    verify_signature(&tmp.0, &trust, &sums, &sig)
         .map_err(|e| format!("v{target}: {e}; nothing installed"))?;
-    let listed = fs::read_to_string(&sums)
-        .map_err(|e| e.to_string())?
-        .lines()
-        .find_map(|l| {
-            let mut w = l.split_whitespace();
-            let h = w.next()?;
-            (w.next()?.trim_start_matches('*') == asset).then(|| h.to_ascii_lowercase())
-        });
-    let Some(listed) = listed else {
+    let text = fs::read_to_string(&sums).unwrap_or_default();
+    let Some((listed_version, listed)) = parse_sums(&text) else {
+        bail!("SHA256SUMS for v{target} is not in the release format; nothing installed");
+    };
+    if listed_version != target {
+        bail!("SHA256SUMS for v{target} names {listed_version}; nothing installed");
+    }
+    let Some((_, listed)) = listed.into_iter().find(|(n, _)| *n == asset) else {
         bail!("SHA256SUMS for v{target} does not list {asset}; nothing installed");
     };
     let bytes = fs::read(&bin).map_err(|e| e.to_string())?;
@@ -447,7 +499,10 @@ pub fn self_update(args: &[String]) -> Res<()> {
     // Beside the target, so the rename is atomic; synced before and after.
     let dir = exe.parent().ok_or("this binary has no directory")?;
     let staged = dir.join(format!(".5w-update-{}", std::process::id()));
-    let written = (|| -> std::io::Result<()> {
+    // A file of this name is this process id's own leftover (a crashed update
+    // under a reused pid): never a binary in use, so it goes.
+    let _ = fs::remove_file(&staged);
+    let stage = || -> std::io::Result<()> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = fs::OpenOptions::new()
@@ -456,32 +511,59 @@ pub fn self_update(args: &[String]) -> Res<()> {
             .mode(0o755)
             .open(&staged)?;
         f.write_all(&bytes)?;
-        f.sync_all()?;
-        drop(f);
-        fs::rename(&staged, &exe)?;
-        fs::File::open(dir)?.sync_all()
-    })();
-    if let Err(e) = written {
+        f.sync_all()
+    };
+    let rights = |e: &std::io::Error| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!("; rerun as a user who can write {}", dir.display())
+        } else {
+            String::new()
+        }
+    };
+    if let Err(e) = stage() {
         let _ = fs::remove_file(&staged);
-        bail!(
-            "cannot replace {}: {e}; rerun as a user who can write {}",
-            exe.display(),
+        bail!("cannot write {}: {e}{}", staged.display(), rights(&e));
+    }
+    if let Err(e) = fs::rename(&staged, &exe) {
+        let _ = fs::remove_file(&staged);
+        bail!("cannot replace {}: {e}{}", exe.display(), rights(&e));
+    }
+    println!("5w {VERSION} → {target} ({})", exe.display());
+    if let Err(e) = fs::File::open(dir).and_then(|d| d.sync_all()) {
+        eprintln!(
+            "warning: installed, but syncing {} failed ({e}); a crash now could undo the update",
             dir.display()
         );
     }
-    println!("5w {VERSION} → {target} ({})", exe.display());
     Ok(())
 }
 
-/// Check `sig` is a good signature over `sums` by the release key, in a
-/// keyring holding that key alone.
-fn verify_signature(tmp: &Path, sums: &Path, sig: &Path) -> Res<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    let key = match std::env::var_os("FIVEW_RELEASE_KEY") {
-        Some(p) => fs::read_to_string(&p)
-            .map_err(|e| format!("FIVEW_RELEASE_KEY {}: {e}", Path::new(&p).display()))?,
-        None => SIGNING_KEY.to_string(),
+/// The armored key to trust and the fingerprint a signature must carry: the
+/// embedded release key and its signing subkey, or FIVEW_RELEASE_KEY — only
+/// with a file:// FIVEW_RELEASES_URL — and then its primary key.
+fn release_key() -> Res<(String, Option<&'static str>)> {
+    let Some(p) = std::env::var_os("FIVEW_RELEASE_KEY") else {
+        return Ok((SIGNING_KEY.to_string(), Some(SIGNING_FPR)));
     };
+    if !releases_url().starts_with("file://") {
+        bail!(
+            "FIVEW_RELEASE_KEY is honoured only with a file:// FIVEW_RELEASES_URL; unset it to trust the release key"
+        );
+    }
+    let key = fs::read_to_string(&p)
+        .map_err(|e| format!("FIVEW_RELEASE_KEY {}: {e}", Path::new(&p).display()))?;
+    Ok((key, None))
+}
+
+/// Check `sig` is exactly one good, unexpired, unrevoked signature over `sums`
+/// by the trusted key, in a keyring holding that key alone.
+fn verify_signature(
+    tmp: &Path,
+    (key, fpr): &(String, Option<&str>),
+    sums: &Path,
+    sig: &Path,
+) -> Res<()> {
+    use std::os::unix::fs::DirBuilderExt;
     let home = tmp.join("gnupg");
     fs::DirBuilder::new()
         .mode(0o700)
@@ -501,11 +583,51 @@ fn verify_signature(tmp: &Path, sums: &Path, sig: &Path) -> Res<()> {
     if !imported.status.success() {
         bail!("cannot import the release key into gpg");
     }
+    // With a key from FIVEW_RELEASE_KEY, its primary fingerprint.
+    let primary = match fpr {
+        Some(_) => None,
+        None => {
+            let o = gpg(&["--with-colons".as_ref(), "--list-keys".as_ref()])?;
+            let listed = String::from_utf8_lossy(&o.stdout).into_owned();
+            let mut lines = listed.lines();
+            let mut found = Vec::new();
+            while let Some(l) = lines.next() {
+                if l.starts_with("pub:")
+                    && let Some(f) = lines.next().and_then(|n| n.strip_prefix("fpr:"))
+                {
+                    found.push(f.trim_matches(':').to_string());
+                }
+            }
+            if found.len() != 1 {
+                bail!("FIVEW_RELEASE_KEY must hold exactly one public key");
+            }
+            found.pop()
+        }
+    };
     let o = gpg(&["--verify".as_ref(), sig.as_os_str(), sums.as_os_str()])?;
     let status = String::from_utf8_lossy(&o.stdout);
-    let good = o.status.success()
-        && status.lines().any(|l| l.starts_with("[GNUPG:] VALIDSIG "))
-        && !status.lines().any(|l| l.starts_with("[GNUPG:] REVKEYSIG "));
+    let count = |tag: &str| {
+        status
+            .lines()
+            .filter(|l| l.starts_with(&format!("[GNUPG:] {tag} ")))
+            .count()
+    };
+    let validsig: Vec<Vec<&str>> = status
+        .lines()
+        .filter_map(|l| l.strip_prefix("[GNUPG:] VALIDSIG "))
+        .map(|l| l.split(' ').collect())
+        .collect();
+    let by_key = validsig.len() == 1
+        && match (fpr, &primary) {
+            (Some(f), _) => validsig[0].first() == Some(f),
+            (None, Some(p)) => validsig[0].last() == Some(&p.as_str()),
+            (None, None) => false,
+        };
+    let bad = ["EXPSIG", "EXPKEYSIG", "REVKEYSIG", "BADSIG", "ERRSIG"]
+        .iter()
+        .any(|t| count(t) > 0);
+    let good =
+        o.status.success() && by_key && !bad && count("NEWSIG") <= 1 && count("GOODSIG") == 1;
     if !good {
         bail!("SHA256SUMS is not signed by the 5W release key");
     }

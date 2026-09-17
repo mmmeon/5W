@@ -488,18 +488,29 @@ repository should not call out on its own. Asking is explicit:
 - **`5w self-update`** installs the version the project pins (`requires` in the `.5w.toml` of the
   worktree you stand in) when this binary is older — it runs even where that pin makes every other
   command refuse. `--latest` takes the newest release instead. It downloads the binary for this
-  machine, `SHA256SUMS` and `SHA256SUMS.asc`, checks with `gpg`, in a keyring holding nothing else,
-  that the sums are signed by the release key built into the binary
-  ([SIGNING_KEY.asc](SIGNING_KEY.asc)), and that the binary's SHA-256 matches them. A release not
-  signed yet is not installed. Only then is the running binary replaced: written beside it,
-  synced, and renamed over it, so an interrupted update leaves the old binary whole. Any failed
-  check writes nothing.
+  machine, `SHA256SUMS` and `SHA256SUMS.asc`, and installs only if all of these hold:
+  - `SHA256SUMS.asc` is exactly one good signature, not expired or revoked, over `SHA256SUMS`, by
+    the release key built into the binary ([SIGNING_KEY.asc](SIGNING_KEY.asc)): `gpg` checks it in
+    a keyring holding nothing else, and the signing subkey's fingerprint must be
+    `1125DC32ECA09CA21A1810DE3491A839212CC7DB`, as [ci/install-5w.sh](ci/install-5w.sh) pins. A
+    release not signed yet is not installed.
+  - `SHA256SUMS` is exactly what `ci/release.sh` writes — every line
+    `<64 hex>  5w-<version>-<arch>-unknown-linux-musl`, newline-terminated, one version (the one
+    asked for), no name twice — or the whole file is refused. The same key signs the maintainer's
+    commits, so a signature alone does not make a text a release: a signed commit carrying a sums
+    line in its message is refused here.
+  - the binary's SHA-256 matches its line.
+
+  Only then is the running binary replaced: written beside it, synced, and renamed over it, so an
+  interrupted update leaves the old binary whole; any failed check writes nothing. Downloads are
+  https only (redirects too), size-capped and time-limited.
 
   It needs `curl` and `gpg` on PATH and refuses in one line naming the one missing. Releases are
   read from the repository's `/releases` (`Cargo.toml`'s `repository`); `FIVEW_RELEASES_URL` points
-  at a mirror laid out the same way (`latest/download/SHA256SUMS`, `download/v<version>/…`,
-  `https://` or `file://`), and `FIVEW_RELEASE_KEY` names another armored public key to trust — for
-  a fork's releases or a test, since whoever sets it chooses what is trusted.
+  at a mirror laid out the same way (`latest/download/SHA256SUMS`, `download/v<version>/…`).
+  `FIVEW_RELEASE_KEY` names another armored public key to trust (its primary key must make the
+  signature), and is honoured only when `FIVEW_RELEASES_URL` is a `file://` directory — a local
+  mirror or a test — so the environment cannot redirect trust for a network download.
 
 ## Reporting problems with 5W
 
