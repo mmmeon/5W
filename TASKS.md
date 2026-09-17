@@ -35,6 +35,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Changing trunk = "<other>" in the checkout .5w.toml without committing moves repo.trunk, so the pre-commit hook (#94) reads that other branch's committed config and treats it as the trunk. Local only (ci catches the push), but the hook should resolve the trunk from committed config too. Found in review of #94.
 - [ ] #101 An empty FIVEW_TRUNK skips init's not-the-trunk refusal
   src/main.rs init_trunk counts FIVEW_TRUNK as naming the trunk with env::var("FIVEW_TRUNK").is_ok(), so an exported empty FIVEW_TRUNK counts; store.rs treats an empty one as unset. An empty FIVEW_TRUNK therefore skips init's "not the trunk" refusal on a feature branch. Treat empty as unset. Found in review of #96.
+- [ ] #102 A push that turns the trunk gate on then off refuses the recorded landing of the gate-off commit
+  src/ci.rs trunk_gate: in one push where the gate goes off→on→off (main→a/on sets gate_trunk = true, a/on→b/off sets it false, plus c/code), the gate-off commit is judged (its first parent gates) but its landing record is never read (the record's own first parent has the gate off), so the push is refused with "no landing record covers" although 5w recorded the landing. Read landing records whenever the commit they cover is judged. Found in review of #95.
 
 ## Done
 
