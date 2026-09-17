@@ -78,8 +78,11 @@
 #   refuses to accept while that setting is off.
 # - An approval counts only if given after the current head last arrived (versions
 #   API), by someone with at least Developer access who neither opened the merge
-#   request nor authored or committed its commits (by the emails GitLab shows the
-#   token); a merge request with changes requested is not accepted.
+#   request nor authored or committed its commits, by the emails GitLab shows the
+#   token. An approver with no email the token can see is not counted: a project
+#   access token sees only public emails, so approvers need one (or give the job
+#   an administrator's token, which sees every email). A merge request with changes
+#   requested by any reviewer, or whose reviewers cannot be read, is not accepted.
 # - Set "Minimum role to use pipeline variables" to Owner or no one: a variable
 #   such as CI_API_V4_URL or CI_SERVER_URL set on a pipeline or schedule would
 #   send the token elsewhere.
@@ -171,7 +174,13 @@
         makers=$(pages "merge_requests/$mr/commits?" \
           | jq -c '[.[] | .author_email, .committer_email | select(. != null) | ascii_downcase] | unique')
         approver=
+        # detailed_merge_status names only the first failing check (a red pipeline hides
+        # changes requested), so each reviewer's state is read too.
         if [ "$(printf '%s' "$m" | jq -r .detailed_merge_status)" = requested_changes ]; then
+          echo "!$mr has changes requested: not accepting"
+        elif ! reviewers=$(api "merge_requests/$mr/reviewers" 2>/dev/null | jq -ec 'arrays' 2>/dev/null); then
+          echo "!$mr: reviewers could not be read: not accepting"
+        elif [ "$(printf '%s' "$reviewers" | jq '[.[] | select(.state == "requested_changes")] | length')" != 0 ]; then
           echo "!$mr has changes requested: not accepting"
         elif [ -z "$since" ]; then
           echo "!$mr: no version with head $head yet; the next run decides"
@@ -182,8 +191,9 @@
             [ "${level:-0}" -ge 30 ] || continue
             # An approver whose emails cannot be read is not counted: they may be a maker.
             emails=$(api "users/$id" 2>/dev/null \
-              | jq -ec 'objects | [.email, .public_email, .commit_email | select(. != null and . != "") | ascii_downcase]') \
+              | jq -ec 'objects | [.email, .public_email, .commit_email | select(. != null and . != "") | ascii_downcase]' 2>/dev/null) \
               || { echo "!$mr: approver $id: user lookup failed; not counted"; continue; }
+            [ "$emails" != '[]' ] || { echo "!$mr: approver $id has no email the token can see; not counted"; continue; }
             [ "$(jq -n --argjson e "$emails" --argjson m "$makers" '[$e[] | select(. as $x | $m | index($x))] | length')" = 0 ] \
               || { echo "!$mr: approver $id wrote or committed the change; not counted"; continue; }
             approver=$id; break

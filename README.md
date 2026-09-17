@@ -305,19 +305,24 @@ The wiring follows them:
   several), reads the reviews, the commits and the approver's permission from the API, fetches with
   the read-only `GITHUB_TOKEN` (so a private repository works), pushes with `FIVEW_PUSH_TOKEN` (a
   GitHub App or fine-grained token) from the `5w-queue` environment, and re-runs the check after an
-  accept. Its author and committer check has two limits: a commit whose author or committer is no
-  GitHub account has no login to exclude, and the API lists at most 250 commits of a change request.
+  accept. Its author and committer check cannot see past two limits, so it does not accept then
+  (accept by hand): a commit whose author or committer is no GitHub account has no login to exclude,
+  and the API lists at most 250 commits of a change request.
 - **GitLab:** the `5w` job in [ci/gitlab-ci.yml](ci/gitlab-ci.yml) is the read-only check. The
   `5w:queue-events` job runs on a schedule on the default branch, reads merge requests and approvals
   from the API, and pushes with `FIVEW_QUEUE_TOKEN` from the protected `5w-queue` environment. GitLab
   records who approved but not which commit, so it refuses while approvals survive a push, and counts
   an approval only if given after the current head last arrived (the merge request's latest version
-  with that head, so a force-push back to an earlier head does not revive an older approval). Set
+  with that head, so a force-push back to an earlier head does not revive an older approval). It
+  also reads each reviewer's state, since `detailed_merge_status` names only the first failing
+  check: a reviewer's changes requested, or reviewers it cannot read, stop an accept. Set
   "Minimum role to use pipeline variables" to Owner or no one: a pipeline or schedule variable
   overriding `CI_API_V4_URL` or `CI_SERVER_URL` would redirect the token. Commit authors are matched
   by the emails GitLab shows the token, so that check is only as good as those; an approver whose
-  user record cannot be read is not counted. Every list the job reads is read to its last page, and
-  a failed page, a page that is not a JSON array or a list longer than 100 pages fails the job.
+  user record cannot be read, or who has no email the token can see, is not counted. A project
+  access token sees only public emails: approvers need one, or the job an administrator's token.
+  Every list the job reads is read to its last page, and a failed page, a page that is not a JSON
+  array or a list longer than 100 pages fails the job.
 
 This repository's own [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `cargo fmt`, `cargo
 clippy` and `cargo test` on every push and change request, then the same `5w ci` check against 5W's

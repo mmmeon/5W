@@ -15,7 +15,9 @@
 #   permission API — not author_association). An approval counts only if it is
 #   of the current head, by someone who neither opened the change request nor
 #   authored or committed any of its commits; any reviewer's outstanding "changes
-#   requested" blocks it.
+#   requested" blocks it. So does a commit whose author or committer is no GitHub
+#   account (no login to compare), or a change request of 250 commits or more (the
+#   API lists no more): accept those by hand.
 # - The trunk is pushed with FIVEW_PUSH_TOKEN — a GitHub App token or fine-grained
 #   token allowed to push the trunk — stored as a secret of the `5w-queue`
 #   environment, whose deployment branches are the default branch only. Never
@@ -115,8 +117,11 @@ jobs:
             add // [] | map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
             | group_by(.user.login) | map(max_by(.submitted_at))')
           # Whoever wrote or committed the change does not approve it.
-          makers=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" \
-            | jq -s -c '[add // [] | .[] | .author.login, .committer.login | select(. != null)] | unique')
+          commits=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" | jq -s -c 'add // []')
+          makers=$(printf '%s' "$commits" | jq -c '[.[] | .author.login, .committer.login | select(. != null)] | unique')
+          # A maker with no login cannot be excluded, and the API lists at most 250 commits.
+          unknown=$(printf '%s' "$commits" | jq '[.[] | select(.author.login == null or .committer.login == null)] | length')
+          listed=$(printf '%s' "$commits" | jq length)
           can_write() {
             p=$(gh api "repos/$REPO/collaborators/$1/permission" --jq '.permission + " " + (.role_name // "")')
             case " $p " in *" admin "*|*" write "*|*" maintain "*) return 0;; esac
@@ -125,6 +130,10 @@ jobs:
           approver=
           if [ "$(printf '%s' "$latest" | jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length')" != 0 ]; then
             echo "#$NUMBER has changes requested: not accepting"
+          elif [ "$unknown" != 0 ]; then
+            echo "#$NUMBER: $unknown commit(s) by an author or committer with no GitHub account: not accepting; accept by hand"
+          elif [ "$listed" -ge 250 ]; then
+            echo "#$NUMBER lists $listed commits, the most the API returns: not accepting; accept by hand"
           else
             for login in $(printf '%s' "$latest" | jq -r --arg head "$head" --arg author "$author" --argjson makers "$makers" \
                 '.[] | select(.state == "APPROVED" and .commit_id == $head and .user.login != $author)
