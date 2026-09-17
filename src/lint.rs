@@ -60,13 +60,20 @@ fn at_rev(repo: &Repo, rev: Option<&str>) -> Snap {
 }
 
 pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
+    if args.iter().any(|a| a == "-h" || a == "--help") || args.first().is_some_and(|a| a == "help")
+    {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    if let Some(f) = args
+        .iter()
+        .find(|a| a.starts_with("--") && *a != "--staged")
+    {
+        return Err(crate::tasks::unknown_flag(repo, "lint", f));
+    }
     let arg = args.first().map(|s| s.as_str()).unwrap_or("--staged");
     let mut problems = Vec::new();
     match arg {
-        "-h" | "--help" | "help" => {
-            println!("{USAGE}");
-            return Ok(());
-        }
         "--staged" => {
             let files = git::git(&repo.cwd, &["diff", "--cached", "--name-only"])?;
             let files: Vec<&str> = files.lines().collect();

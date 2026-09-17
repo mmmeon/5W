@@ -472,6 +472,58 @@ fn a_flag_a_command_does_not_take_is_refused() {
 }
 
 #[test]
+fn a_flag_wt_report_init_or_lint_does_not_take_is_refused() {
+    let r = Repo::new("unknown-flag-tools");
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    r.ok(&r.main, &["report", "something odd"]);
+    let before = r.git(&r.main, &["rev-parse", "HEAD"]);
+    for (args, cmd) in [
+        (&["wt", "ls", "--bogus"][..], "wt ls"),
+        (&["wt", "setup", "--bogus"], "wt setup"),
+        (&["wt", "path", "a/x", "--bogus"], "wt path"),
+        (&["wt", "link", "--bogus"], "wt link"),
+        (&["wt", "install", "--bogus"], "wt install"),
+        (&["wt", "discard-copy", "--bogus"], "wt discard-copy"),
+        (&["wt", "new", "b/y", "--bogus"], "wt new"),
+        (&["wt", "add", "a/x", "--bogus"], "wt add"),
+        (&["wt", "rm", "a/x", "--bogus"], "wt rm"),
+        (&["wt", "prune", "--yes", "--bogus"], "wt prune"),
+        (&["report", "list", "--bogus"], "report list"),
+        (&["report", "show", "1", "--bogus"], "report show"),
+        (&["report", "rm", "1", "--bogus"], "report rm"),
+        (&["report", "send", "1", "--bogus"], "report send"),
+        (&["init", "--bogus"], "init"),
+        (&["lint", "--bogus"], "lint"),
+        (&["lint", "HEAD", "--bogus"], "lint"),
+    ] {
+        let out = r.fails(&r.main, args);
+        assert_eq!(
+            out,
+            format!("5w: unknown flag --bogus for {cmd} (5w {cmd} --help)\n"),
+            "{args:?}"
+        );
+        // The help each refusal names exists.
+        let help = &[&args[..args.len() - 1], &["--help"]].concat();
+        assert!(r.ok(&r.main, help).contains("usage:"), "{help:?}");
+    }
+    assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), before);
+    assert!(r.wt("a/x").exists());
+    assert!(!r.ok(&r.main, &["report", "list"]).contains("(no reports)"));
+    // Every documented flag still works.
+    for args in [
+        &["wt", "ls"][..],
+        &["wt", "setup"],
+        &["wt", "new", "b/y", "--from", "a/x"],
+        &["report", "send", "1", "--print"],
+        &["init"],
+        &["lint", "--staged"],
+        &["lint", "HEAD"],
+    ] {
+        r.ok(&r.main, args);
+    }
+}
+
+#[test]
 fn no_color_is_global_but_never_eats_text() {
     let r = Repo::new("nocolor");
     // Before, after or among a command's arguments, on every tool.

@@ -37,6 +37,19 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         return Ok(());
     };
     let rest = &args[1..];
+    // `wt <command> --help` is the help its refusals point to.
+    if rest.iter().any(|a| a == "-h" || a == "--help") {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    // The commands that take no flag at all; the others check their own.
+    if matches!(
+        cmd.as_str(),
+        "ls" | "list" | "path" | "link" | "install" | "setup" | "discard-copy"
+    ) && let Some(f) = rest.iter().find(|a| a.starts_with("--"))
+    {
+        return Err(unknown_flag(repo, cmd, f));
+    }
     match cmd.as_str() {
         "new" => new(repo, rest),
         "add" => add(repo, rest),
@@ -57,7 +70,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             for a in rest {
                 match a.as_str() {
                     "--force" => force = true,
-                    f if f.starts_with("--") => bail!("unknown flag {f} ({usage})"),
+                    f if f.starts_with("--") => return Err(unknown_flag(repo, cmd, f)),
                     b if branch.is_none() => branch = Some(b),
                     _ => bail!("{usage}"),
                 }
@@ -67,10 +80,10 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         "prune" => match rest {
             [] => prune(repo, false),
             [y] if y == "--yes" => prune(repo, true),
-            [f, ..] if f.starts_with("--") && f != "--yes" => {
-                bail!("unknown flag {f} (usage: 5w wt prune [--yes])")
-            }
-            _ => bail!("usage: 5w wt prune [--yes]"),
+            _ => match rest.iter().find(|a| a.starts_with("--") && *a != "--yes") {
+                Some(f) => Err(unknown_flag(repo, cmd, f)),
+                None => bail!("usage: 5w wt prune [--yes]"),
+            },
         },
         "link" => link(repo, &target(repo, rest)?).map(|_| ()),
         "install" => install(repo, &target(repo, rest)?),
@@ -78,7 +91,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         "discard-copy" => {
             let usage = "usage: 5w wt discard-copy <branch>";
             match rest {
-                [b] if !b.starts_with("--") => discard_copy(repo, b),
+                [b] => discard_copy(repo, b),
                 _ => bail!("{usage}"),
             }
         }
@@ -88,6 +101,15 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         }
         _ => bail!("unknown wt command: {cmd} (try: 5w wt help)"),
     }
+}
+
+/// A refusal for a `--flag` the wt command does not take, worded as the queue
+/// commands word theirs.
+fn unknown_flag(repo: &Repo, cmd: &str, flag: &str) -> String {
+    format!(
+        "unknown flag {flag} for wt {cmd} ({} wt {cmd} --help)",
+        repo.cfg.cmd_tasks
+    )
 }
 
 fn target(repo: &Repo, rest: &[String]) -> Res<PathBuf> {
@@ -101,7 +123,12 @@ fn slug(b: &str) -> String {
     b.replace('/', "-")
 }
 
-fn flags(rest: &[String], allowed: &[&str]) -> Res<(Option<String>, Vec<String>, Option<String>)> {
+fn flags(
+    repo: &Repo,
+    cmd: &str,
+    rest: &[String],
+    allowed: &[&str],
+) -> Res<(Option<String>, Vec<String>, Option<String>)> {
     let mut branch = None;
     let mut seen = Vec::new();
     let mut from = None;
@@ -113,7 +140,7 @@ fn flags(rest: &[String], allowed: &[&str]) -> Res<(Option<String>, Vec<String>,
             i += 1;
         } else if a.starts_with("--") {
             if !allowed.contains(&a.as_str()) {
-                bail!("unknown flag {a}");
+                return Err(unknown_flag(repo, cmd, a));
             }
             seen.push(a.clone());
         } else if branch.is_none() {
@@ -127,7 +154,7 @@ fn flags(rest: &[String], allowed: &[&str]) -> Res<(Option<String>, Vec<String>,
 }
 
 fn new(repo: &Repo, rest: &[String]) -> Res<()> {
-    let (branch, seen, from) = flags(rest, &["--from", "--install"])?;
+    let (branch, seen, from) = flags(repo, "new", rest, &["--from", "--install"])?;
     let branch = branch.ok_or("usage: 5w wt new <branch> [--from <parent>] [--install]")?;
     git::git(&repo.primary, &["check-ref-format", "--branch", &branch])
         .map_err(|_| format!("not a valid branch name: {branch}"))?;
@@ -180,7 +207,7 @@ fn new(repo: &Repo, rest: &[String]) -> Res<()> {
 }
 
 fn add(repo: &Repo, rest: &[String]) -> Res<()> {
-    let (branch, seen, _) = flags(rest, &["--install"])?;
+    let (branch, seen, _) = flags(repo, "add", rest, &["--install"])?;
     let branch = branch.ok_or("usage: 5w wt add <branch> [--install]")?;
     add_worktree(repo, &branch, seen.iter().any(|s| s == "--install"))
 }

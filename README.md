@@ -249,7 +249,8 @@ The queue is read by agents, so every read is priced in tokens.
   short row, and to every field with `--full`.
 - **A flag a command does not take is refused** (`unknown flag --jsn for ready (5w ready --help)`),
   not ignored: an agent that invents a flag learns so, instead of trusting output the flag never
-  shaped. `done`'s flags are the lanes' close words; text (`reject`'s reason, `--body`) may still
+  shaped. So are `wt`, `report`, `init` and `lint` (`unknown flag --x for wt ls (5w wt ls --help)`;
+  `wt` and `report` subcommands print their usage for `--help`). `done`'s flags are the lanes' close words; text (`reject`'s reason, `--body`) may still
   start with `--`.
 - **Colour only for a person:** styling is off when stdout is not a terminal, under `NO_COLOR` or
   `TERM=dumb`, and with `--no-color`. That flag is global — any command, any position — except where

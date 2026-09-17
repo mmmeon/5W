@@ -137,7 +137,8 @@ principle 6 names — "an agent that invents a flag learns it did nothing instea
 unscoped output" — and 5w currently does the silent-nothing thing. Contrast with `5w add`, which
 does refuse unknown fields (`validate_field()` bails with `not a field: ...`). **Adopt**: make
 `opts()` reject flags a given command doesn't understand (exit 1 is enough; a dedicated exit 2 is
-optional polish, not the fix that matters).
+optional polish, not the fix that matters). **Done (#23, #43):** the queue commands, then `wt`,
+`report`, `init` and `lint`, refuse a flag they do not take.
 
 ### 7. Ambient context (install into session hooks so state is visible before the agent acts)
 

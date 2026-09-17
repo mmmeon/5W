@@ -141,7 +141,10 @@ fn dispatch(args: Vec<String>) -> Res<()> {
     match cmd.as_str() {
         "wt" => wt::run(&repo, rest),
         "ship" => ship::run(&repo, rest),
-        "init" => init(&repo),
+        "init" => match rest.iter().find(|a| a.starts_with("--")) {
+            Some(f) => Err(tasks::unknown_flag(&repo, "init", f)),
+            None => init(&repo),
+        },
         "lint" => lint::run(&repo, rest),
         "audit" => audit::run(&repo, rest),
         "ci" => ci::run(&repo, rest),

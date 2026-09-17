@@ -173,7 +173,27 @@ pub fn run(args: &[String]) -> Res<()> {
     let Some(d) = dir() else {
         bail!("5w report keeps reports in the repository's .git — run it inside one")
     };
-    match args.first().map(|s| s.as_str()) {
+    let sub = args.first().map(|s| s.as_str());
+    if let Some(cmd @ ("list" | "ls" | "show" | "rm" | "send")) = sub {
+        let rest = &args[1..];
+        if rest.iter().any(|a| a == "-h" || a == "--help") {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        // `send` takes `--gh` or `--print` after the number; nothing else takes a flag.
+        let takes: &[&str] = if cmd == "send" {
+            &["--gh", "--print"]
+        } else {
+            &[]
+        };
+        if let Some(f) = rest
+            .iter()
+            .find(|a| a.starts_with("--") && !takes.contains(&a.as_str()))
+        {
+            bail!("unknown flag {f} for report {cmd} (5w report {cmd} --help)");
+        }
+    }
+    match sub {
         None | Some("-h" | "--help" | "help") => {
             println!("{USAGE}");
             Ok(())

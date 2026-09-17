@@ -474,7 +474,7 @@ fn flags_of(cmd: &str) -> Option<&'static [&'static str]> {
 
 /// A refusal for a `--flag` the command does not take: a flag that did nothing
 /// must not look as if it worked.
-fn unknown_flag(repo: &Repo, cmd: &str, flag: &str) -> String {
+pub fn unknown_flag(repo: &Repo, cmd: &str, flag: &str) -> String {
     format!(
         "unknown flag {flag} for {cmd} ({} {cmd} --help)",
         repo.cfg.cmd_tasks
