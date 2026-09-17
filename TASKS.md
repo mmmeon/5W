@@ -29,6 +29,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Under gate_trunk a pusher can approve their own code in one push: a hand-written "submit #N" commit, then "accept #N via:review reviewed:<own commit>", then the code and a matching land #N record, plus refs/5w/reviewed/N. pre-receive accepts it (on main too) because landing() reads whatever accept row sits in the tip's tree, including one added in the same push. Decide whether the server should require the accept row to predate the push (exist on the trunk before it), be a separate earlier push, or be signed by a different identity — or document the trust boundary. Found in review of #102.
 - [ ] #118 The GitLab example lets a merge request pick the trunk its check reads
   ci/gitlab-ci.yml passes --trunk refs/remotes/origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME, so a merge request author chooses the queue and policy the check reads: a target branch with a weak or fake queue passes, and a later retarget without a new pipeline keeps the pass. Check against the default branch (CI_DEFAULT_BRANCH) or refuse other targets, and say so in the README. Found in review of #115.
+- [ ] #119 ci ship_check reads a queue renamed in place as no task
+  ci ship_check catches an archive renamed in place by a broken trunk config (#114/#115) but not the queue file: with require_task off, a named but unaccepted branch whose row sits in a queue renamed in place reads as "unreviewed change" and passes. Refuse with the same restore text store::restore_fix builds for the queue. Also the summary line "<branch> into <trunk>" should name the trunk actually checked against (--trunk / broken_at). Found in review of #115.
 
 ## Done
 
