@@ -36,6 +36,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #83: when the trunk's .5w.toml is rejected, 5w ci --branch (PR check) and --event refuse, so a change request that fixes the config fails its required check forever. Let --branch judge a PR whose head repairs the config (same rules as the trunk repair push from #83: queue file names from the broken config's lenient read, gate fail-closed), and name the fix otherwise; test with a repairing PR.
 - [ ] #86 A gated trunk whose config broke has no 5w path to the landing record its repair needs @ci !2
   Found reviewing #83: every local 5w command refuses to open on a broken committed config, so the landing a gated repair requires can only be hand-crafted git work or an admin turning the hook off. Provide a supported path: e.g. local commands open leniently (like ci's open_lenient) when the only problem is the trunk's .5w.toml and the working copy's .5w.toml parses, allowing add/submit/accept/ship of the repair; or a flow. Keep the gate fail-closed; test end to end on a bare gated server.
+- [ ] #87 hook install pre-receive refuses on a repository whose trunk config is broken @ci !1
+  so a server cloned after the break can't install the hook that takes the repair
+  Found reviewing #83: 5w hook install opens the config strictly. Let hook install (pre-receive) open leniently like ci's open_lenient (it only needs the trunk name for 5w.trunk), with a one-line note that the trunk config is broken and the hook will accept only a repair; test installing on a bare clone of a broken trunk.
 
 ## Done
 
