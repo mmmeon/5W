@@ -33,6 +33,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #81 Other clones of a non-main-trunk repo only find the trunk while the primary checkout has .5w.toml @queue !1
   resolve it from the committed config on origin/HEAD or remote branches
   Found reviewing #78 (pre-existing): 5w.trunk is local git config, so a fresh clone of a master repo gets no pin; Repo::open then finds master only while the primary checkout holds .5w.toml. When the primary checkout lacks .5w.toml, read trunk from .5w.toml on the branch origin/HEAD names (if it resolves), then from refs/heads/main/master candidates that carry .5w.toml; test a clone whose primary checkout is on a branch without the file.
+- [ ] #82 Pre-receive with no trunk pin: refuse or warn when 5w.trunk/FIVEW_TRUNK is unset on a gated server @ci !1
+  vary the mismatch fix wording by where the pin came from
+  Found reviewing #79: (1) with 5w.trunk unset (admin removed it or hook installed by hand), HEAD gives master and a committed trunk = "x" still ungates master; making HEAD a pin is unsafe (stale HEAD refuses every push). Have ci/pre-receive refuse trunk-changing pushes, or warn on every push, while gate_trunk is on and no pin is set, naming 'git config 5w.trunk <HEAD branch>'. (2) when the pin is FIVEW_TRUNK, the mismatch refusal suggests git config 5w.trunk, which can't take effect while the env var is set; name the env var instead. Tests for both.
 
 ## Done
 
