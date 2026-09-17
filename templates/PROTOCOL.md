@@ -36,11 +36,11 @@ If `5w` is installed, use it instead of editing.
 | Reopen | `[x]`→`[ ]` | lose `via:`, `reviewed:`, `submitted:`; move back to its open heading |
 | Retitle, re-field | `[ ]`→`[ ]` | change anything but the id and the closure fields; gain no `rework:` — only a reject adds one |
 | Archive | `[x]` row | move, byte for byte, from `TASKS.md` to `DONE.md` |
+| Unarchive (to reopen it) | `[x]` row | move, byte for byte, from `DONE.md` back under `TASKS.md`'s `## Done`, in a commit `chore(tasks): unarchive #<id>` that changes no row |
 
 Never:
 
-- change or delete a closed row, other than reopening or archiving it, or move an archived row
-  back into `TASKS.md`;
+- change or delete a closed row, other than reopening, archiving or unarchiving it;
 - delete any row, or reuse or renumber an id;
 - close, submit or accept a `decision` row unless you are the owner, or a `manual` row nobody did
   by hand;
@@ -50,7 +50,8 @@ Never:
 
 - A queue edit is **its own commit**, on the **trunk**, touching only `TASKS.md` and `DONE.md`.
   Branches carry no queue changes. Both are plain files, never symlinks — on the trunk or in its checkout.
-- Message: `chore(tasks): <verb> #<id>` — `add`, `submit`, `accept`, `reject`, `close`, `reopen`;
+- Message: `chore(tasks): <verb> #<id>` — `add`, `submit`, `accept`, `reject`, `close`, `reopen`,
+  `unarchive`;
   the commit changes no other row.
 - Several edits may share one commit (`5w batch`), each row edited at most once in it. Its subject
   names every row it changes and no other, `chore(tasks): <verb> #<id>, <verb> #<id>`; its body

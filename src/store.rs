@@ -981,11 +981,12 @@ fn refuse_archived(repo: &Repo, q: &Copies, a: &Copies, ids: &[u64]) -> Res<()> 
     }
 }
 
-/// The refusal for an edit of an archived row: only a hand edit brings it back.
+/// The refusal for an edit of an archived row: only an unarchive commit, made by
+/// hand, brings it back.
 pub fn archived(repo: &Repo, id: u64) -> String {
     format!(
-        "#{id} is archived; move its block from {} back to {} by hand",
-        repo.cfg.archive, repo.cfg.file
+        "#{id} is archived; to reopen it, move its block from {} back to {} unchanged and commit it as `{}: unarchive #{id}`, then `{} reopen {id}`",
+        repo.cfg.archive, repo.cfg.file, repo.cfg.commit_prefix, repo.cfg.cmd_tasks
     )
 }
 

@@ -3551,7 +3551,7 @@ fn an_edit_of_a_row_archived_on_the_trunk_is_refused_even_when_the_checkout_stil
     r.ok(&r.main, &["done", "1", "--self"]);
     r.ok(&r.main, &["archive"]);
     let head = r.git(&r.main, &["rev-parse", "HEAD"]);
-    let fix = "5w: #1 is archived; move its block from DONE.md back to TASKS.md by hand\n";
+    let fix = "5w: #1 is archived; to reopen it, move its block from DONE.md back to TASKS.md unchanged and commit it as `chore(tasks): unarchive #1`, then `5w reopen 1`\n";
     // Archived in the checkout too: refused, naming the move back.
     assert_eq!(r.refuses(&r.main, &["reopen", "1"]), fix);
     // The checkout's copies still show #1 open in TASKS.md and not in DONE.md:
@@ -3571,6 +3571,78 @@ fn an_edit_of_a_row_archived_on_the_trunk_is_refused_even_when_the_checkout_stil
         assert_eq!(r.refuses(&r.main, args), fix, "{args:?}");
     }
     assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), head);
+    r.lint_history();
+}
+
+#[test]
+fn an_unarchive_commit_moves_an_archived_row_back_to_be_reopened() {
+    let r = Repo::new("unarchive");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["done", "2", "--self"]);
+    r.ok(&r.main, &["archive"]);
+    r.ok(&r.main, &["hook", "install"]);
+    let head = r.git(&r.main, &["rev-parse", "HEAD"]);
+    let git = |args: &[&str]| {
+        let mut c = Command::new("git");
+        c.args(args).current_dir(&r.main);
+        env(&mut c, &r.root);
+        let o = c.output().unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+    // The move the refusal names: #1's block, as DONE.md has it, under TASKS.md's
+    // `## Done`.
+    let move_back = |row: &str| {
+        let tasks = r
+            .tasks()
+            .replace("## Done\n", &format!("## Done\n\n{row}\n"));
+        std::fs::write(r.main.join("TASKS.md"), tasks).unwrap();
+        let done = r
+            .git(&r.main, &["show", "HEAD:DONE.md"])
+            .replace("- [x] #1 first via:self\n", "");
+        std::fs::write(r.main.join("DONE.md"), done).unwrap();
+        r.git(&r.main, &["add", "TASKS.md", "DONE.md"]);
+    };
+
+    // Under another subject the move is flagged once committed; the hook cannot
+    // see the subject yet, and the index is no missed trunk commit.
+    move_back("- [x] #1 first via:self");
+    r.ok(&r.main, &["lint", "--staged"]);
+    let (ok, err) = git(&["commit", "-qm", "reopen first"]);
+    assert!(ok, "{err}");
+    let err = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(
+        err.contains("#1: archived in DONE.md, back in TASKS.md")
+            && err.contains("`chore(tasks): unarchive #1`"),
+        "{err}"
+    );
+    r.git(&r.main, &["reset", "-q", "--hard", &head]);
+
+    // An unarchive commit that also edits the row is refused, by the hook and
+    // once committed.
+    move_back("- [x] #1 first, edited via:self");
+    let (ok, err) = git(&["commit", "-qm", "chore(tasks): unarchive #1"]);
+    assert!(!ok && err.contains("a closed row changed"), "{err}");
+    let (ok, err) = git(&["commit", "-qm", "chore(tasks): unarchive #1", "--no-verify"]);
+    assert!(ok, "{err}");
+    let err = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(
+        err.contains("#1: an unarchive commit moves rows back unchanged"),
+        "{err}"
+    );
+    r.git(&r.main, &["reset", "-q", "--hard", &head]);
+
+    // Unchanged, under the unarchive subject: it passes, and #1 reopens.
+    move_back("- [x] #1 first via:self");
+    let (ok, err) = git(&["commit", "-qm", "chore(tasks): unarchive #1"]);
+    assert!(ok, "{err}");
+    r.ok(&r.main, &["lint", "HEAD"]);
+    r.ok(&r.main, &["reopen", "1"]);
+    assert!(r.tasks().contains("- [ ] #1 first"), "{}", r.tasks());
     r.lint_history();
 }
 

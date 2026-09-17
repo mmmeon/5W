@@ -123,7 +123,22 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 archive: show_index(repo, &env, &repo.cfg.archive),
             };
             check(&repo.cfg, repo, &old, &new, None, "staged", &mut problems);
-            unarchived(repo, &old, &new, "staged", &mut problems);
+            let archive_staged = git::raw(
+                &repo.cwd,
+                &["ls-files", "--", &format!(":(top){}", repo.cfg.archive)],
+                &env,
+                None,
+            )
+            .map_or(true, |o| !o.ok || !o.stdout.trim().is_empty());
+            unarchived(
+                repo,
+                &old,
+                &new,
+                None,
+                archive_staged,
+                "staged",
+                &mut problems,
+            );
         }
         range => {
             // Resolve each side to a plain sha (git::rev refuses `^HEAD`).
@@ -225,43 +240,119 @@ pub fn commits_on(
             short,
             problems,
         );
-        unarchived(repo, &old, &new, short, problems);
+        unarchived(
+            repo,
+            &old,
+            &new,
+            Some(subject.trim()),
+            true,
+            short,
+            problems,
+        );
     }
     Ok(())
 }
 
-/// A closed row the old archive holds that the new queue holds instead: never
-/// a tool edit (an archived row cannot be reopened), but what a trunk checkout
-/// that missed a repo's first archive stages — its index lacks the archive, so
-/// committing it takes the archive off the trunk. The staged check names the
-/// diff that catches the checkout up.
-fn unarchived(repo: &Repo, old: &Snap, new: &Snap, at: &str, out: &mut Vec<String>) {
-    let (_, oa) = old.tasks();
+/// The ids an unarchive commit names: its subject is `<prefix>: unarchive #<id>`,
+/// or several joined by `, ` as a batch's are. Not an edit 5w makes, so not a verb
+/// of `single_edit` or `batch_edits`.
+fn unarchive_ids(prefix: &str, subject: &str) -> Option<BTreeSet<u64>> {
+    let rest = subject.strip_prefix(prefix)?.strip_prefix(": ")?;
+    rest.split(", ")
+        .map(|part| {
+            let id = part.strip_prefix("unarchive #")?;
+            let digits = !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit());
+            digits.then(|| id.parse().ok()).flatten()
+        })
+        .collect()
+}
+
+/// A closed row the old archive holds that the new queue holds instead. Only an
+/// unarchive commit moves one back, unchanged, naming exactly the rows it moves
+/// and changing none — the way to reopen an archived row. Anything else is what a
+/// trunk checkout that missed an archive stages: committed, it takes the archive
+/// (or its new rows) off the trunk.
+///
+/// A staged change has no subject yet, so it is flagged only where it is that
+/// missed archive — the index lacks the archive file, or holds an earlier trunk
+/// commit's queue files exactly — and the refusal names the diff that catches the
+/// checkout up; the commit itself is judged by its subject.
+fn unarchived(
+    repo: &Repo,
+    old: &Snap,
+    new: &Snap,
+    subject: Option<&str>,
+    archive_staged: bool,
+    at: &str,
+    out: &mut Vec<String>,
+) {
+    let (oq, oa) = old.tasks();
     let (nq, na) = new.tasks();
-    let back: Vec<u64> = oa
+    let back: BTreeSet<u64> = oa
         .iter()
         .filter(|t| nq.iter().any(|n| n.id == t.id) && !na.iter().any(|n| n.id == t.id))
         .map(|t| t.id)
         .collect();
-    if back.is_empty() {
-        return;
-    }
-    let fix = match at == "staged" {
-        true => crate::store::missed_commit_fix(repo)
-            .map(|f| {
-                format!(
-                    "; the trunk checkout missed a commit to {}, and `{f}` catches it up",
-                    repo.trunk
-                )
-            })
-            .unwrap_or_default(),
-        false => String::new(),
-    };
-    for id in back {
+    let named = subject.and_then(|s| unarchive_ids(&repo.cfg.commit_prefix, s));
+    let say = |out: &mut Vec<String>, id: u64, why: &str| {
         out.push(format!(
-            "{at} #{id}: archived in {}, back in {} — an archived row stays archived{fix}",
+            "{at} #{id}: archived in {}, back in {} — {why}",
             repo.cfg.archive, repo.cfg.file
-        ));
+        ))
+    };
+    match (subject, named) {
+        (None, _) => {
+            if back.is_empty() {
+                return;
+            }
+            let fix = crate::store::missed_commit_fix(repo);
+            if archive_staged && fix.is_none() {
+                return;
+            }
+            let why = match fix {
+                Some(f) => format!(
+                    "the trunk checkout missed a commit to {}, and `{f}` catches it up",
+                    repo.trunk
+                ),
+                None => format!(
+                    "{} is staged as deleted; restore it with `git restore --staged --worktree --source=HEAD -- {}`",
+                    repo.cfg.archive, repo.cfg.archive
+                ),
+            };
+            for id in back {
+                say(out, id, &why);
+            }
+        }
+        (Some(_), Some(named)) => {
+            for &id in back.difference(&named) {
+                say(out, id, "an unarchive commit names each row it moves back");
+            }
+            for id in named.difference(&back) {
+                out.push(format!(
+                    "{at} #{id}: named by an unarchive commit that does not move it from {} back to {}",
+                    repo.cfg.archive, repo.cfg.file
+                ));
+            }
+            let (o, n) = ([&oq[..], &oa[..]].concat(), [&nq[..], &na[..]].concat());
+            let changed = queue::changed_ids(&queue::by_id(&o), &queue::by_id(&n));
+            for id in changed {
+                out.push(format!(
+                    "{at} #{id}: an unarchive commit moves rows back unchanged and edits none"
+                ));
+            }
+        }
+        (Some(_), None) => {
+            for id in back {
+                say(
+                    out,
+                    id,
+                    &format!(
+                        "an archived row stays archived, unless moved back unchanged by a `{}: unarchive #{id}` commit",
+                        repo.cfg.commit_prefix
+                    ),
+                );
+            }
+        }
     }
 }
 
