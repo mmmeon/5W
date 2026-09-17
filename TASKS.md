@@ -29,7 +29,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #58 A queue commit whose index update fails (index.lock held) leaves the trunk moved but the checkout stale @queue !2
   and the refusal doesn't say the commit landed
   Found reviewing #57: the trunk ref moves first, then the checkout's index/working copy is mirrored; if the index write fails (index.lock), 5w exits 1 with git's error, the commit is on main, and the checkout's staged copy now reads as a revert of it. Make the refusal say the commit landed and name the fix (retry mirroring: e.g. a 5w command or 'git restore --staged TASKS.md' guidance), or retry the lock briefly; test with a held index.lock.
-- [ ] #67 This repository's PROTOCOL.md is stamped 0.1.2: refresh it with update-files so doctor is clean @upkeep !1
+- [~] #67 This repository's PROTOCOL.md is stamped 0.1.2: refresh it with update-files so doctor is clean @upkeep !1 branch:upkeep/task-67 submitted:1f0af199ca1a9f0af63c60cf42f3824de9bdd747
   5w doctor here notes 'PROTOCOL.md is from 0.1.2; this is 0.1.3 — 5w update-files'. Many branches edited PROTOCOL.md and templates/PROTOCOL.md in step; confirm update-files only changes the stamp line (diff), commit it on a branch, and check doctor reports ok with no PROTOCOL note. The local pre-commit hook note is machine-local (.git/hooks), not part of the change.
 - [~] #68 Queue symlink leftovers: a working-tree-only link redirects queue writes outside the repo @queue !1 branch:queue/task-68 submitted:ecdb2f605bdca776f2c544f16da5c75a61ba96ae
   ci ship_check reads a trunk link as an empty queue; the refusal suggests copying a non-queue target
