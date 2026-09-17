@@ -34,6 +34,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #19. (1) submitted:/reviewed: hold 12-hex short shas; a colliding prefix makes rev-parse ambiguous (refusal) and could stand in for a garbage-collected reviewed commit (~2^48 work). Record full shas going forward; keep reading short ones in existing rows; check lint and PROTOCOL.md's field description. (2) git::raw inherits GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES from the caller (or from git when a hook runs 5w); decide which 5w must clear so its checks read the repository it resolved, and test a hook-invoked 5w still works.
 - [ ] #53 Bench: normalise commit shas in measured output so an unrelated template or history change doesn't move token counts @bench !1
   Found reviewing #20: changing templates/PROTOCOL.md changes every later commit sha in the bench's generated repo; review --json's tip sha then estimates to more tokens and the baseline fails. Replace hex shas in measured output with a fixed-length placeholder before counting tokens (bytes unchanged), or fix commit content so shas are stable; regenerate the baseline once.
+- [ ] #54 lint: a single-edit queue subject must name the one row the commit changes @queue !1
+  Found reviewing #20: a hand commit 'chore(tasks): set #100 level 1' that also changes #4 passes lint and audit counts it as 5w-made. #20 checks batch subjects against changed rows; do the same for single-edit subjects (the id named equals the only changed row; archive moves and the tool's own multi-row commits, if any, must keep passing — check this repo's whole history lints). Also print a line when a batch is all no-ops ('nothing to commit').
 
 ## Done
 
