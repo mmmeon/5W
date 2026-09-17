@@ -31,8 +31,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Whether to put an interface over #16's named operations (trunk tip, queue commit + CAS ref update, worktree add/rm/ls, rebase onto, diff fingerprint, parent record, dirty, ref validation, signing), which system is second (jj the obvious candidate), and whether git-town's config keys stay the parent record.
 - [ ] #22 JSON list rows: trim to id, state, level, area, title, branch by default; --full for the rest @output !2 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 2: rows carry 11 fields today.
-- [~] #23 opts(): refuse a flag a command does not understand instead of silently accepting it @output !2 needs:#13 branch:output/task-23 submitted:eaace9e5fe2e
-  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. 5w ready --bogus exits 0 because opts() pushes unknown flags into o.flags. Refusal one line naming the fix.
 - [ ] #27 Color: disable for TERM=dumb and add an explicit --no-color flag @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. Sty::new() checks only isatty and NO_COLOR; --no-color is swallowed today by the opts() unknown-flag bug.
 - [ ] #28 Color the '5w: <error>' refusal red when stderr is a terminal and NO_COLOR is unset @output !1 needs:#13
@@ -98,3 +96,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig: link to web docs in help text.
 - [x] #34 USAGE: one example invocation under the usage line, e.g. 5w ready area:output @output !1 needs:#13 branch:output/task-34 submitted:13f4d86feea5 via:review reviewed:13f4d86feea5
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig 'lead with examples', adopted narrowly; missing from the doc's own follow-up list. No longer worked sequence.
+- [x] #23 opts(): refuse a flag a command does not understand instead of silently accepting it @output !2 needs:#13 branch:output/task-23 submitted:eaace9e5fe2e via:review reviewed:eaace9e5fe2e
+  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. 5w ready --bogus exits 0 because opts() pushes unknown flags into o.flags. Refusal one line naming the fix.
