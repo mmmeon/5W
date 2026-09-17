@@ -31,6 +31,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #73 Check on current main: after a missed first archive @queue !1 branch:queue/task-73 rework:"the hook refuses the common unarchive right after a later archive (moving the row back recreates the previous trunk state) and advises re-archiving: detect a missed archive by a marker 5w writes when a checkout update fails after a commit, cleared on catch-up, not by content; flag an unarchive subject that moves nothing"
   is DONE.md staged as deleted so an ordinary git commit deletes the archive from main?
   Found reviewing #72: in v0.1.1/v0.1.3, a first archive whose checkout mirror failed (index.lock held) leaves the checkout's index with DONE.md staged as deleted; an ordinary git commit of unrelated work then deletes DONE.md from main. Reproduce on current main (with #58 catch-up, #62 temp writes, #71 missed_commit_fix). If still real: make catch-up/doctor detect it and name the fix, or make the pre-commit lint flag a staged deletion of the archive file; test it. If not, close with the evidence.
+- [ ] #74 ci --ref for a feature branch that merged main flags every trunk queue commit it brought in as 'queue edits go on main' @ci !1
+  Found reviewing #70 (pre-existing on main): 5w ci --ref refs/heads/<branch> for a push of a feature branch that ran git merge main lists the trunk's own queue commits in the range and flags each 'queue edits go on main, not a branch', so pushing such a branch fails ci on a clean history. Exclude commits reachable from the trunk from the branch range (rev-list <base>..<head> --not <trunk>); test a branch push after git merge main passes and a real branch-side queue edit still fails.
 
 ## Done
 
