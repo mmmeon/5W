@@ -18,6 +18,22 @@ pub fn raw(dir: &Path, args: &[&str], env: &[(&str, &str)], input: Option<&str>)
     // one, even empty, prints git's deprecation hint on every call.
     c.env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_GRAFT_FILE", "/dev/null/no-grafts");
+    // Every call names its directory, and git answers for the repository found
+    // there — not one the environment names. A hook exports these (git sets
+    // GIT_DIR in a linked worktree and GIT_INDEX_FILE for every commit), and
+    // inherited by `git -C <another worktree>` they point that call at the
+    // hook's gitdir and index: a status reads the wrong index, a checkout kept
+    // in step writes it. `check_env` refuses a GIT_DIR naming another repository
+    // before anything runs; `lint --staged` hands GIT_INDEX_FILE back explicitly.
+    for k in SCOPE {
+        c.env_remove(k);
+    }
+    // A pre-receive hook reads the pushed objects from git's quarantine, which
+    // git names in these two; outside one they are cleared like the rest.
+    if !quarantined() {
+        c.env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+    }
     for (k, v) in env {
         c.env(k, v);
     }
@@ -46,6 +62,85 @@ pub fn raw(dir: &Path, args: &[&str], env: &[(&str, &str)], input: Option<&str>)
         // Only ever carried into a refusal, which is one line.
         stderr: crate::util::one_line(&String::from_utf8_lossy(&o.stderr)),
     })
+}
+
+/// What the environment can point a git call at other than the repository in
+/// its directory: the gitdir, worktree, common dir, index and ref namespace.
+const SCOPE: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+];
+
+/// Inside receive-pack's quarantine: GIT_OBJECT_DIRECTORY is the path git says
+/// holds the objects being pushed.
+fn quarantined() -> bool {
+    match (
+        std::env::var_os("GIT_QUARANTINE_PATH"),
+        std::env::var_os("GIT_OBJECT_DIRECTORY"),
+    ) {
+        (Some(q), Some(o)) => !q.is_empty() && q == o,
+        _ => false,
+    }
+}
+
+/// Refuse a GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR that names another
+/// repository or worktree than the directory 5w runs in. One naming the same
+/// one — as git sets for a hook — is fine: every call finds it from its path.
+pub fn check_env() -> Res<()> {
+    let set: Vec<&str> = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]
+        .into_iter()
+        .filter(|k| std::env::var_os(k).is_some())
+        .collect();
+    if set.is_empty() {
+        return Ok(());
+    }
+    let probe = |inherit: bool| {
+        ["--absolute-git-dir", "--git-common-dir", "--show-toplevel"].map(|q| {
+            let mut c = Command::new("git");
+            c.args(["rev-parse", "--path-format=absolute", q]);
+            if !inherit {
+                for k in SCOPE {
+                    c.env_remove(k);
+                }
+            }
+            c.stdin(Stdio::null()).stderr(Stdio::null());
+            c.output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| o.stdout)
+        })
+    };
+    let named = probe(true);
+    let here = probe(false);
+    if named != here {
+        let names: Vec<String> = set
+            .iter()
+            .map(|k| {
+                format!(
+                    "{k}={}",
+                    std::env::var_os(k).unwrap_or_default().to_string_lossy()
+                )
+            })
+            .collect();
+        return Err(crate::util::one_line(&format!(
+            "{} names another repository or worktree than the one here: unset {}, or run 5w inside it",
+            names.join(" "),
+            set.join(" ")
+        )));
+    }
+    Ok(())
+}
+
+/// The index `lint --staged` reads: the one the caller names, which during
+/// `git commit -a` or `git commit <path>` is git's temporary index of what is
+/// being committed.
+pub fn caller_index() -> Option<String> {
+    std::env::var("GIT_INDEX_FILE")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 /// Run git, trailing newlines trimmed; a non-zero exit is an error carrying stderr.

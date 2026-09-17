@@ -78,7 +78,16 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     let mut problems = Vec::new();
     match arg {
         "--staged" => {
-            let files = git::git(&repo.cwd, &["diff", "--cached", "--name-only"])?;
+            let index = git::caller_index();
+            let env: Vec<(&str, &str)> = index
+                .iter()
+                .map(|i| ("GIT_INDEX_FILE", i.as_str()))
+                .collect();
+            let o = git::raw(&repo.cwd, &["diff", "--cached", "--name-only"], &env, None)?;
+            if !o.ok {
+                return Err(format!("git diff --cached: {}", o.stderr.trim()));
+            }
+            let files = o.stdout;
             let files: Vec<&str> = files.lines().collect();
             if !touches_queue(&repo.cfg, &files) {
                 return Ok(());
@@ -93,8 +102,8 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             let head = git::rev(&repo.cwd, "HEAD");
             let old = at_rev(repo, head.as_deref());
             let new = Snap {
-                queue: show_index(repo, &repo.cfg.file),
-                archive: show_index(repo, &repo.cfg.archive),
+                queue: show_index(repo, &env, &repo.cfg.file),
+                archive: show_index(repo, &env, &repo.cfg.archive),
             };
             check(&repo.cfg, repo, &old, &new, None, "staged", &mut problems);
         }
@@ -208,8 +217,9 @@ pub fn check_texts(
     check(&repo.cfg, repo, &old, &new, Some(subject), at, out);
 }
 
-fn show_index(repo: &Repo, name: &str) -> String {
-    git::raw(&repo.cwd, &["show", &format!(":{name}")], &[], None)
+/// A file as the index `env` names (the caller's, see `git::caller_index`) holds it.
+fn show_index(repo: &Repo, env: &[(&str, &str)], name: &str) -> String {
+    git::raw(&repo.cwd, &["show", &format!(":{name}")], env, None)
         .ok()
         .filter(|o| o.ok)
         .map(|o| o.stdout)
@@ -371,6 +381,8 @@ pub fn subject_rows_texts(
     subject_rows(prefix, subject, &queue::by_id(&old), &queue::by_id(&new))
 }
 
+/// A commit name: full (40 or 64 hex, what 5w records) or a short prefix of one,
+/// as rows recorded before full ones hold.
 fn is_sha(s: Option<&str>) -> bool {
     s.is_some_and(|s| s.len() >= 7 && s.bytes().all(|b| b.is_ascii_hexdigit()))
 }
@@ -545,8 +557,7 @@ fn check(
                 if !is_sha(n.submitted.as_deref()) {
                     say(
                         id,
-                        "submitted without submitted:<sha> (git rev-parse --short=12 <branch>)"
-                            .into(),
+                        "submitted without submitted:<sha> (git rev-parse <branch>)".into(),
                     );
                 }
                 if n.via.is_some() || n.reviewed.is_some() {

@@ -36,7 +36,7 @@ is present) and per branch (`git-town-branch.<b>.parent` / `.branchtype`).
 ## Done
 
 - [x] #12 capture samples  @faces !1 >restricted via:self
-- [x] #13 read the spec  @faces !2 branch:faces/spec via:review reviewed:3f9c2a1b7d04
+- [x] #13 read the spec  @faces !2 branch:faces/spec via:review reviewed:3f9c2a1b7d04e5a6b8c9d0e1f2a3b4c5d6e7f8a9
 ```
 
 | Field                    | Meaning                                                                                       |
@@ -48,7 +48,7 @@ is present) and per branch (`git-town-branch.<b>.parent` / `.branchtype`).
 | `branch:`                | the branch doing the work; `ship` keys the gate on it                                         |
 | `rework:"…"`             | why the last attempt was rejected; `delegate` opens with it                                   |
 | `via:`                   | how it closed — `review`, or the lane's close word (`self`, `decided`)                        |
-| `submitted:` `reviewed:` | the commits submit and accept saw; `accept` and `ship` check them                             |
+| `submitted:` `reviewed:` | the commits submit and accept saw, as full shas (text output shows 12 digits, `--json` all); `accept` and `ship` check them |
 
 `[ ]` open · `[~]` submitted · `[x]` closed. Lines inside ```fences are never tasks. Ids are
 permanent. Fields are order-free, and the *last* token of a kind is the field — an earlier`>manual` in the prose stays prose.
@@ -214,6 +214,14 @@ Hand edits are checked, not trusted:
 - **`5w hook install`** (also run by `5w wt setup`) adds a pre-commit hook running `5w lint --staged`.
   Where `5w` is not installed the hook lets the commit through with a warning to follow
   PROTOCOL.md; `5w lint <range>` catches what that let through, later.
+- **A hook's environment.** git runs a hook with `GIT_DIR` set in a linked worktree and
+  `GIT_INDEX_FILE` set for every commit — for `git commit -a` or `git commit <path>` a temporary
+  index holding what is being committed. `lint --staged` reads that index. Every other git call 5w
+  makes names its directory and clears `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`,
+  `GIT_INDEX_FILE` and `GIT_NAMESPACE`, so a call in another worktree reads that worktree, not the
+  hook's; `GIT_OBJECT_DIRECTORY` and `GIT_ALTERNATE_OBJECT_DIRECTORIES` are kept only inside a
+  pre-receive quarantine, where the pushed objects are. A `GIT_DIR`, `GIT_WORK_TREE` or
+  `GIT_COMMON_DIR` naming another repository than the one 5w runs in is refused.
 
 A hook is a convenience, not a gate: `--no-verify` skips it. When adopting 5W on an existing queue,
 lint from the adoption commit onward — earlier rows predate `submitted:` and `reviewed:`.

@@ -105,7 +105,7 @@ fn generate(root: &Path, n: usize) -> Queue {
     git(root, &repo, &["add", "work.txt"]);
     git(root, &repo, &["commit", "-qm", "work"]);
     git(root, &repo, &["checkout", "-q", "main"]);
-    let sha = git(root, &repo, &["rev-parse", "--short=12", "bench/work"]);
+    let sha = git(root, &repo, &["rev-parse", "bench/work"]);
 
     let archived = n / 2;
     let first = archived + 1;

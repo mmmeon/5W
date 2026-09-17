@@ -198,14 +198,16 @@ fn ship_check(
                 };
                 if git::change_id(p, trunk, head)? == git::change_id(p, trunk, &reviewed)? {
                     println!(
-                        "5w ci: #{} accepted at {r}; {branch} at {} is that change",
+                        "5w ci: #{} accepted at {}; {branch} at {} is that change",
                         t.id,
+                        short(r),
                         short(head)
                     );
                 } else {
                     out.push(format!(
-                        "#{}: {branch} is not the change accepted at {r} — re-review (`git range-diff {r}...{}`)",
+                        "#{}: {branch} is not the change accepted at {} — re-review (`git range-diff {r}...{}`)",
                         t.id,
+                        short(r),
                         short(head)
                     ));
                 }
@@ -303,17 +305,18 @@ fn submit_event(repo: &Repo, branch: &str, head: Option<&str>, task: Option<u64>
     match (t.state, t.submitted.as_deref()) {
         (State::Done, _) => println!("5w ci: #{id} is closed — nothing to submit"),
         (State::Review, Some(s)) if head.starts_with(s) => {
-            println!("5w ci: #{id} already submitted at {s}")
+            println!("5w ci: #{id} already submitted at {}", short(s))
         }
         (State::Review, s) => println!(
             "5w ci: #{id} submitted at {}; {branch} is now at {} — review reads the drift, accept names the commit reviewed",
-            s.unwrap_or("?"),
+            s.map(short).unwrap_or("?"),
             short(&head)
         ),
         (State::Open, _) => match rejected_at(repo, id) {
             // A re-run of the job that submitted what was rejected must not resubmit it.
             Some(r) if t.rework.is_some() && head.starts_with(&r) => println!(
-                "5w ci: #{id} was rejected at {r} — a new commit on {branch} submits it again"
+                "5w ci: #{id} was rejected at {} — a new commit on {branch} submits it again",
+                short(&r)
             ),
             _ => crate::tasks::submit_at(repo, &t, branch, &head)?,
         },
@@ -346,14 +349,14 @@ fn accept_event(
     }
     match (t.state, t.reviewed.as_deref()) {
         (State::Done, Some(r)) if reviewed.starts_with(r) => {
-            println!("5w ci: #{id} already accepted at {r}")
+            println!("5w ci: #{id} already accepted at {}", short(r))
         }
         (State::Done, _) => println!(
             "5w ci: #{id} is closed (via:{}{}) — nothing to accept",
             t.via.as_deref().unwrap_or("?"),
             t.reviewed
                 .as_deref()
-                .map(|r| format!(", reviewed:{r}"))
+                .map(|r| format!(", reviewed:{}", short(r)))
                 .unwrap_or_default()
         ),
         (State::Open, _) => bail!(
@@ -365,7 +368,8 @@ fn accept_event(
                 && !git::ok(p, &["merge-base", "--is-ancestor", s, &reviewed])
             {
                 bail!(
-                    "#{id} was submitted at {s}, which {} does not contain — the review predates the submit",
+                    "#{id} was submitted at {}, which {} does not contain — the review predates the submit",
+                    short(s),
                     short(&reviewed)
                 );
             }

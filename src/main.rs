@@ -142,6 +142,7 @@ fn dispatch(args: Vec<String>) -> Res<()> {
     if cmd == "self-update" {
         return upkeep::self_update(rest);
     }
+    git::check_env()?;
     let repo = Repo::open()?;
     match cmd.as_str() {
         "wt" => wt::run(&repo, rest),

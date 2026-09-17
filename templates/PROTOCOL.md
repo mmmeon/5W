@@ -21,7 +21,8 @@ If `5w` is installed, use it instead of editing.
   No `>lane` means the default lane, `>agent` unless configured.
 - Open rows sit under `## Open` (or their lane's own heading); closed rows under `## Done` or in the
   archive file `DONE.md`. Lines inside ``` fences are never rows.
-- A `<sha>` is `git rev-parse --short=12 <branch>`.
+- A `<sha>` is the full commit name, `git rev-parse <branch>`. A shorter prefix (7 or more hex
+  digits) in an older row still reads.
 
 ## Edits, and what each must carry
 

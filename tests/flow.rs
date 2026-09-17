@@ -225,6 +225,82 @@ fn full_loop_add_submit_accept_ship() {
 }
 
 #[test]
+fn submit_and_accept_record_full_shas_and_short_ones_still_read() {
+    let r = Repo::new("fullsha");
+    r.ok(&r.main, &["add", "one"]);
+    r.ok(&r.main, &["add", "two"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "x.txt", "x\n");
+    let tip = r.git(&r.main, &["rev-parse", "a/x"]);
+
+    // A prefix could come to name another object; the row holds the whole name,
+    // and text output shows 12 of it.
+    let out = r.ok(&wt, &["submit", "1"]);
+    assert!(out.contains(&format!("a/x at {}\n", &tip[..12])), "{out}");
+    assert!(
+        r.line(1).ends_with(&format!(" submitted:{tip}")),
+        "{}",
+        r.line(1)
+    );
+    let shown = r.ok(&r.main, &["show", "1"]);
+    assert!(
+        shown.contains(&format!("submitted at {}", &tip[..12])),
+        "{shown}"
+    );
+    assert!(!shown.contains(&tip[..13]), "{shown}");
+    let json = r.ok(&r.main, &["review", "--json", "--full"]);
+    assert!(json.contains(&format!("\"submitted\":\"{tip}\"")), "{json}");
+    let out = r.ok(&r.main, &["accept", "1"]);
+    assert!(
+        out.contains(&format!("accepted at {}\n", &tip[..12])),
+        "{out}"
+    );
+    assert!(
+        r.line(1).ends_with(&format!(" reviewed:{tip}")),
+        "{}",
+        r.line(1)
+    );
+    r.lint_history();
+
+    // Rows holding 12-hex prefixes, as earlier versions wrote them, still
+    // review, show, accept, audit and ship.
+    r.ok(&r.main, &["wt", "new", "b/y"]);
+    let wt = r.wt("b/y");
+    r.commit_in(&wt, "y.txt", "y\n");
+    r.ok(&wt, &["submit", "2"]);
+    let tip2 = r.git(&r.main, &["rev-parse", "b/y"]);
+    let t = r
+        .tasks()
+        .replace(&tip, &tip[..12])
+        .replace(&tip2, &tip2[..12]);
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    r.git(&r.main, &["commit", "-qam", "chore(tasks): shorten"]);
+    assert!(r.line(2).ends_with(&format!(" submitted:{}", &tip2[..12])));
+    let json = r.ok(&r.main, &["review", "--json", "--full"]);
+    assert!(
+        json.contains(&format!("\"submitted\":\"{}\"", &tip2[..12]))
+            && json.contains("\"moved\":0"),
+        "{json}"
+    );
+    r.ok(&r.main, &["show", "2"]);
+    r.ok(&r.main, &["accept", "2"]);
+    assert!(
+        r.line(2).ends_with(&format!(" reviewed:{tip2}")),
+        "{}",
+        r.line(2)
+    );
+    r.ok(&r.main, &["audit"]);
+    let out = r.ok(&r.main, &["ship", "a/x", "--sync"]);
+    assert!(
+        out.contains(&format!("at {} (rebased since; same change)", &tip[..12])),
+        "{out}"
+    );
+    r.ok(&r.main, &["ship", "b/y", "--sync"]);
+    assert!(r.main.join("x.txt").exists() && r.main.join("y.txt").exists());
+}
+
+#[test]
 fn a_peers_uncommitted_row_is_never_swept_into_a_commit() {
     let r = Repo::new("peer");
     r.ok(&r.main, &["add", "first"]);
@@ -2843,6 +2919,99 @@ fn the_hook_blocks_a_bad_hand_edit_and_warns_without_the_binary() {
     assert!(r.main.join("PROTOCOL.md").exists());
 }
 
+#[test]
+fn the_hook_lints_what_commit_a_and_commit_path_are_committing() {
+    // git hands the hook a temporary index (GIT_INDEX_FILE) for these: the
+    // commit is that index, not .git/index.
+    let r = Repo::new("hook-index");
+    r.ok(&r.main, &["hook", "install"]);
+    r.ok(&r.main, &["add", "x"]);
+    let bad = r.tasks().replace("- [ ] #1 x", "- [x] #1 x");
+    let commit = |args: &[&str]| {
+        let mut c = Command::new("git");
+        c.args(args).current_dir(&r.main);
+        env(&mut c, &r.root);
+        c.output().unwrap()
+    };
+    std::fs::write(r.main.join("TASKS.md"), &bad).unwrap();
+    let o = commit(&["commit", "-qam", "chore(tasks): bad"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("closed without via"),
+        "{err}"
+    );
+
+    // Only TASKS.md is committed; the staged README is not, and is no queue edit.
+    std::fs::write(r.main.join("README"), "changed\n").unwrap();
+    r.git(&r.main, &["add", "README"]);
+    let o = commit(&["commit", "-qm", "chore(tasks): bad", "TASKS.md"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("closed without via"),
+        "{err}"
+    );
+
+    // A good edit committed the same ways goes through.
+    let good = r.tasks().replace("- [x] #1 x", "- [x] #1 x via:self");
+    std::fs::write(r.main.join("TASKS.md"), &good).unwrap();
+    let o = commit(&["commit", "-qm", "chore(tasks): done #1", "TASKS.md"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        r.git(&r.main, &["diff", "--cached", "--name-only"]),
+        "README"
+    );
+}
+
+#[test]
+fn a_hook_in_a_linked_worktree_leaves_every_index_alone() {
+    // git sets GIT_DIR (the worktree's gitdir) and GIT_INDEX_FILE for a hook in a
+    // linked worktree; 5w's calls in other worktrees must not inherit them.
+    let r = Repo::new("hook-wt");
+    r.ok(&r.main, &["add", "one"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    std::fs::write(
+        r.main.join(".git/hooks/post-commit"),
+        "#!/bin/sh\n[ \"$(git symbolic-ref --short HEAD)\" = a/x ] && exec 5w submit 1\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        r.main.join(".git/hooks/post-commit"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    r.commit_in(&wt, "f", "1\n");
+    assert!(r.line(1).starts_with("- [~] #1"), "{}", r.tasks());
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    assert_eq!(r.git(&wt, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_git_dir_naming_another_repository_is_refused() {
+    let r = Repo::new("gitdir");
+    let other = r.root.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    r.git(&other, &["init", "-q", "-b", "main"]);
+    let run = |k: &str, v: &Path, cwd: &Path| {
+        let mut c = Command::new(bin5w());
+        c.args(["ready"]).current_dir(cwd);
+        env(&mut c, &r.root);
+        c.env(k, v);
+        c.output().unwrap()
+    };
+    let err = refusal(&run("GIT_DIR", &other.join(".git"), &r.main), &["ready"]);
+    assert!(err.contains("unset GIT_DIR"), "{err}");
+    let err = refusal(&run("GIT_WORK_TREE", &other, &r.main), &["ready"]);
+    assert!(err.contains("unset GIT_WORK_TREE"), "{err}");
+    // Naming the repository it runs in, relative or not, is no conflict.
+    assert!(run("GIT_DIR", Path::new(".git"), &r.main).status.success());
+    assert!(
+        run("GIT_DIR", &r.main.join(".git"), &r.main)
+            .status
+            .success()
+    );
+}
+
 // --- ci: forge-neutral checks ---------------------------------------------------------
 
 fn path_with_5w() -> String {
@@ -3128,10 +3297,7 @@ fn ci_events_submit_and_accept_a_change_request() {
     let head = tip(&ci, "origin/a/x");
     let out = r.ok(&ci, &submit);
     assert!(out.contains("#1 submitted — a/x at"), "{out}");
-    assert!(
-        row(&ci).starts_with("- [~] #1")
-            && row(&ci).contains(&format!("submitted:{}", &head[..12]))
-    );
+    assert!(row(&ci).starts_with("- [~] #1") && row(&ci).ends_with(&format!(" submitted:{head}")));
     // A re-run is a no-op, not an error, and commits nothing.
     let before = tip(&ci, "main");
     assert!(r.ok(&ci, &submit).contains("#1 already submitted at"));

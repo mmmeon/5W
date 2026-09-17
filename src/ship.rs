@@ -547,17 +547,21 @@ fn verify_reviewed(
                 t.via.as_deref().unwrap_or("unrecorded")
             ),
             Some(r) if tip.starts_with(r.as_str()) => {
-                say!("ship: authorised by #{} via:review at {r}", t.id)
+                say!("ship: authorised by #{} via:review at {}", t.id, short(r))
             }
             Some(r) => {
                 let Some(reviewed) = git::rev(p, r) else {
                     if force {
-                        note(format!("ship: reviewed commit {r} is gone; --force"));
+                        note(format!(
+                            "ship: reviewed commit {} is gone; --force",
+                            short(r)
+                        ));
                         continue;
                     }
                     bail!(
-                        "#{} was reviewed at {r}, which no longer exists; re-review, then `{tasks} accept {} --force --at {branch}`",
+                        "#{} was reviewed at {}, which no longer exists; re-review, then `{tasks} accept {} --force --at {branch}`",
                         t.id,
+                        short(r),
                         t.id
                     )
                 };
@@ -565,23 +569,27 @@ fn verify_reviewed(
                 let then = git::change_id(p, trunk, &reviewed)?;
                 if now == then {
                     say!(
-                        "ship: authorised by #{} via:review at {r} (rebased since; same change)",
-                        t.id
+                        "ship: authorised by #{} via:review at {} (rebased since; same change)",
+                        t.id,
+                        short(r)
                     );
                 } else if let Some(under) = landed_under(repo, all, &reviewed, &now)? {
                     say!(
-                        "ship: authorised by #{} via:review at {r} (on #{under}, which landed; same change)",
-                        t.id
+                        "ship: authorised by #{} via:review at {} (on #{under}, which landed; same change)",
+                        t.id,
+                        short(r)
                     );
                 } else if force {
                     note(format!(
-                        "ship: #{}'s branch changed since review at {r}; --force",
-                        t.id
+                        "ship: #{}'s branch changed since review at {}; --force",
+                        t.id,
+                        short(r)
                     ));
                 } else {
                     bail!(
-                        "{branch} is not the change #{} accepted at {r}: `git range-diff {trunk}...{r} {trunk}...{branch}`; re-review with `{tasks} open {id}`, submit, accept",
+                        "{branch} is not the change #{} accepted at {}: `git range-diff {trunk}...{r} {trunk}...{branch}`; re-review with `{tasks} open {id}`, submit, accept",
                         t.id,
+                        short(r),
                         id = t.id
                     );
                 }

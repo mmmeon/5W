@@ -747,10 +747,10 @@ fn print_task(q: &Q, t: &Task) {
         facts.push(format!("blocks {}", ids_str(&deps)));
     }
     if let Some(s) = &t.submitted {
-        facts.push(format!("submitted at {s}"));
+        facts.push(format!("submitted at {}", short(s)));
     }
     if let Some(r) = &t.reviewed {
-        facts.push(format!("reviewed at {r}"));
+        facts.push(format!("reviewed at {}", short(r)));
     }
     if let Some(v) = &t.via {
         facts.push(format!("via:{v}"));
@@ -1326,7 +1326,9 @@ pub fn submit_at(repo: &Repo, t: &Task, branch: &str, tip: &str) -> Res<()> {
         eprintln!("warning: {branch} has nothing {} lacks", repo.trunk);
     }
     warn_not_delegable(repo, t, "submit it");
-    let sha = short(tip).to_string();
+    // The full sha: a prefix is ambiguous once another object shares it, and could
+    // name a different commit than the one submitted.
+    let sha = tip.to_string();
     let msg = format!("{}: submit #{id} for review", repo.cfg.commit_prefix);
     let tasks_cmd = repo.cfg.cmd_tasks.clone();
     store::transact(
@@ -1353,7 +1355,7 @@ pub fn submit_at(repo: &Repo, t: &Task, branch: &str, tip: &str) -> Res<()> {
             )
         },
     )?;
-    println!("  #{id} submitted — {branch} at {sha}");
+    println!("  #{id} submitted — {branch} at {}", short(&sha));
     Ok(())
 }
 
@@ -1528,7 +1530,8 @@ pub fn accept_one(repo: &Repo, id: u64, at: Option<&str>, force: bool) -> Res<()
                     )
                     .unwrap_or("?".into());
                     bail!(
-                        "{b} gained {n} commit(s) after it was submitted at {sub}: `git log {sub}..{b}`; once reviewed, `{tasks} accept {id} --at {}`",
+                        "{b} gained {n} commit(s) after it was submitted at {}: `git log {sub}..{b}`; once reviewed, `{tasks} accept {id} --at {}`",
+                        short(sub),
                         short(&tip)
                     );
                 }
@@ -1542,7 +1545,7 @@ pub fn accept_one(repo: &Repo, id: u64, at: Option<&str>, force: bool) -> Res<()
             ),
         }
     }
-    let sha = reviewed.as_deref().map(|r| short(r).to_string());
+    let sha = reviewed.clone();
     let msg = format!("{}: accept #{id}", repo.cfg.commit_prefix);
     let done = repo.cfg.done_section.clone();
     let seen = (t.state, t.submitted.clone(), t.branch.clone());
@@ -1576,7 +1579,8 @@ pub fn accept_one(repo: &Repo, id: u64, at: Option<&str>, force: bool) -> Res<()
     )?;
     println!(
         "  #{id} accepted{}",
-        sha.map(|s| format!(" at {s}")).unwrap_or_default()
+        sha.map(|s| format!(" at {}", short(&s)))
+            .unwrap_or_default()
     );
     Ok(())
 }
