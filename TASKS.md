@@ -29,6 +29,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #77 change_id drops hunk line numbers @ship !3
   so a reviewed hunk applied at a different place in the same file has the same change id
   Found reviewing #11 (pre-existing, affects ship and the gate): git::change_id normalises away hunk line numbers so clean rebases pass; with two identical blocks in a file and no distinguishing context line, inserting the reviewed line into the other block yields byte-identical normalised patches, so ship/ci accept code placed somewhere nobody reviewed. Find a rebase-stable way to pin position (e.g. compare the post-image of each changed file region with more context, or verify the resulting blob of each touched file equals the reviewed commit's blob rebased — 3-way apply of the reviewed diff onto the new base and compare trees), keep a clean rebase passing, and test the two-identical-blocks case.
+- [ ] #78 5w init in a repository whose branch is master writes trunk = "main" into .5w.toml @queue !1
+  Found reviewing #11 (pre-existing): init doesn't detect the current branch / origin HEAD, so a master-based repo gets trunk = "main" and later commands and server hooks look for a ref that doesn't exist. Detect the trunk at init (current branch, else origin/HEAD, else main) and test with a master repo.
 
 ## Done
 
