@@ -2615,6 +2615,193 @@ fn ci_branch_mode_is_the_ship_check() {
     assert!(text(o).contains("not the change accepted"));
 }
 
+/// A CI job's clone of a forge: detached at the change request, the trunk fetched.
+fn ci_clone(r: &Repo, forge: &Path, name: &str) -> PathBuf {
+    let dir = r.root.join(name);
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            forge.to_str().unwrap(),
+            dir.to_str().unwrap(),
+        ],
+    );
+    r.git(&dir, &["checkout", "-q", "--detach", "origin/a/x"]);
+    dir
+}
+
+#[test]
+fn ci_events_submit_and_accept_a_change_request() {
+    let r = Repo::new("cievents");
+    r.ok(&r.main, &["add", "x", "branch:a/x"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    let forge = r.root.join("forge.git");
+    let fp = forge.to_str().unwrap();
+    r.git(
+        &r.root,
+        &["clone", "-q", "--bare", r.main.to_str().unwrap(), fp],
+    );
+    let ci = ci_clone(&r, &forge, "ci");
+    let tip = |d: &Path, rev: &str| r.git(d, &["rev-parse", rev]);
+    let row = |d: &Path| {
+        r.git(d, &["show", "main:TASKS.md"])
+            .lines()
+            .find(|l| l.contains("] #1 "))
+            .unwrap()
+            .to_string()
+    };
+    let submit = ["ci", "--event", "submit", "--branch", "a/x"];
+
+    // The trunk only as origin's: an event has nowhere to commit, and says how to fix it.
+    r.git(&ci, &["branch", "-qD", "main"]);
+    assert!(
+        r.refuses(&ci, &submit)
+            .contains("`git fetch origin +main:main` first")
+    );
+    r.git(&ci, &["fetch", "-q", "origin", "+main:main"]);
+    let b = ci_clone(&r, &forge, "ci-b");
+
+    let head = tip(&ci, "origin/a/x");
+    let out = r.ok(&ci, &submit);
+    assert!(out.contains("#1 submitted — a/x at"), "{out}");
+    assert!(
+        row(&ci).starts_with("- [~] #1")
+            && row(&ci).contains(&format!("submitted:{}", &head[..12]))
+    );
+    // A re-run is a no-op, not an error, and commits nothing.
+    let before = tip(&ci, "main");
+    assert!(r.ok(&ci, &submit).contains("#1 already submitted at"));
+    assert_eq!(tip(&ci, "main"), before);
+    r.git(&ci, &["push", "-q", "origin", "main"]);
+
+    // A second job raced it: its push is refused; it re-fetches and re-runs, a no-op.
+    // (A second later: in the same second both jobs would write the identical commit.)
+    let mut c = Command::new(bin5w());
+    c.args(submit).current_dir(&b);
+    env(&mut c, &r.root);
+    assert!(
+        c.env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let o = Command::new("git")
+        .args(["push", "-q", "origin", "main"])
+        .current_dir(&b)
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "the racing push must not fast-forward");
+    r.git(&b, &["fetch", "-q", "origin", "+main:main"]);
+    assert!(r.ok(&b, &submit).contains("already submitted"));
+    assert_eq!(tip(&b, "main"), before);
+
+    // Rejected; the job re-run at the rejected head does not resubmit it.
+    r.ok(&ci, &["reject", "1", "no"]);
+    let out = r.ok(&ci, &submit);
+    assert!(out.contains("#1 was rejected at"), "{out}");
+    assert!(row(&ci).starts_with("- [ ] #1"));
+    // A new commit on the change request submits it again.
+    r.commit_in(&wt, "f", "2\n");
+    r.git(&r.main, &["push", "-q", fp, "a/x"]);
+    r.git(&ci, &["fetch", "-q", "origin"]);
+    let old = head;
+    let head = tip(&ci, "origin/a/x");
+    assert!(r.ok(&ci, &submit).contains("#1 submitted"));
+
+    // Approved at a commit the change request has moved past: refused.
+    assert!(
+        r.refuses(
+            &ci,
+            &["ci", "--event", "accept", "--branch", "a/x", "--at", &old]
+        )
+        .contains("the review approved")
+    );
+    let out = r.ok(
+        &ci,
+        &["ci", "--event", "accept", "--branch", "a/x", "--at", &head],
+    );
+    assert!(
+        out.contains(&format!("#1 accepted at {}", &head[..12])),
+        "{out}"
+    );
+    assert!(row(&ci).starts_with("- [x] #1") && row(&ci).contains("via:review"));
+    let before = tip(&ci, "main");
+    assert!(
+        r.ok(
+            &ci,
+            &["ci", "--event", "accept", "--branch", "a/x", "--at", &head]
+        )
+        .contains("#1 already accepted at")
+    );
+    assert_eq!(tip(&ci, "main"), before);
+    // The change request's check now passes, and every event commit passes lint.
+    r.ok(&ci, &["ci", "--branch", "a/x", "--head", &head]);
+    let root = r.git(&ci, &["rev-list", "--max-parents=0", "main"]);
+    r.ok(&ci, &["lint", &format!("{root}..main")]);
+}
+
+#[test]
+fn ci_events_refuse_in_one_line() {
+    let r = Repo::new("cievrefuse");
+    r.ok(&r.main, &["add", "x", "branch:a/x"]);
+    r.ok(&r.main, &["add", "y", "branch:a/x"]);
+    r.ok(&r.main, &["add", "z", "branch:b/z"]);
+    r.git(&r.main, &["branch", "a/x"]);
+    r.git(&r.main, &["branch", "b/z"]);
+    let sha = r.git(&r.main, &["rev-parse", "HEAD"]);
+    for (args, want) in [
+        (
+            &["ci", "--event", "merge", "--branch", "a/x"][..],
+            "--event is submit or accept",
+        ),
+        (&["ci", "--event", "submit"][..], "needs --branch"),
+        (
+            &["ci", "--event", "submit", "--branch", "a/x"][..],
+            "#1, #2 name a/x — pass --task",
+        ),
+        (
+            &["ci", "--event", "submit", "--branch", "b/z", "--at", "HEAD"][..],
+            "goes with --event accept",
+        ),
+        (
+            &["ci", "--event", "accept", "--branch", "b/z"][..],
+            "needs --at",
+        ),
+        (
+            &[
+                "ci", "--event", "submit", "--branch", "b/z", "--base", "HEAD",
+            ][..],
+            "not --base",
+        ),
+        (&["ci", "--at", "HEAD"][..], "go with --event"),
+        (
+            &["ci", "--event", "submit", "--branch", "main"][..],
+            "not a task branch",
+        ),
+        (
+            &["ci", "--event", "submit", "--branch", "b/z", "--task", "1"][..],
+            "#1 names branch a/x, not b/z",
+        ),
+        (
+            &["ci", "--event", "accept", "--branch", "b/z", "--at", &sha][..],
+            "#3 is not submitted",
+        ),
+    ] {
+        assert!(r.refuses(&r.main, args).contains(want), "{args:?}");
+    }
+    // A branch no task names: nothing to do, not a failure.
+    r.git(&r.main, &["branch", "c/free"]);
+    let out = r.ok(&r.main, &["ci", "--event", "submit", "--branch", "c/free"]);
+    assert!(
+        out.contains("no task names c/free — nothing to submit"),
+        "{out}"
+    );
+    r.lint_history();
+}
+
 #[test]
 fn lane_kinds_set_behaviour_whatever_the_lane_is_called() {
     let r = Repo::new("kinds");

@@ -56,3 +56,6 @@ Never:
 - A branch lands only after its row is `[x] via:review`, by fast-forward, and only if what it adds
   is still exactly what was reviewed at `reviewed:`. Anything added after review needs a fresh
   submit and accept.
+- A CI job may make the submit and accept edits for a change request (`5w ci --event`): the same
+  edits, pushed to the trunk. Accept is then the forge's approval of the change request's tip, and
+  the forge decides whose approval counts.

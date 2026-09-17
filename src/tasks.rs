@@ -41,6 +41,7 @@ protocol (PROTOCOL.md — the rules, for editing without the tool)
   version [--latest]                   this 5w; --latest also the newest release (changes nothing)
   self-update [--latest]               install the 5w requires pins, signature and sum checked; or the newest
   ci --base --head --ref|--branch      the forge-neutral check for CI and pre-receive
+  ci --event submit|accept --branch    a change request's events as queue edits, from CI
 
 feedback about 5W itself
   report <what happened>               save a report locally (last failure attached); nothing is sent
@@ -1310,6 +1311,13 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
     }
     let tip =
         git::rev(&repo.primary, &format!("refs/heads/{branch}")).ok_or("cannot resolve branch")?;
+    submit_at(repo, t, &branch, &tip)
+}
+
+/// Submit `t` as `branch` at `tip`: the commit `submit` and `ci --event submit` share.
+pub fn submit_at(repo: &Repo, t: &Task, branch: &str, tip: &str) -> Res<()> {
+    let id = t.id;
+    let branch = branch.to_string();
     let ahead = git::git(
         &repo.primary,
         &["rev-list", "--count", &format!("{}..{tip}", repo.trunk)],
@@ -1318,7 +1326,7 @@ fn submit(repo: &Repo, args: &[String]) -> Res<()> {
         eprintln!("warning: {branch} has nothing {} lacks", repo.trunk);
     }
     warn_not_delegable(repo, t, "submit it");
-    let sha = short(&tip).to_string();
+    let sha = short(tip).to_string();
     let msg = format!("{}: submit #{id} for review", repo.cfg.commit_prefix);
     let tasks_cmd = repo.cfg.cmd_tasks.clone();
     store::transact(
@@ -1486,7 +1494,7 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
     Ok(())
 }
 
-fn accept_one(repo: &Repo, id: u64, at: Option<&str>, force: bool) -> Res<()> {
+pub fn accept_one(repo: &Repo, id: u64, at: Option<&str>, force: bool) -> Res<()> {
     let tasks = &repo.cfg.cmd_tasks;
     let q = Q::load(repo)?;
     let t = q.get(id)?;

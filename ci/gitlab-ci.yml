@@ -1,15 +1,19 @@
-# 5w — include in .gitlab-ci.yml (or copy the job). 5w is installed at the version
+# 5w — include in .gitlab-ci.yml (or copy the jobs). 5w is installed at the version
 # .5w.toml pins (`requires`), verified against SHA256SUMS and, when present, its
 # signature; the before_script is ci/install-5w.sh, inlined. Make the pipeline
 # required to merge; a merge request stays red until its task is accepted —
 # re-run the pipeline after `5w accept`.
-5w:
+#
+# Forge events as queue transitions (optional; set FIVEW_PUSH_TOKEN, a token that
+# may push to the trunk, to opt in): a merge request pipeline submits the task
+# naming its branch, and the manual `5w:accept` job accepts it at the pipeline's
+# commit. GitLab runs no pipeline on an approval, so whoever may run that manual
+# job is who accepts — restrict it with a protected environment. The queue
+# commit is unsigned unless the runner has a key. See the README's *Forge events*.
+.5w:
   image: debian:stable-slim
   variables:
     GIT_DEPTH: "0"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
   before_script:
     - apt-get update -qq && apt-get install -qq -y curl gnupg >/dev/null
     - |
@@ -47,9 +51,32 @@
       mkdir -p "$dest"
       install -m 755 "$tmp/$asset" "$dest/5w"
       echo "install-5w: $("$dest/5w" --version) → $dest/5w" >&2
+    - |
+      # 5w ci --event with the trunk pushed back, retried when a racing job moved it
+      # (a re-run is a no-op). No FIVEW_PUSH_TOKEN: events are off.
+      event() {
+        [ -n "${FIVEW_PUSH_TOKEN:-}" ] || return 0
+        t=$CI_MERGE_REQUEST_TARGET_BRANCH_NAME
+        git config user.name "5w ci"; git config user.email "5w-ci@$CI_SERVER_HOST"
+        git remote set-url --push origin "https://oauth2:$FIVEW_PUSH_TOKEN@$CI_SERVER_HOST/$CI_PROJECT_PATH.git"
+        for try in 1 2 3; do
+          git fetch -q origin "+refs/heads/$t:refs/heads/$t"
+          5w ci --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" \
+                --head "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}" "$@"
+          git push -q origin "refs/heads/$t" && return 0
+        done
+        return 1
+      }
+
+5w:
+  extends: .5w
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
   script:
     - |
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
+        event --event submit
         git fetch -q origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
         5w ci --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA" \
               --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" \
@@ -57,3 +84,17 @@
       else
         5w ci --base "$CI_COMMIT_BEFORE_SHA" --head "$CI_COMMIT_SHA" --ref "refs/heads/$CI_COMMIT_BRANCH"
       fi
+
+5w:accept:
+  extends: .5w
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $FIVEW_PUSH_TOKEN
+      when: manual
+      allow_failure: true
+  environment: 5w-accept
+  script:
+    - |
+      # The branch must still be at this pipeline's commit: a newer push needs its own review.
+      git fetch -q origin "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+      event --event accept --at "${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-$CI_COMMIT_SHA}" \
+            --head "$(git rev-parse FETCH_HEAD)"

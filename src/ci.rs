@@ -7,12 +7,13 @@
 use crate::bail;
 use crate::git;
 use crate::lint;
-use crate::queue::{self, State};
+use crate::queue::{self, State, Task};
 use crate::store::Repo;
-use crate::util::{Res, short};
+use crate::util::{Res, parse_id, short};
 
 pub const USAGE: &str = "\
 usage: 5w ci [--base <rev>] [--head <rev>] [--ref <refname> | --branch <name>] [--trunk <ref>]
+       5w ci --event submit|accept --branch <name> [--head <rev>] [--at <rev>] [--task <id>]
 
   --head <rev>       the new tip (default HEAD)
   --base <rev>       the old tip; commits in base..head are checked. Omitted, or
@@ -25,11 +26,21 @@ usage: 5w ci [--base <rev>] [--head <rev>] [--ref <refname> | --branch <name>] [
   --trunk <ref>      where the trunk is (default refs/heads/<trunk>, else
                      refs/remotes/origin/<trunk>)
 
-Needs full history in the checkout. Exit 0 clean, 1 with one line per finding.";
+Needs full history in the checkout. Exit 0 clean, 1 with one line per finding.
+
+  --event submit     a change request opened or updated: submit the task naming
+                     --branch at --head (default: the branch, else origin's)
+  --event accept     an approving review: accept that task at --at, the reviewed
+                     commit, which must be --head — the change request's tip now
+  --task <id>        the task, when none names the branch yet
+
+An event commits to refs/heads/<trunk> and does not push; re-running one is a
+no-op. Exit 0 done or nothing to do, 1 refused.";
 
 pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     let (mut base, mut head, mut refname, mut branch, mut trunk_ref) =
         (None, None, None, None, None);
+    let (mut event, mut at, mut task) = (None, None, None);
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -44,6 +55,9 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             "--ref" => refname = v,
             "--branch" => branch = v,
             "--trunk" => trunk_ref = v,
+            "--event" => event = v,
+            "--at" => at = v,
+            "--task" => task = v,
             _ if a.starts_with('-') => return Err(crate::tasks::unknown_flag(repo, "ci", a)),
             _ => bail!(
                 "ci takes only flags, not {a:?} ({} ci --help)",
@@ -51,6 +65,31 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             ),
         }
         i += 2;
+    }
+    if let Some(e) = event {
+        if base.is_some() || refname.is_some() || trunk_ref.is_some() {
+            bail!("--event takes --branch, --head, --at and --task, not --base, --ref or --trunk");
+        }
+        let Some(b) = branch else {
+            bail!("--event {e} needs --branch <name>, the change request's branch")
+        };
+        let task = task.as_deref().map(parse_id).transpose()?;
+        return match e.as_str() {
+            "submit" if at.is_some() => {
+                bail!("--at is the reviewed commit: it goes with --event accept")
+            }
+            "submit" => submit_event(repo, &b, head.as_deref(), task),
+            "accept" => {
+                let Some(at) = at else {
+                    bail!("--event accept needs --at <rev>, the commit the review approved")
+                };
+                accept_event(repo, &b, head.as_deref(), &at, task)
+            }
+            _ => bail!("--event is submit or accept, not {e:?}"),
+        };
+    }
+    if at.is_some() || task.is_some() {
+        bail!("--at and --task go with --event");
     }
     if refname.is_some() && branch.is_some() {
         bail!("--ref is a push, --branch a change request: give one");
@@ -187,4 +226,169 @@ fn ship_check(
         }
     }
     Ok(())
+}
+
+/// The task an event is about: `--task`, else the one unclosed task naming the
+/// branch. `None` with a note printed when there is nothing to act on.
+fn event_task(repo: &Repo, branch: &str, task: Option<u64>, what: &str) -> Res<Option<Task>> {
+    if git::rev(&repo.primary, &format!("refs/heads/{}", repo.trunk)).is_none() {
+        bail!(
+            "ci --event commits to refs/heads/{0}, which this clone lacks — `git fetch origin +{0}:{0}` first",
+            repo.trunk
+        );
+    }
+    let committed = |f: &str| repo.committed_file(f).map(Option::unwrap_or_default);
+    let mut all = queue::parse(&committed(&repo.cfg.file)?);
+    all.extend(queue::parse(&committed(&repo.cfg.archive)?));
+    if let Some(id) = task {
+        let Some(t) = all.into_iter().find(|t| t.id == id) else {
+            bail!("#{id} is not on {}'s queue", repo.trunk)
+        };
+        if let Some(tb) = t.branch.as_deref().filter(|tb| *tb != branch) {
+            bail!("#{id} names branch {tb}, not {branch}");
+        }
+        return Ok(Some(t));
+    }
+    let naming: Vec<Task> = all
+        .into_iter()
+        .filter(|t| t.branch.as_deref() == Some(branch))
+        .collect();
+    let open: Vec<&Task> = naming.iter().filter(|t| t.state != State::Done).collect();
+    match (open.as_slice(), naming.first()) {
+        ([one], _) => Ok(Some((*one).clone())),
+        ([], Some(t)) => Ok(Some(t.clone())),
+        ([], None) => {
+            println!("5w ci: no task names {branch} — nothing to {what} (--task <id> names one)");
+            Ok(None)
+        }
+        (many, _) => bail!(
+            "{} name {branch} — pass --task <id>",
+            many.iter()
+                .map(|t| format!("#{}", t.id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// `--head`, else the branch, else origin's copy of it.
+fn event_head(repo: &Repo, branch: &str, head: Option<&str>) -> Res<String> {
+    let p = &repo.primary;
+    match head {
+        Some(h) => git::rev(p, h)
+            .ok_or_else(|| format!("ci: --head {h} is not a commit — pass a branch, tag or sha")),
+        None => git::rev(p, &format!("refs/heads/{branch}"))
+            .or_else(|| git::rev(p, &format!("refs/remotes/origin/{branch}")))
+            .ok_or_else(|| {
+                format!("ci: no branch {branch} in this clone — fetch it or pass --head")
+            }),
+    }
+}
+
+fn submit_event(repo: &Repo, branch: &str, head: Option<&str>, task: Option<u64>) -> Res<()> {
+    if branch == repo.trunk || repo.is_perennial(branch) {
+        bail!("{branch} is not a task branch — a change request from it submits nothing");
+    }
+    let Some(t) = event_task(repo, branch, task, "submit")? else {
+        return Ok(());
+    };
+    let head = event_head(repo, branch, head)?;
+    let id = t.id;
+    match (t.state, t.submitted.as_deref()) {
+        (State::Done, _) => println!("5w ci: #{id} is closed — nothing to submit"),
+        (State::Review, Some(s)) if head.starts_with(s) => {
+            println!("5w ci: #{id} already submitted at {s}")
+        }
+        (State::Review, s) => println!(
+            "5w ci: #{id} submitted at {}; {branch} is now at {} — review reads the drift, accept names the commit reviewed",
+            s.unwrap_or("?"),
+            short(&head)
+        ),
+        (State::Open, _) => match rejected_at(repo, id) {
+            // A re-run of the job that submitted what was rejected must not resubmit it.
+            Some(r) if t.rework.is_some() && head.starts_with(&r) => println!(
+                "5w ci: #{id} was rejected at {r} — a new commit on {branch} submits it again"
+            ),
+            _ => crate::tasks::submit_at(repo, &t, branch, &head)?,
+        },
+    }
+    Ok(())
+}
+
+fn accept_event(
+    repo: &Repo,
+    branch: &str,
+    head: Option<&str>,
+    at: &str,
+    task: Option<u64>,
+) -> Res<()> {
+    let p = &repo.primary;
+    let Some(t) = event_task(repo, branch, task, "accept")? else {
+        return Ok(());
+    };
+    let reviewed = git::rev(p, at).ok_or_else(|| {
+        format!("ci: --at {at} is not a commit — pass the reviewed sha, with full history fetched")
+    })?;
+    let head = event_head(repo, branch, head)?;
+    let id = t.id;
+    if head != reviewed {
+        bail!(
+            "{branch} is at {}, the review approved {} — a review of the tip accepts it",
+            short(&head),
+            short(&reviewed)
+        );
+    }
+    match (t.state, t.reviewed.as_deref()) {
+        (State::Done, Some(r)) if reviewed.starts_with(r) => {
+            println!("5w ci: #{id} already accepted at {r}")
+        }
+        (State::Done, _) => println!(
+            "5w ci: #{id} is closed (via:{}{}) — nothing to accept",
+            t.via.as_deref().unwrap_or("?"),
+            t.reviewed
+                .as_deref()
+                .map(|r| format!(", reviewed:{r}"))
+                .unwrap_or_default()
+        ),
+        (State::Open, _) => bail!(
+            "#{id} is not submitted — `{} ci --event submit --branch {branch}` comes first",
+            repo.cfg.cmd_tasks
+        ),
+        (State::Review, sub) => {
+            if let Some(s) = sub
+                && !git::ok(p, &["merge-base", "--is-ancestor", s, &reviewed])
+            {
+                bail!(
+                    "#{id} was submitted at {s}, which {} does not contain — the review predates the submit",
+                    short(&reviewed)
+                );
+            }
+            crate::tasks::accept_one(repo, id, Some(&reviewed), false)?
+        }
+    }
+    Ok(())
+}
+
+/// The commit the last rejection of `id` on the trunk sent back, if the history says.
+fn rejected_at(repo: &Repo, id: u64) -> Option<String> {
+    let p = &repo.primary;
+    let c = git::opt(
+        p,
+        &[
+            "log",
+            "-1",
+            "--format=%H",
+            "-E",
+            &format!("--grep=reject #{id}([^0-9]|$)"),
+            &format!("refs/heads/{}", repo.trunk),
+            "--",
+            &repo.cfg.file,
+        ],
+    )
+    .filter(|c| !c.is_empty())?;
+    let before = git::opt(p, &["show", &format!("{c}^:{}", repo.cfg.file)])?;
+    queue::parse(&before)
+        .into_iter()
+        .find(|t| t.id == id)?
+        .submitted
 }
