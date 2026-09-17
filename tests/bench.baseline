@@ -9,7 +9,7 @@
 10	all	773	216
 10	all --json	1532	429
 10	review	372	109
-10	review --json	548	181
+10	review --json	548	203
 10	show <id>	195	56
 10	show <id> --json	366	102
 10	delegate <id>	480	144
@@ -28,7 +28,7 @@
 100	all	7740	2134
 100	all --json	15286	4265
 100	review	1844	546
-100	review --json	3041	1013
+100	review --json	3041	1134
 100	show <id>	197	56
 100	show <id> --json	367	102
 100	delegate <id>	508	150
@@ -47,7 +47,7 @@
 1000	all	78401	21861
 1000	all --json	154122	43313
 1000	review	16852	5084
-1000	review --json	28153	9464
+1000	review --json	28153	10575
 1000	show <id>	198	55
 1000	show <id> --json	367	101
 1000	delegate <id>	488	143

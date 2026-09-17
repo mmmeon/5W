@@ -341,7 +341,9 @@ without the baseline. So output grows only as a deliberate change: rerun with
 row that shrank passes with a note, to be locked in the same way. Time is printed, never checked:
 it depends on the machine and the load, and a flaky check teaches people to ignore it. Every byte
 is deterministic — fixed identity and commit dates, so shas repeat, and the scratch path replaced by
-a fixed one.
+a fixed one. Shas are still priced as a fixed stand-in of the same length: any unrelated commit (a
+change to the protocol template `init` commits) moves every later sha, and a sha's estimated tokens
+depend on its digits.
 
 It is a test rather than a `5w bench` subcommand so that it ships nothing: the binary stays the tool,
 and the measurement runs wherever the tests do — `cargo test` locally and in CI, with no extra step,

@@ -271,8 +271,10 @@ fn measure() -> Vec<Row> {
             let args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             let (ok, out, us) = run(&root, &q.repo, &bin5w(), &args);
             assert_eq!(ok, want_ok, "5w {args:?} at {size}:\n{out}");
-            // The scratch path is this machine's, not 5w's: price a fixed one.
+            // The scratch path is this machine's, not 5w's, and the shas are
+            // the generated history's: price fixed ones.
             let out = out.replace(&root.display().to_string(), "/bench");
+            let out = unsha(&out);
             rows.push(Row {
                 size,
                 case,
@@ -285,6 +287,39 @@ fn measure() -> Vec<Row> {
         let _ = std::fs::remove_dir_all(&root);
     }
     rows
+}
+
+/// A fixed stand-in for a commit sha, cut to the sha's length: a hex string
+/// whose letters and digits alternate as irregularly as a real sha's do.
+const SHA: &str = "3f9a0c2e71b4d58f6a0e93c17d2b84f5e0a6c39d18b7f2e4a5c0d96b3e71f804";
+
+/// `text` with every commit sha replaced by [`SHA`] cut to the same length. A
+/// sha is a word of 7 to 64 lowercase hex characters holding at least one
+/// digit and one letter, so ids, dates, counts and words stay. Shas change
+/// with any unrelated commit (a template `init` commits, say), and a sha's
+/// estimated tokens change with its digits; bytes are unchanged.
+fn unsha(text: &str) -> String {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < b.len() {
+        if !word(b[i]) {
+            out.push(text[i..].chars().next().unwrap());
+            i += text[i..].chars().next().unwrap().len_utf8();
+            continue;
+        }
+        let end = (i..b.len()).find(|&j| !word(b[j])).unwrap_or(b.len());
+        let w = &text[i..end];
+        let hex = w.bytes().all(|x| matches!(x, b'0'..=b'9' | b'a'..=b'f'));
+        let sha = (7..=SHA.len()).contains(&w.len())
+            && hex
+            && w.bytes().any(|x| x.is_ascii_digit())
+            && w.bytes().any(|x| x.is_ascii_alphabetic());
+        out.push_str(if sha { &SHA[..w.len()] } else { w });
+        i = end;
+    }
+    out
 }
 
 fn table(rows: &[Row]) -> String {
@@ -380,6 +415,19 @@ fn output_cost_stays_within_the_baseline() {
          if the change is intended: FIVEW_BENCH_UPDATE=1 cargo test --test bench",
         fail.join("\n  ")
     );
+}
+
+#[test]
+fn shas_are_priced_the_same_whatever_their_digits() {
+    let a = r#"{"id":8,"tip":"3916130eab88379b3c0d0e1f2a3b4c5d6e7f8091","behind":3} submitted:230785eab883 #1024 2026-01-01 deadbeefcafe 1234567 v0.1.3"#;
+    let b = r#"{"id":8,"tip":"ffe1d2c3b4a5968778695a4b3c2d1e0f00112233","behind":3} submitted:9a8b7c6d5e4f #1024 2026-01-01 deadbeefcafe 1234567 v0.1.3"#;
+    assert_ne!(tokens::estimate(a), tokens::estimate(b));
+    let (na, nb) = (unsha(a), unsha(b));
+    assert_eq!(na, nb);
+    assert_eq!(na.len(), a.len());
+    assert!(na.contains(r#""tip":"3f9a0c2e71b4d58f6a0e93c17d2b84f5e0a6c39d""#));
+    assert!(na.contains("submitted:3f9a0c2e71b4 #1024 2026-01-01 deadbeefcafe 1234567 v0.1.3"));
+    assert_eq!(unsha("héllo abc1234 — x"), "héllo 3f9a0c2 — x");
 }
 
 #[test]
