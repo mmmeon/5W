@@ -822,26 +822,38 @@ fn staged_repair(repo: &Repo, err: &str, env: &[(&str, &str)]) -> Res<Repo> {
 /// name the restore drops. Anything this cannot read keeps the broken names.
 fn restores_accepted_names(repo: &Repo, cfg: &Config) -> bool {
     let t = &repo.trunk;
-    let Some(tip) = [
+    [
         format!("refs/heads/{t}"),
         format!("refs/remotes/origin/{t}"),
     ]
     .iter()
-    .find_map(|r| git::rev(&repo.primary, r)) else {
-        return false;
-    };
-    let Some(last) = crate::store::last_accepted_config(&repo.primary, &tip) else {
-        return false;
-    };
+    .find_map(|r| git::rev(&repo.primary, r))
+    .is_some_and(|tip| restored_name(&repo.primary, &tip, &repo.cfg, cfg).is_some())
+}
+
+/// Whether `cfg` restores, over commit `tip` whose broken config gives the names
+/// in `broken`, a queue or archive renamed in place (`restores_accepted_names`):
+/// the first it restores, as ("queue" or "archive", broken name, accepted name).
+pub(crate) fn restored_name(
+    dir: &std::path::Path,
+    tip: &str,
+    broken: &Config,
+    cfg: &Config,
+) -> Option<(&'static str, String, String)> {
+    let last = crate::store::last_accepted_config(dir, tip)?;
     let names = |c: &Config| (c.file.clone(), c.archive.clone(), c.commit_prefix.clone());
-    let has = |name: &str| git::ok(&repo.primary, &["cat-file", "-e", &format!("{tip}:{name}")]);
+    let has = |name: &str| git::ok(dir, &["cat-file", "-e", &format!("{tip}:{name}")]);
     let pairs = [
-        (&last.file, &repo.cfg.file),
-        (&last.archive, &repo.cfg.archive),
+        ("queue", &broken.file, &last.file),
+        ("archive", &broken.archive, &last.archive),
     ];
-    names(cfg) == names(&last)
-        && pairs.iter().all(|(old, new)| old == new || !has(new))
-        && pairs.iter().any(|(old, new)| old != new && has(old))
+    if names(cfg) != names(&last) || pairs.iter().any(|(_, new, old)| old != new && has(new)) {
+        return None;
+    }
+    pairs
+        .into_iter()
+        .find(|(_, new, old)| old != new && has(old))
+        .map(|(kind, new, old)| (kind, new.clone(), old.clone()))
 }
 
 /// A file as the index `env` names (the caller's, see `git::caller_index`) holds it.

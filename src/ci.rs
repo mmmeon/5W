@@ -555,6 +555,10 @@ fn trunk_gate(
         }
     }
     for c in uncovered {
+        if let Some(why) = commits.get(c).and_then(|k| unmoved_repair(repo, c, k)) {
+            out.push(why);
+            continue;
+        }
         out.push(format!(
             "{}: code on {} that no landing record covers — ship it from an accepted branch (gate_trunk)",
             short(c),
@@ -562,6 +566,33 @@ fn trunk_gate(
         ));
     }
     Ok(())
+}
+
+/// Why commit `c`, uncovered, cannot be shipped either: it changes only the config,
+/// over a first parent whose config is broken and renamed the queue or archive in
+/// place, restoring the last accepted names (`lint::restored_name`). No landing
+/// covers that repair — its record would go in a file the trunk lacks — so it is
+/// still refused, naming the admin's push past the hook (store: `unmoved_queue`).
+fn unmoved_repair(repo: &Repo, c: &str, k: &Commit) -> Option<String> {
+    let (p, t, file) = (&repo.primary, &repo.trunk, crate::store::CONFIG_FILE);
+    let [fp] = k.parents.as_slice() else {
+        return None;
+    };
+    let only_config = git::opt(p, &git::pinned_diff(&["--name-only", "-z", fp, c]))?
+        .split('\0')
+        .filter(|n| !n.is_empty())
+        .all(|n| n == file);
+    let text = git::opt(p, &["show", &format!("{fp}:{file}")]).filter(|_| only_config)?;
+    let e = crate::config::Config::from_toml(&text).err()?;
+    let cfg =
+        crate::config::Config::from_toml(&git::opt(p, &["show", &format!("{c}:{file}")])?).ok()?;
+    let broken = crate::store::broken_names(p, &text, Some(fp));
+    let (kind, new, old) = lint::restored_name(p, fp, &broken, &cfg)?;
+    let key = if kind == "queue" { "file" } else { "archive" };
+    Some(format!(
+        "{}: {file} on {t} is broken ({e}) and names the {kind} {new}, not {old} — no landing covers its repair: an admin pushes this {key} = \"{old}\" past the server's hook",
+        short(c)
+    ))
 }
 
 /// Whether `gate_trunk` is on in each commit's `.5w.toml`. A config that does not

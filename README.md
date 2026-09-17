@@ -476,7 +476,8 @@ alone. `lint` (but for the repair commit, see `lint --staged`), `audit`, `doctor
 A break that renames or drops the queue file's name while the file stays put has no such path:
 the server wants the landing record in a file the trunk lacks. Queue commands then refuse naming
 the broken config and both names; the repair is a `.5w.toml` that parses with the old `file`,
-committed on the trunk and pushed — under the gate by an admin, past the server's hook. A break
+committed on the trunk and pushed — under the gate by an admin, past the server's hook, which
+refuses that push naming this step, since no landing record can cover it. A break
 that renames the archive while the file stays put is refused the same way, by queue commands and
 ship alike, with the old `archive` as the repair: read as empty, its closed tasks would drop out,
 their ids be reused and their accepted rows stop authorising a ship. The pre-commit hook takes

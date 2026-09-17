@@ -7275,6 +7275,17 @@ fn a_break_that_renames_the_queue_in_place_names_the_config_and_its_repair() {
         assert!(o.status.success(), "{err}");
         // The repair lands, and the queue opens again.
         if gated {
+            // No landing can cover it: the server refuses it naming the admin's
+            // step, not a ship.
+            let (ok, err) = push_to(&r, &["main"]);
+            assert!(
+                !ok && err.contains(".5w.toml on main is broken")
+                    && err.contains(&format!("names the queue {new}, not {old}"))
+                    && err.contains("an admin")
+                    && err.contains("past the server's hook")
+                    && !err.contains("ship it from"),
+                "{err}"
+            );
             std::fs::rename(&hook, server.join("hook-off")).unwrap();
             assert!(push_to(&r, &["main"]).0);
             std::fs::rename(server.join("hook-off"), &hook).unwrap();
