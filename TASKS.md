@@ -60,7 +60,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   #6 canonicalizes only the printed 'cd' line. The 'already exists' refusals in wt new/add and 'wt: <cmd> (in <dir>)' still show '..'. Normalize lexically in Repo::wt_root() instead; fs::canonicalize also follows symlinks (/tmp to /private/tmp on macOS).
 - [ ] #34 USAGE: one example invocation under the usage line, e.g. 5w ready area:output @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig 'lead with examples', adopted narrowly; missing from the doc's own follow-up list. No longer worked sequence.
-- [ ] #13 Evaluate the Command Line Interface Guidelines (clig.dev) for 5w, alongside the AXI/TOON verdict @output !2 branch:output/task-13
+- [~] #13 Evaluate the Command Line Interface Guidelines (clig.dev) for 5w, alongside the AXI/TOON verdict @output !2 branch:output/task-13 submitted:1ba4fcdbfc4a
   Source: https://github.com/cli-guidelines/cli-guidelines (published at clig.dev). Extend docs/agent-output.md from #12 (branch output/task-12; stack on it) with a section per guideline area: already met, adopt, or reject with reason — noting where clig (human-first) and AXI (agent-first) conflict and which 5w follows. Proposed follow-ups listed in the file, not queued.
 
 ## Done
