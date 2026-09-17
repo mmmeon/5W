@@ -35,6 +35,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   lint --staged (the pre-commit hook) judges queue commits under the trunk checkout's working-tree .5w.toml, uncommitted edits included: editing default_lane or lanes locally lets a queue commit that skips review (e.g. close via:self) pass the hook. It should judge under the committed trunk config (as ci does), or at least the staged one only on the repair path. Found in review of #90.
 - [ ] #95 ship --accepted keeps the config it opened with after a shipped branch changes .5w.toml
   ship --accepted opens the repository once and keeps using that config after an earlier branch in the same run changes .5w.toml (queue file, archive, commit prefix, gate settings). Reopen the config after each landing that changes .5w.toml. Found in review of #86.
+- [ ] #96 hook install pins and names the wrong trunk with FIVEW_TRUNK set or an empty 5w.trunk
+  hook install pre-receive on a bare server: with FIVEW_TRUNK set and 5w.trunk unset it pins HEAD's branch and the broken-config note names it instead of the FIVEW_TRUNK trunk that outranks it; and an empty 5w.trunk = "" counts as a pin for install (no re-pin) while store.rs treats it as unset, so the hook judges unpinned. Pin/name the trunk the store would resolve, and treat an empty pin as unset. Found in review of #91.
 
 ## Done
 
