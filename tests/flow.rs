@@ -1388,45 +1388,106 @@ fn a_config_value_with_a_control_character_is_a_one_line_refusal_naming_its_key(
             assert!(err.contains(&want), "{cmd:?}: {want:?} in {err:?}");
         }
     }
-    // Committed, it is refused as broken where the config is read leniently too,
-    // and the trunk that refusal names is not the broken value.
-    for (line, bad, key) in [
-        ("trunk = \"main\"", "trunk = \"ma\\nin\"", "trunk"),
-        ("file = \"TASKS.md\"", "file = \"TAS\\nKS.md\"", "file"),
-    ] {
-        std::fs::write(r.main.join(".5w.toml"), cfg.replace(line, bad)).unwrap();
+    // Free text may hold tabs and run to several lines.
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace(
+            "[delegate]\n",
+            "[delegate]\nfooter = \"steps:\\n  go {id}\\n\"\n",
+        )
+        .replace("conventions = []", "conventions = [\"tabs\\tand\\nlines\"]")
+        .replace(
+            "kind = \"agent\"\n",
+            "kind = \"agent\"\nnote = \"one\\ntwo\"\n",
+        )
+        .replace("1 = \"mechanical", "1 = \"\\tmechanical")
+        .replace("\"Tests were run", "\"Tests\\twere run"),
+    )
+    .unwrap();
+    r.ok(&r.main, &["add", "x", "level:1"]);
+    let brief = r.ok(&r.main, &["delegate", "1"]);
+    for want in ["one\ntwo", "\tmechanical", "tabs\tand\nlines"] {
+        assert!(brief.contains(want), "{want:?} in {brief}");
+    }
+    assert!(brief.ends_with("steps:\n  go 1\n"), "{brief}");
+    let out = r.ok(&r.main, &["review", "--checklist"]);
+    assert!(out.contains("Tests\twere run"), "{out}");
+}
+
+#[test]
+fn a_committed_config_value_with_a_control_character_is_read_by_the_last_one_line_value() {
+    // The last: every config since the rename is broken too (a key this 5w does
+    // not know), so the last that reads still says TASKS.md.
+    for (n, (bad, key, extra)) in [
+        ("trunk = \"ma\\nin\"", "trunk", ""),
+        ("trunk = \"ma\\tin\"", "trunk", ""),
+        ("file = \"QUE\\nUE.md\"", "file", ""),
+        ("file = \"QUE\\nUE.md\"", "file", "shiny = 1\n"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = Repo::new(&format!("config-control-char-committed-{n}"));
+        let good = std::fs::read_to_string(r.main.join(".5w.toml"))
+            .unwrap()
+            .replace("file = \"TASKS.md\"", "file = \"QUEUE.md\"")
+            + extra;
+        std::fs::write(r.main.join(".5w.toml"), &good).unwrap();
+        r.git(&r.main, &["mv", "TASKS.md", "QUEUE.md"]);
+        r.git(&r.main, &["commit", "-qam", "queue elsewhere"]);
+        r.ok(&r.main, &["add", "code"]);
+        r.ok(&r.main, &["wt", "new", "f/code"]);
+        // The broken config's note goes to stderr, apart from the path.
+        let o = r.cli(&r.main, &["wt", "path", "f/code"]);
+        let wt = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+        r.commit_in(&wt, "code.txt", "x\n");
+        r.ok(&r.main, &["submit", "1", "f/code"]);
+        let line = match key {
+            "trunk" => "trunk = \"main\"",
+            _ => "file = \"QUEUE.md\"",
+        };
+        let at = good.lines().position(|l| l == line).unwrap() + 1;
+        std::fs::write(r.main.join(".5w.toml"), good.replace(line, bad)).unwrap();
         r.git(
             &r.main,
             &["commit", "-qam", "break the config", "--no-verify"],
         );
-        let want = format!(
-            "config line {}: {key} must not hold a control character",
-            at(line)
-        );
+        // Where the config is judged, the break is refused in one line.
+        let want = format!("config line {at}: {key} must not hold a control character");
         for cmd in [
             &["lint", "HEAD"][..],
             &["ci", "--ref", "HEAD"],
             &["ci", "--branch", "main"],
         ] {
             let err = r.refuses(&r.main, cmd);
-            assert!(err.contains(&want), "{cmd:?}: {want:?} in {err:?}");
+            assert!(err.contains(&want), "{bad} {cmd:?}: {want:?} in {err:?}");
+            assert!(!err.contains("ma\tin"), "{err:?}");
         }
-        r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+        // A repair is told by that value, not the default.
+        if extra.is_empty() {
+            let broken = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+            std::fs::write(r.main.join(".5w.toml"), &good).unwrap();
+            r.git(&r.main, &["add", ".5w.toml"]);
+            std::fs::write(r.main.join(".5w.toml"), broken).unwrap();
+            r.ok(&r.main, &["lint", "--staged"]);
+            r.git(&r.main, &["reset", "-q", "--hard"]);
+        }
+        // The queue and ship open by the trunk's last value that is one line.
+        for cmd in [&["ready"][..], &["show", "1"], &["add", "more"]] {
+            let out = r.ok(&r.main, cmd);
+            assert!(
+                out.contains(".5w.toml on main is broken"),
+                "{bad} {cmd:?}: {out}"
+            );
+        }
+        assert!(r.git(&r.main, &["show", "main:QUEUE.md"]).contains("more"));
+        r.ok(&r.main, &["accept", "1"]);
+        let err = r.refuses(&r.main, &["ship", "f/code", "--sync"]);
+        assert!(
+            err.contains("upgrade 5w, or ship the repair"),
+            "{bad}: {err}"
+        );
     }
-    // The brief's footer is text of several lines.
-    std::fs::write(
-        r.main.join(".5w.toml"),
-        cfg.replace(
-            "[delegate]\n",
-            "[delegate]\nfooter = \"steps:\\n  go {id}\\n\"\n",
-        ),
-    )
-    .unwrap();
-    r.ok(&r.main, &["add", "x"]);
-    assert!(
-        r.ok(&r.main, &["delegate", "1"])
-            .ends_with("steps:\n  go 1\n")
-    );
 }
 
 #[test]

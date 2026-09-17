@@ -17,7 +17,7 @@
 //! not revert it.
 
 use crate::bail;
-use crate::config::Config;
+use crate::config::{Config, Val};
 use crate::git;
 use crate::queue::{self, Doc};
 use crate::util::Res;
@@ -104,6 +104,29 @@ fn last_config_where(dir: &Path, commit: &str, ok: impl Fn(&str) -> bool) -> Opt
     )
 }
 
+/// A name a trunk config that `from_toml` refuses gives `key` (the trunk, the
+/// queue's file and archive, the commit prefix), read as the config reads it: the
+/// last string `kv` gives it. One holding a control character, which no config
+/// takes, names nothing: the newest config on `tip`'s first-parent line whose
+/// value is one line says it instead. None: neither says one.
+fn said(dir: &Path, kv: &[(String, Val)], tip: Option<&str>, key: &str) -> Option<String> {
+    let last = |kv: &[(String, Val)]| {
+        kv.iter().rev().find_map(|(k, v)| match v {
+            Val::Str(t) if k == key => Some(t.clone()),
+            _ => None,
+        })
+    };
+    let v = last(kv)?;
+    if crate::config::is_one_line(&v) {
+        return Some(v);
+    }
+    let says = |t: &str| crate::config::parse_toml(t).ok().map(|kv| last(&kv));
+    let text = last_config_where(dir, tip?, |t| {
+        says(t).is_some_and(|v| v.as_deref().is_none_or(crate::config::is_one_line))
+    })?;
+    says(&text).flatten()
+}
+
 /// How `open` meets a trunk config that does not parse.
 #[derive(Clone, Copy, PartialEq)]
 enum Broken {
@@ -157,12 +180,7 @@ fn repair_config(primary: &Path, trunk: &str, bare: bool) -> Option<Config> {
         .ok()
         .or_else(|| crate::config::parse_toml(&base).ok())
         .unwrap_or_default();
-    let said = |key: &str| {
-        kv.iter().rev().find_map(|(k, v)| match v {
-            crate::config::Val::Str(t) if k == key => Some(t.clone()),
-            _ => None,
-        })
-    };
+    let said = |key: &str| said(primary, &kv, Some(&tip), key);
     cfg.trunk = said("trunk").or(cfg.trunk);
     cfg.file = said("file").unwrap_or(cfg.file);
     cfg.archive = said("archive").unwrap_or(cfg.archive);
@@ -301,30 +319,21 @@ impl Repo {
                     // tells queue edits and landings by. A repair must not rename them.
                     // Text that does not parse says nothing: the trunk's last config
                     // that does, else the defaults.
+                    let tip = [
+                        format!("refs/heads/{guess}"),
+                        format!("refs/remotes/origin/{guess}"),
+                    ]
+                    .iter()
+                    .find_map(|r| git::rev(&primary, r));
                     let kv = crate::config::parse_toml(&s)
                         .ok()
                         .or_else(|| {
-                            [
-                                format!("refs/heads/{guess}"),
-                                format!("refs/remotes/origin/{guess}"),
-                            ]
-                            .iter()
-                            .find_map(|r| git::rev(&primary, r))
-                            .and_then(|t| last_readable_config(&primary, &t))
-                            .and_then(|text| crate::config::parse_toml(&text).ok())
+                            tip.as_deref()
+                                .and_then(|t| last_readable_config(&primary, t))
+                                .and_then(|text| crate::config::parse_toml(&text).ok())
                         })
                         .unwrap_or_default();
-                    let said = |key: &str| {
-                        kv.iter().rev().find_map(|(k, v)| match v {
-                            // Not a value no config takes: a ref or a path is one line.
-                            crate::config::Val::Str(t)
-                                if k == key && !t.chars().any(char::is_control) =>
-                            {
-                                Some(t.clone())
-                            }
-                            _ => None,
-                        })
-                    };
+                    let said = |key: &str| said(&primary, &kv, tip.as_deref(), key);
                     let d = Config::default();
                     Config {
                         trunk: said("trunk"),

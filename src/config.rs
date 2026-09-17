@@ -37,6 +37,24 @@ fn one_line(e: String) -> String {
         .collect()
 }
 
+/// A value that can become a ref, a path, a name or part of a one-line refusal:
+/// no control character.
+pub fn is_one_line(v: &str) -> bool {
+    !v.chars().any(char::is_control)
+}
+
+/// Keys whose text is prose or a command, never a ref, a path or refusal text:
+/// they may hold tabs and run to several lines. Every other string is one line.
+fn free_text(key: &str) -> bool {
+    matches!(
+        key,
+        "delegate.footer" | "delegate.conventions" | "worktrees.install" | "review.checklist"
+    ) || key.starts_with("levels.")
+        || key
+            .strip_prefix("lanes.")
+            .is_some_and(|l| l.ends_with(".note"))
+}
+
 /// `parse_toml`, keeping the line each key is on, for errors that name it.
 fn parse_lines(src: &str) -> Res<Vec<(String, Val, usize)>> {
     let b = src.as_bytes();
@@ -528,18 +546,11 @@ impl Config {
             }
         }
         let mut c = Config::default();
-        // A value is one line: it becomes a ref, a path, a name or a line of output.
-        // Only the brief's footer and the install command may run to several.
         let s = |v: &Val, k: &str| -> Res<String> {
             match v {
-                Val::Str(s)
-                    if s.chars().any(char::is_control)
-                        && !matches!(k, "delegate.footer" | "worktrees.install") =>
-                {
-                    Err(format!(
-                        "config: {k} must not hold a control character: {s:?}"
-                    ))
-                }
+                Val::Str(s) if !is_one_line(s) && !free_text(k) => Err(format!(
+                    "config: {k} must not hold a control character: {s:?}"
+                )),
                 Val::Str(s) => Ok(s.clone()),
                 _ => Err(format!("config: {k} must be a string")),
             }
