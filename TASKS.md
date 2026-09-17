@@ -33,6 +33,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #84 Duplicate requires keys: the version check reads the first, the config stores the last @upkeep !1
   self-update's pinned() and update-files --pin use the first
   Found by #82's worker: src/config.rs Config::from_toml checks the version pin against the first requires but stores the last; src/upkeep.rs pinned() (self-update) reads the first requires line; update-files --pin rewrites only the first. Make every reader agree with the parser (last wins) — or better, refuse duplicate keys in .5w.toml at parse time with one line naming the key and lines — and make update-files --pin rewrite consistently; test duplicate requires.
+- [ ] #85 Forge CI on a broken trunk config: ci --event and --branch refuse outright @ci !1
+  so a PR repairing .5w.toml can never pass a required check
+  Found reviewing #83: when the trunk's .5w.toml is rejected, 5w ci --branch (PR check) and --event refuse, so a change request that fixes the config fails its required check forever. Let --branch judge a PR whose head repairs the config (same rules as the trunk repair push from #83: queue file names from the broken config's lenient read, gate fail-closed), and name the fix otherwise; test with a repairing PR.
 
 ## Done
 
