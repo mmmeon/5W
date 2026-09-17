@@ -2407,6 +2407,207 @@ fn an_archive_refuses_an_untracked_done_file_of_its_own_and_names_a_clean_fix() 
 }
 
 #[test]
+fn an_archive_into_a_missing_directory_creates_it_and_moves_the_row() {
+    let r = Repo::new("archive-missing-dir");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+        .unwrap()
+        .replace("archive = \"DONE.md\"", "archive = \"docs/CLOSED.md\"");
+    assert!(cfg.contains("docs/CLOSED.md"), "{cfg}");
+    std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "archive into docs"]);
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    assert!(!r.main.join("docs").exists());
+
+    let out = r.ok(&r.main, &["archive"]);
+    let closed = std::fs::read_to_string(r.main.join("docs/CLOSED.md")).unwrap();
+    assert!(closed.contains("- [x] #1 first"), "{out}\n{closed}");
+    assert!(!r.tasks().contains("#1 first"), "{}", r.tasks());
+    assert!(
+        r.git(&r.main, &["show", "main:docs/CLOSED.md"])
+            .contains("- [x] #1 first")
+    );
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    r.ok(&r.main, &["lint"]);
+}
+
+#[test]
+fn an_archive_that_cannot_write_the_archive_file_writes_nothing() {
+    let r = Repo::new("archive-unwritable");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    // The archive's path is a directory: no file can land there, so neither
+    // working file changes and the trunk does not move.
+    std::fs::create_dir_all(r.main.join("DONE.md/inside")).unwrap();
+    let (head, tasks) = (r.git(&r.main, &["rev-parse", "main"]), r.tasks());
+    let err = r.refuses(&r.main, &["archive"]);
+    assert!(err.contains("cannot write DONE.md"), "{err}");
+    assert!(err.contains("nothing written"), "{err}");
+    assert_eq!(r.git(&r.main, &["rev-parse", "main"]), head);
+    assert_eq!(r.tasks(), tasks);
+    assert!(r.main.join("DONE.md/inside").is_dir());
+    let stray = std::fs::read_dir(&r.main)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("5w-"))
+        .collect::<Vec<_>>();
+    assert!(stray.is_empty(), "{stray:?}");
+}
+
+/// Run the fix a refusal names between backticks, in the checkout.
+fn follow_fix(r: &Repo, err: &str) {
+    let fix = err
+        .split('`')
+        .nth(1)
+        .unwrap_or_else(|| panic!("no fix in {err}"));
+    let mut c = Command::new("sh");
+    c.args(["-c", fix]).current_dir(&r.main);
+    env(&mut c, &r.root);
+    let o = c.output().unwrap();
+    assert!(
+        o.status.success(),
+        "{fix}: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+#[test]
+fn an_archive_whose_checkout_index_is_locked_says_it_committed_and_keeps_a_hand_line() {
+    let r = Repo::new("archive-index-locked");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    // A hand line of the checkout's own, away from the rows.
+    let t = r.tasks().replacen("# Tasks\n", "# Tasks\n\nmy note\n", 1);
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    // A temporary file a killed run left in the git dir goes under the lock.
+    let stale = r.main.join(".git/5w-write-99999-0-TASKS.md");
+    std::fs::write(&stale, "stale\n").unwrap();
+    // One of the user's that only looks alike stays.
+    let mine = r.main.join(".git/5w-write-mine-TASKS.md");
+    std::fs::write(&mine, "mine\n").unwrap();
+    std::fs::write(r.main.join(".git/index.lock"), "").unwrap();
+    let head = r.git(&r.main, &["rev-parse", "main"]);
+
+    let err = r.refuses(&r.main, &["archive"]);
+    assert_ne!(r.git(&r.main, &["rev-parse", "main"]), head);
+    assert!(
+        err.contains("committed #1 to main, but the checkout was not updated"),
+        "{err}"
+    );
+    assert!(
+        err.contains("| git -C") && err.contains("apply --cached"),
+        "{err}"
+    );
+    assert!(!err.contains("checkout main --"), "{err}");
+    assert!(!stale.exists() && mine.exists());
+    assert!(err.contains("--3way"), "{err}");
+    assert!(r.tasks().contains("#1 first") && r.tasks().contains("my note"));
+
+    // Following the fix once the lock is gone catches the checkout up to main
+    // and keeps the hand line.
+    std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
+    follow_fix(&r, &err);
+    let t = r.tasks();
+    assert!(!t.contains("#1 first") && t.contains("my note"), "{t}");
+    let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
+    assert!(done.contains("- [x] #1 first"), "{done}");
+    assert_eq!(r.git(&r.main, &["diff", "--cached", "--name-only"]), "");
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), " M TASKS.md");
+}
+
+#[test]
+fn an_archive_that_cannot_rename_out_of_the_git_dir_copies_beside_each_file() {
+    let r = Repo::new("archive-exdev");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    // A stale temporary file beside the queue goes; a user's look-alike stays.
+    let stale = r.main.join(".TASKS.md.5w-write-99999-0");
+    let mine = r.main.join(".TASKS.md.5w-write-mine");
+    std::fs::write(&stale, "stale\n").unwrap();
+    std::fs::write(&mine, "mine\n").unwrap();
+
+    // One filesystem bind-mounted twice shares a device id, yet a rename from
+    // the git dir into the checkout fails EXDEV; the test hook fails it so.
+    let mut c = Command::new(bin5w());
+    c.args(["archive"]).current_dir(&r.main);
+    env(&mut c, &r.root);
+    c.env("FIVEW_TEST_EXDEV", "1");
+    let o = c.output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let t = r.tasks();
+    assert!(!t.contains("#1 first") && t.contains("#2 second"), "{t}");
+    let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
+    assert!(done.contains("- [x] #1 first"), "{done}");
+    assert!(!stale.exists() && mine.exists());
+    assert_eq!(
+        r.git(&r.main, &["status", "--porcelain"]),
+        "?? .TASKS.md.5w-write-mine"
+    );
+    let left: Vec<_> = std::fs::read_dir(r.main.join(".git"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("5w-write-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    r.ok(&r.main, &["lint"]);
+}
+
+#[test]
+fn an_archive_whose_queue_rename_fails_leaves_the_row_in_both_files() {
+    let r = Repo::new("archive-rename-fails");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    // A hand line of the checkout's own, away from the rows.
+    let t = r.tasks().replacen("# Tasks\n", "# Tasks\n\nmy note\n", 1);
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    // The signing program runs between writing the files aside and renaming
+    // them: it takes away the queue's, so only that rename fails.
+    let git_dir = r.main.join(".git");
+    let gpg = r.root.join("fake-gpg");
+    std::fs::write(
+        &gpg,
+        format!(
+            "#!/bin/sh\nrm -f {}/5w-write-*TASKS.md\ncat >/dev/null\nprintf '\\n[GNUPG:] SIG_CREATED D 1 8 00 0 0\\n' >&2\nprintf -- '-----BEGIN PGP SIGNATURE-----\\n\\nx\\n-----END PGP SIGNATURE-----\\n'\n",
+            git_dir.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&gpg, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    r.git(&r.main, &["config", "gpg.program", gpg.to_str().unwrap()]);
+    r.git(&r.main, &["config", "commit.gpgsign", "true"]);
+
+    let err = r.refuses(&r.main, &["archive"]);
+    assert!(
+        err.contains("committed #1 to main") && err.contains("cannot write TASKS.md"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("--cached") && !err.contains("DONE.md |"),
+        "{err}"
+    );
+    let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
+    assert!(done.contains("- [x] #1 first"), "{done}");
+    assert!(r.tasks().contains("#1 first"));
+
+    follow_fix(&r, &err);
+    let t = r.tasks();
+    assert!(!t.contains("#1 first") && t.contains("my note"), "{t}");
+    assert_eq!(r.git(&r.main, &["diff", "--cached", "--name-only"]), "");
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), " M TASKS.md");
+    let left: Vec<_> = std::fs::read_dir(&git_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("5w-write-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
 fn an_archive_skips_a_trunk_closed_row_the_checkout_reopened() {
     let r = Repo::new("archive-reopened-by-hand");
     r.ok(&r.main, &["add", "first"]);

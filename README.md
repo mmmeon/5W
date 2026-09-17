@@ -130,7 +130,13 @@ row stays uncommitted; it is never swept into your commit, never makes your comm
 the next ordinary `git commit` in that checkout does not revert the queue. An edit whose committed
 row already reads so commits nothing but still mirrors into the checkout, fixing a stale working or
 staged row (`checkout fixed: #1 matches main`), or moving a peer's staged row in both files
-(`checkout updated: #3`). Writers take a lock, so
+(`checkout updated: #3`). Both working files are written aside (in the git dir, or beside the file
+where a rename from there is refused, as across bind mounts) before the commit and renamed into place after it, the archive first, so a moved row is never in neither: one that
+cannot be written (a directory in its place) refuses with nothing committed, and an archive in a
+directory the checkout lacks creates it. If the checkout cannot take a change the trunk already has
+(its `index.lock` held), the refusal names the rows committed and a fix that applies that commit's
+own diff to the working files and index, keeping anything else in them (`--3way` where a hand
+edit is in the way). Writers take a lock, so
 parallel `add`s mint distinct ids, and state checks read the committed queue under that lock — a
 hand-edited `[~]` in a working copy does not make a task acceptable. A command that names an
 uncommitted row commits it; `add` mints past uncommitted rows, so when a higher id is committed

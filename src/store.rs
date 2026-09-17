@@ -725,6 +725,13 @@ fn write(
     ]
     .into_iter()
     .collect();
+    // Every working file is written beside its target before anything moves, so
+    // a file that cannot be written refuses with the trunk and both files as
+    // they were.
+    let pending = match checkout {
+        Some(w) => Pending::prepare(&repo.common, w, &changes)?,
+        None => Pending::default(),
+    };
 
     let changed = changes
         .iter()
@@ -773,10 +780,57 @@ fn write(
             )
         })?;
 
-        if let Some(w) = checkout {
-            mirror_index(repo, w, &changes, &blobs)?;
-        }
         println!("  committed: {subject}");
+        if let Some(w) = checkout {
+            // The trunk has moved: a failure from here on says so, and the fix
+            // applies the commit's own diff, keeping anything else in the checkout.
+            // Per file, so a row moving between them counts.
+            let mut ids = rows_changed([&q.committed, ""], [new_q, ""]);
+            ids.extend(rows_changed(["", &a.committed], ["", new_a]));
+            ids.sort_unstable();
+            ids.dedup();
+            let rows: Vec<String> = ids.iter().map(|id| format!("#{id}")).collect();
+            let landed = |e: String, names: &[&str], index: bool| {
+                let g = format!("git -C {}", shell_word(&w.to_string_lossy()));
+                let diff = format!(
+                    "{g} diff {}..{} -- {}",
+                    &old[..old.len().min(12)],
+                    &commit[..commit.len().min(12)],
+                    names.join(" ")
+                );
+                let mut fix = format!("{diff} | {g} apply");
+                if index {
+                    fix.push_str(&format!(" && {diff} | {g} apply --cached"));
+                }
+                let what = match rows.is_empty() {
+                    true => changes
+                        .iter()
+                        .map(|(c, ..)| c.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    false => rows.join(", "),
+                };
+                format!(
+                    "committed {what} to {}, but the checkout was not updated ({e}); `{fix}` (add --3way to each apply where a hand edit is in the way)",
+                    repo.trunk
+                )
+            };
+            let names: Vec<&str> = changes
+                .iter()
+                .zip(&blobs)
+                .filter(|((c, ..), b)| **b != c.old_blob)
+                .map(|((c, ..), _)| c.name.as_str())
+                .collect();
+            mirror_index(repo, w, &changes, &blobs).map_err(|e| landed(e, &names, true))?;
+            return pending.finish().map_err(|(e, left)| {
+                let left: Vec<&str> = left
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|n| names.contains(n))
+                    .collect();
+                landed(e, &left, false)
+            });
+        }
     } else if let Some(w) = checkout {
         // Nothing to commit, but the checkout's staged copy still takes the
         // edit: left as it was, the next ordinary commit would commit it.
@@ -823,16 +877,8 @@ fn write(
     } else {
         return Ok(());
     }
-    if let Some(w) = checkout {
-        for (c, _, new_working, _) in &changes {
-            if let Some(nw) = new_working
-                && Some(*nw) != c.working.as_ref()
-                && !(c.working.is_none() && nw.is_empty())
-            {
-                fs::write(w.join(&c.name), nw)
-                    .map_err(|e| format!("cannot write {}: {e}", c.name))?;
-            }
-        }
+    if checkout.is_some() {
+        pending.finish().map_err(|(e, _)| format!("{e}; retry"))?;
     } else {
         eprintln!(
             "  (no worktree has {} checked out; committed to the ref)",
@@ -840,6 +886,223 @@ fn write(
         );
     }
     Ok(())
+}
+
+/// Working files whose new text is written aside before anything moves, and
+/// renamed into place only once the trunk has taken the change; dropped
+/// unfinished, it removes its temporary files and any directory it created.
+#[derive(Default)]
+struct Pending {
+    /// In the order the files were given.
+    files: Vec<Tmp>,
+    dirs: Vec<PathBuf>,
+    done: bool,
+}
+
+struct Tmp {
+    /// Where the new text is written.
+    at: PathBuf,
+    /// A name beside the target, for when `at` is elsewhere and cannot be
+    /// renamed across.
+    beside: PathBuf,
+    target: PathBuf,
+    /// The target's file name.
+    file: String,
+    name: String,
+}
+
+/// Temporary files are named `5w-write-<pid>-<n>-<file>` in the git dir when it
+/// shares the target's filesystem (a rename there is atomic, and nothing in the
+/// checkout can sweep one into a commit), else `.<file>.5w-write-<pid>-<n>`
+/// beside the target.
+const TMP: &str = "5w-write-";
+
+impl Pending {
+    /// Called under the queue lock, so a temporary file already there is one a
+    /// killed run left behind: it goes first.
+    fn prepare(common: &Path, w: &Path, changes: &[Change]) -> Res<Pending> {
+        let mut p = Pending::default();
+        for (c, _, new_working, _) in changes {
+            let Some(nw) = new_working else { continue };
+            if Some(*nw) == c.working.as_ref() || (c.working.is_none() && nw.is_empty()) {
+                continue;
+            }
+            let fail = |e: &dyn std::fmt::Display| {
+                format!(
+                    "cannot write {} ({e}); move what is in its way aside, then retry; nothing written",
+                    c.name
+                )
+            };
+            let target = resolve(&w.join(&c.name));
+            if target.is_dir() {
+                bail!("{}", fail(&"a directory is in its place"));
+            }
+            let (Some(dir), Some(file)) = (target.parent(), target.file_name()) else {
+                bail!("{}", fail(&"not a file path"));
+            };
+            // The archive may name a directory the checkout lacks: the commit
+            // holds it, so the checkout gets it too.
+            let mut d = dir;
+            while !d.exists() {
+                p.dirs.push(d.to_path_buf());
+                match d.parent() {
+                    Some(up) => d = up,
+                    None => break,
+                }
+            }
+            fs::create_dir_all(dir).map_err(|e| fail(&e))?;
+            let file = file.to_string_lossy().into_owned();
+            let id = format!("{}-{}", std::process::id(), p.files.len());
+            let beside = dir.join(format!(".{file}.{TMP}{id}"));
+            let at = if same_fs(common, dir) {
+                remove_stale(common, TMP, &format!("-{file}"));
+                common.join(format!("{TMP}{id}-{file}"))
+            } else {
+                remove_stale(dir, &format!(".{file}.{TMP}"), "");
+                beside.clone()
+            };
+            let mode = fs::metadata(&target).ok().map(|m| m.permissions());
+            p.files.push(Tmp {
+                at: at.clone(),
+                beside,
+                target,
+                file,
+                name: c.name.clone(),
+            });
+            fs::write(&at, nw).map_err(|e| fail(&e))?;
+            if let Some(mode) = mode {
+                fs::set_permissions(&at, mode).map_err(|e| fail(&e))?;
+            }
+        }
+        Ok(p)
+    }
+
+    /// Renames every file into place, the archive (which gains rows) before the
+    /// queue (which loses them): a failure between leaves a moved row in both
+    /// working files, never in neither. On failure, the error and the names not
+    /// yet in place.
+    fn finish(mut self) -> Result<(), (String, Vec<String>)> {
+        self.done = true;
+        let files = std::mem::take(&mut self.files);
+        let mut left = files.iter().rev();
+        while let Some(t) = left.next() {
+            if let Err(e) = t.place() {
+                let names = std::iter::once(&t.name)
+                    .chain(left.clone().map(|t| &t.name))
+                    .cloned()
+                    .collect();
+                for t in left {
+                    let _ = fs::remove_file(&t.at);
+                }
+                return Err((format!("cannot write {}: {e}", t.name), names));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Tmp {
+    fn place(&self) -> std::io::Result<()> {
+        let r = match rename(&self.at, &self.target) {
+            // One filesystem bind-mounted twice shares a device id yet refuses
+            // the rename: copy beside the target and rename that.
+            Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices && self.at != self.beside => {
+                if let Some(dir) = self.beside.parent() {
+                    remove_stale(dir, &format!(".{}.{TMP}", self.file), "");
+                }
+                let r = fs::copy(&self.at, &self.beside)
+                    .and_then(|_| rename(&self.beside, &self.target));
+                if r.is_err() {
+                    let _ = fs::remove_file(&self.beside);
+                }
+                r
+            }
+            r => r,
+        };
+        let _ = fs::remove_file(&self.at);
+        r
+    }
+}
+
+/// `fs::rename`; FIVEW_TEST_EXDEV (test-only) makes a rename between two
+/// directories fail as one across filesystems does.
+fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::env::var_os("FIVEW_TEST_EXDEV").is_some() && from.parent() != to.parent() {
+        return Err(std::io::ErrorKind::CrossesDevices.into());
+    }
+    fs::rename(from, to)
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        for t in &self.files {
+            let _ = fs::remove_file(&t.at);
+        }
+        if !self.done {
+            // Deepest first; `remove_dir` leaves any that is not empty.
+            self.dirs
+                .sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+            for d in &self.dirs {
+                let _ = fs::remove_dir(d);
+            }
+        }
+    }
+}
+
+/// Where a write to `path` lands: through a symlink, dangling or not, to the
+/// file it names, as a plain write would go.
+fn resolve(path: &Path) -> PathBuf {
+    let mut p = path.to_path_buf();
+    for _ in 0..40 {
+        match fs::read_link(&p) {
+            Ok(to) => p = p.parent().map_or(to.clone(), |d| d.join(&to)),
+            Err(_) => break,
+        }
+    }
+    p
+}
+
+/// Remove the temporary files a killed run left in `dir`: exactly
+/// `<prefix><pid>-<n><suffix>`, so a file of the user's that merely looks alike
+/// stays.
+fn remove_stale(dir: &Path, prefix: &str, suffix: &str) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let stale = name
+            .strip_prefix(prefix)
+            .and_then(|n| n.strip_suffix(suffix))
+            .and_then(|n| n.split_once('-'))
+            .is_some_and(|(pid, n)| digits(pid) && digits(n));
+        if stale {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+}
+
+#[cfg(unix)]
+fn same_fs(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    matches!((fs::metadata(a), fs::metadata(b)), (Ok(a), Ok(b)) if a.dev() == b.dev())
+}
+
+#[cfg(not(unix))]
+fn same_fs(_: &Path, _: &Path) -> bool {
+    false
+}
+
+/// A path as one shell word.
+fn shell_word(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-+:@,".contains(c))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
 
 type Change<'a> = (
