@@ -1672,6 +1672,62 @@ fn discard_copy_refuses_a_file_that_becomes_a_directory_or_back() {
     );
 }
 
+#[test]
+fn discard_copy_refuses_an_ignored_directory_where_the_branch_deletes_a_file() {
+    let r = Repo::new("copy-ignored-dir");
+    std::fs::write(r.main.join(".gitignore"), "*.log\n").unwrap();
+    std::fs::write(r.main.join("gone"), "file\n").unwrap();
+    r.git(&r.main, &["add", "-A"]);
+    r.git(&r.main, &["commit", "-qm", "base"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.git(&wt, &["rm", "-q", "gone"]);
+    r.git(&wt, &["commit", "-qm", "drop gone"]);
+    // The trunk lost `gone` too, and has only an ignored file where it was.
+    std::fs::remove_file(r.main.join("gone")).unwrap();
+    std::fs::create_dir_all(r.main.join("gone")).unwrap();
+    std::fs::write(r.main.join("gone/p.log"), "mine\n").unwrap();
+    assert!(!r.ok(&r.main, &["doctor"]).contains("discard-copy"));
+    let out = r.fails(&r.main, &["wt", "discard-copy", "a/x"]);
+    assert!(out.contains("nothing discarded"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(r.main.join("gone/p.log")).unwrap(),
+        "mine\n"
+    );
+}
+
+/// The branch adds `name` holding what the tracked `twin` holds; the trunk has an
+/// untracked `name` with other content. A name git reads as quoted, or with its
+/// trailing CR stripped, must not be hashed as the twin.
+fn untracked_name_is_not_its_twin(label: &str, name: &str, twin: &str) {
+    let r = Repo::new(label);
+    std::fs::write(r.main.join(twin), "same\n").unwrap();
+    r.git(&r.main, &["add", "-A"]);
+    r.git(&r.main, &["commit", "-qm", "base"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    std::fs::write(wt.join(name), "same\n").unwrap();
+    r.git(&wt, &["add", "-A"]);
+    r.git(&wt, &["commit", "-qm", "add"]);
+    std::fs::write(r.main.join(name), "mine\n").unwrap();
+    assert!(!r.ok(&r.main, &["doctor"]).contains("discard-copy"));
+    r.fails(&r.main, &["wt", "discard-copy", "a/x"]);
+    assert_eq!(
+        std::fs::read_to_string(r.main.join(name)).unwrap(),
+        "mine\n"
+    );
+}
+
+#[test]
+fn discard_copy_hashes_a_name_starting_with_a_quote_as_itself() {
+    untracked_name_is_not_its_twin("copy-quote", "\"x\"", "x");
+}
+
+#[test]
+fn discard_copy_hashes_a_name_ending_in_cr_as_itself() {
+    untracked_name_is_not_its_twin("copy-cr", "y\r", "y");
+}
+
 // --- audit: how a repository has used 5W ------------------------------------------------
 
 impl Repo {

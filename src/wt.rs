@@ -440,7 +440,11 @@ fn raw_changes(out: &str) -> Changes {
 /// What `branch` changes over its merge-base with the trunk: `trunk...branch`.
 fn branch_changes(repo: &Repo, branch: &str) -> Res<Changes> {
     let p = &repo.primary;
-    let mb = git::git(p, &["merge-base", &repo.trunk, branch])?;
+    let tip = format!("refs/heads/{branch}");
+    let mb = git::git(
+        p,
+        &["merge-base", &format!("refs/heads/{}", repo.trunk), &tip],
+    )?;
     let out = git::git(
         p,
         &[
@@ -451,7 +455,7 @@ fn branch_changes(repo: &Repo, branch: &str) -> Res<Changes> {
             "--full-index",
             "--no-abbrev",
             &mb,
-            branch,
+            &tip,
         ],
     )?;
     Ok(raw_changes(&out))
@@ -513,8 +517,25 @@ fn working_changes(dir: &Path) -> Res<Changes> {
         if old.as_ref().is_some_and(|o| o.0 == "160000") {
             bail!("{p} is a submodule");
         }
-        let Some(n) = new else { continue };
+        // Restoring writes through every parent: each must be a real directory.
+        let mut a = p.as_str();
+        while let Some((parent, _)) = a.rsplit_once('/') {
+            if let Ok(m) = fs::symlink_metadata(dir.join(parent))
+                && !m.is_dir()
+            {
+                bail!("{parent} is not a directory on disk");
+            }
+            a = parent;
+        }
         let file = dir.join(p);
+        let Some(n) = new else {
+            // Deleted as far as git knows, but something git does not list may
+            // stand there — an ignored file, or a directory of them.
+            if fs::symlink_metadata(&file).is_ok() {
+                bail!("{p} is deleted, but something is on disk there");
+            }
+            continue;
+        };
         let meta = fs::symlink_metadata(&file).map_err(|e| format!("{p}: {e}"))?;
         if meta.file_type().is_symlink() {
             let target = fs::read_link(&file).map_err(|e| format!("{p}: {e}"))?;
@@ -536,7 +557,16 @@ fn working_changes(dir: &Path) -> Res<Changes> {
                 "100644"
             };
             *n = (mode.into(), String::new());
-            plain.push((p.clone(), n));
+            if p.starts_with('"') || p.contains('\r') {
+                // --stdin-paths would read these as C-quoted or strip the CR.
+                let o = git::raw(dir, &["hash-object", "--", p], &[], None)?;
+                if !o.ok {
+                    bail!("cannot hash {p}");
+                }
+                n.1 = o.stdout.trim().to_string();
+            } else {
+                plain.push((p.clone(), n));
+            }
         } else {
             bail!("{p} is not a file");
         }
@@ -560,15 +590,22 @@ fn working_changes(dir: &Path) -> Res<Changes> {
 fn candidates(repo: &Repo, work: &Changes) -> Res<Vec<String>> {
     let branches: Vec<String> = git::git(
         &repo.primary,
-        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        &["for-each-ref", "--format=%(refname)", "refs/heads"],
     )?
     .lines()
+    .filter_map(|r| r.strip_prefix("refs/heads/"))
     .filter(|b| *b != repo.trunk)
     .map(String::from)
     .collect();
+    // cat-file reads a line each, stripping a trailing CR: such a path is left to
+    // the full comparison rather than asked about wrongly.
+    let work: Vec<_> = work.iter().filter(|(p, _)| !p.contains('\r')).collect();
+    if work.is_empty() {
+        return Ok(branches);
+    }
     let mut query = String::new();
     for b in &branches {
-        for p in work.keys() {
+        for (p, _) in &work {
             query.push_str(&format!("refs/heads/{b}:{p}\n"));
         }
     }
@@ -586,9 +623,9 @@ fn candidates(repo: &Repo, work: &Changes) -> Res<Vec<String>> {
         .into_iter()
         .zip(lines.chunks(work.len()))
         .filter(|(_, got)| {
-            work.values()
+            work.iter()
                 .zip(got.iter())
-                .all(|((_, new), g)| match new {
+                .all(|((_, (_, new)), g)| match new {
                     Some((_, sha)) => sha == g,
                     None => g.ends_with(" missing"),
                 })

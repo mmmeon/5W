@@ -355,8 +355,9 @@ branch whose whole diff (`main...branch`) the trunk checkout's uncommitted chang
 untracked new files included, and `5w wt discard-copy <branch>` discards them. Files compare as git
 would stage them (so a line-ending conversion is not a difference), each path's before and after and
 its mode. It refuses on any other change in the checkout, a partly staged file, a path that becomes
-a directory or back (restoring it would take ignored files under it along), a submodule or anything
-it cannot hash — checking all of that before it touches a file — then restores those files from
+a directory or back, anything on disk (an ignored file, a directory) where a deleted file would
+come back or in place of a parent directory — restoring would take it along — a submodule, or
+anything it cannot hash — checking all of that before it touches a file — then restores those files from
 `HEAD` and deletes the ones the branch adds. Doctor stays quiet about what it cannot compare, and
 narrows hundreds of branches to the possible copies in one git call.
 
