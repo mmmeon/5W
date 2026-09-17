@@ -404,6 +404,17 @@ fn batch_commits_every_edit_in_one_commit_that_lint_and_audit_read() {
         r.line(4)
             .starts_with("- [ ] #4 from a batch, with a comma @core")
     );
+
+    // An edit that changes nothing is not named: `set` to the value a row has.
+    r.ok(&r.main, &["set", "4", "level", "3"]);
+    let (ok, out) = r.batch("set 4 level 3\nset 3 level 2\n");
+    assert!(ok, "{out}");
+    let (ok, out) = r.batch("set 4 level 3\nset 4 area docs\nset 3 level 1\n");
+    assert!(ok, "{out}");
+    assert_eq!(
+        r.git(&r.main, &["log", "-1", "--format=%s", "main"]),
+        "chore(tasks): set #4, set #3"
+    );
     assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
     r.lint_history();
 
@@ -1940,12 +1951,34 @@ fn lint_flags_rework_gained_outside_a_reject() {
     r.lint_history();
     // So does a batch commit whose subject names that reject among its edits.
     r.ok(&r.main, &["add", "fifth"]);
-    hand_edit(&r, "- [ ] #4 fifth", "- [ ] #4 fifth rework:\"old\"");
+    let batch_edit = || {
+        hand_edit(
+            &r,
+            "- [ ] #4 fifth",
+            "- [ ] #4 fifth rework:\"old\"\n- [ ] #5 sixth",
+        )
+    };
+    batch_edit();
     r.git(
         &r.main,
-        &["commit", "-qm", "chore(tasks): add #9, reject #4"],
+        &["commit", "-qm", "chore(tasks): add #5, reject #4"],
     );
     r.lint_history();
+    // A batch subject names exactly the rows its commit changes, each once.
+    for subject in [
+        "chore(tasks): add #9, reject #4",
+        "chore(tasks): add #5, reject #4, accept #1",
+        "chore(tasks): add #5, reject #4, reject #4",
+    ] {
+        r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+        batch_edit();
+        r.git(&r.main, &["commit", "-qm", subject]);
+        let out = r.fails(&r.main, &["lint", "HEAD"]);
+        assert!(
+            out.contains("its subject names") && out.contains("but it changes #4 #5"),
+            "{subject}: {out}"
+        );
+    }
     r.git(&r.main, &["reset", "-q", "--hard", "HEAD~2"]);
     // The same edit under any other message is a hand edit, and a range names it.
     r.ok(&r.main, &["add", "fourth"]);

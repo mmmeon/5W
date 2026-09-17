@@ -472,6 +472,10 @@ pub fn transact(
             if let Some(id) = changed.iter().find(|id| b.edited.contains(id)) {
                 bail!("#{id} is already edited in this batch; edit it again in the next one");
             }
+            // An edit that changes nothing is not one: the subject names only rows it changes.
+            if changed.is_empty() {
+                return Ok(());
+            }
             b.edited.extend(changed);
             {
                 let [cq, ca] = &mut b.cur;

@@ -111,7 +111,9 @@ committed or written. `add`, `set`, `submit`, `accept`, `reject`, `done` and `op
 each row once per batch — a commit is linted row by row, and submit-then-accept in one commit would
 read as accepted, never submitted. The subject names every edit (`chore(tasks): accept #14, accept
 #15, reject #16, add #17`), the body holds each edit's own message, and `lint` and `audit` read it
-as that many edits. A batch of one commits under its edit's own message.
+as that many edits; `lint` finds a batch subject that names a row the commit leaves alone, or misses
+one it changes. An edit that changes nothing (`set` to the value a row has) is left out. A batch of
+one commits under its edit's own message.
 
 Ids need no quoting: `14` and `'#14'` are the same. Filters and fields have shell-safe spellings —
 `lane:owner` for `'>owner'`, `level:3` for `'!3'`, `area:x` for `@x` — because an unquoted `>agent`

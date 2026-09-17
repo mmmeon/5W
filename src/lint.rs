@@ -11,7 +11,7 @@ use crate::git;
 use crate::queue::{self, State, Task};
 use crate::store::Repo;
 use crate::util::Res;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub const USAGE: &str = "\
 usage: 5w lint [--staged | <rev> | <from>..<to>]
@@ -365,6 +365,41 @@ fn check(
     let new_ids: HashSet<u64> = new_all.keys().copied().collect();
     let old_max = queue::max_id(&old.queue).max(queue::max_id(&old.archive));
     let lane_of = |t: &Task| t.lane.clone().unwrap_or_else(|| cfg.default_lane.clone());
+
+    // A batch subject is the list of rows the commit edits: exactly those.
+    if let Some(edits) = subject.and_then(|s| batch_edits(&cfg.commit_prefix, s)) {
+        let named: BTreeSet<u64> = edits.iter().map(|e| e.1).collect();
+        let changed: BTreeSet<u64> = new_all
+            .iter()
+            .filter(|(id, n)| {
+                old_all
+                    .get(id)
+                    .is_none_or(|o| o.state != n.state || !identical(o, n))
+            })
+            .map(|(id, _)| *id)
+            .chain(
+                old_all
+                    .keys()
+                    .filter(|id| !new_all.contains_key(id))
+                    .copied(),
+            )
+            .collect();
+        if named != changed || named.len() != edits.len() {
+            let list = |v: &BTreeSet<u64>| match v.is_empty() {
+                true => "no row".to_string(),
+                false => v
+                    .iter()
+                    .map(|i| format!("#{i}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            };
+            out.push(format!(
+                "{at}: its subject names {}, but it changes {} — a batch names each row it edits, once",
+                edits.iter().map(|e| format!("#{}", e.1)).collect::<Vec<_>>().join(" "),
+                list(&changed)
+            ));
+        }
+    }
 
     let mut say = |id: u64, m: String| out.push(format!("{at} #{id}: {m}"));
     let mut ids: Vec<&u64> = old_all.keys().collect();
