@@ -374,7 +374,8 @@ The queue is read by agents, so every read is priced in tokens.
   row closed only in the checkout moves there uncommitted, in the staged copy too (a `DONE.md` the
   trunk lacks is staged new with just those rows; an untracked one with more than archive's header
   is refused). A row closed on the trunk but open in the checkout (reopened by hand) is not
-  archived, and a note names it. On a 900-task queue that took `TASKS.md` from 649 KB to 52 KB.
+  archived, and a note names it; one the checkout deleted by hand still lands in its `DONE.md` as the
+  trunk has it. On a 900-task queue that took `TASKS.md` from 649 KB to 52 KB.
   Archived ids stay taken, still satisfy `needs:`, still show under `5w show`, and ship still reads
   their `branch:` and `reviewed:`.
 - **Titles are short; detail is body.** Text over `title_max` (120) is split at the first sentence

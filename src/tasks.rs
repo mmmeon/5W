@@ -1780,6 +1780,7 @@ fn archive(repo: &Repo) -> Res<()> {
     // rows skipped there are skipped in every copy, and only those.
     let skipped: std::cell::RefCell<Option<Vec<u64>>> = std::cell::RefCell::new(None);
     let moved = std::cell::Cell::new(None);
+    let trunk_moved: std::cell::RefCell<Vec<Vec<String>>> = std::cell::RefCell::new(Vec::new());
     let done = repo.cfg.done_section.clone();
     store::transact(
         repo,
@@ -1803,9 +1804,34 @@ fn archive(repo: &Repo) -> Res<()> {
                         .collect()
                 })
                 .clone();
-            let blocks = f.queue.take(|t| closed(t) && !skip.contains(&t.id));
-            if moved.get().is_none() {
-                moved.set(Some(blocks.len()));
+            let mut blocks = f.queue.take(|t| closed(t) && !skip.contains(&t.id));
+            let id = |b: &[String]| b.first().and_then(|l| queue::head(l)).map(|h| h.1);
+            match moved.get() {
+                None => {
+                    moved.set(Some(blocks.len()));
+                    *trunk_moved.borrow_mut() = blocks.clone();
+                }
+                // A row the trunk archives that this copy lacks in both files
+                // (deleted from the queue by hand) lands in its archive as the
+                // trunk has it: without it, the checkout would delete the row.
+                // It goes where the trunk has it among the rows this copy moves.
+                Some(_) => {
+                    let trunk = trunk_moved.borrow();
+                    let rank = |b: &[String]| trunk.iter().position(|t| id(t) == id(b));
+                    for (k, b) in trunk.iter().enumerate() {
+                        let lacks = |d: &queue::Doc| id(b).is_some_and(|i| d.block(i).is_none());
+                        if lacks(&f.queue)
+                            && lacks(&f.archive)
+                            && !blocks.iter().any(|m| id(m) == id(b))
+                        {
+                            let at = blocks
+                                .iter()
+                                .position(|m| rank(m).is_some_and(|r| r > k))
+                                .unwrap_or(blocks.len());
+                            blocks.insert(at, b.clone());
+                        }
+                    }
+                }
             }
             if !blocks.is_empty() && f.archive.lines.iter().all(|l| l.trim().is_empty()) {
                 f.archive = queue::Doc::new(ARCHIVE_HEADER);

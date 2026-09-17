@@ -2666,6 +2666,55 @@ fn an_archive_skips_a_trunk_closed_row_the_checkout_reopened() {
 }
 
 #[test]
+fn an_archive_of_a_row_deleted_by_hand_gives_the_checkout_the_archived_row() {
+    // #1 is closed on the trunk but deleted by hand from the checkout's queue,
+    // working or staged: the commit archives it, and the checkout's DONE.md
+    // gets the row too — whether the commit creates the file or changes it —
+    // so no copy of the checkout would delete it from the trunk.
+    for (name, on_trunk) in [
+        ("archive-deleted-new", false),
+        ("archive-deleted-old", true),
+    ] {
+        for stage in [false, true] {
+            let r = Repo::new(name);
+            r.ok(&r.main, &["add", "first"]);
+            r.ok(&r.main, &["add", "second"]);
+            r.ok(&r.main, &["add", "third"]);
+            r.ok(&r.main, &["add", "fourth"]);
+            if on_trunk {
+                r.ok(&r.main, &["done", "3", "--self"]);
+                r.ok(&r.main, &["archive"]);
+            }
+            // #4, closed after #1 and kept by the checkout, stays after it.
+            r.ok(&r.main, &["done", "1", "--self"]);
+            r.ok(&r.main, &["done", "4", "--self"]);
+            let t = r
+                .tasks()
+                .replace("- [x] #1 first via:self\n", "")
+                .replace("#2 second", "#2 second, edited");
+            std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+            if stage {
+                r.git(&r.main, &["add", "TASKS.md"]);
+            }
+            let out = r.ok(&r.main, &["archive"]);
+            assert!(out.contains("  archived 2 → DONE.md"), "{out}");
+            let head = r.git(&r.main, &["show", "HEAD:DONE.md"]);
+            let (one, four) = (head.find("- [x] #1 first"), head.find("- [x] #4 fourth"));
+            assert!(one.is_some() && one < four, "{head}");
+            let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
+            assert_eq!(done.trim_end(), head, "{out}");
+            assert_eq!(r.git(&r.main, &["show", ":DONE.md"]), head);
+            assert!(r.tasks().contains("#2 second, edited"));
+            let status = r.git(&r.main, &["status", "--porcelain"]);
+            let want = if stage { "M  TASKS.md" } else { " M TASKS.md" };
+            assert_eq!(status, want, "{out}");
+            r.ok(&r.main, &["lint", "--staged"]);
+            r.lint_history();
+        }
+    }
+}
+
+#[test]
 fn an_archive_with_every_trunk_closed_row_reopened_commits_nothing() {
     let r = Repo::new("archive-all-reopened");
     r.ok(&r.main, &["add", "first"]);
