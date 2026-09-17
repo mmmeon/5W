@@ -470,8 +470,8 @@ fn check(
         // Fields that are always checkable.
         // A sha written or changed here is the full name. A prefix stays valid in
         // a row that carried it before, and in a submit or accept commit the tool
-        // made (its subject names that edit of this row): releases through 0.1.3
-        // recorded 12 digits, and lint passes every commit the tool made.
+        // made (its subject names that edit of this row) when it is the 12 digits
+        // releases through 0.1.3 recorded: lint passes every commit the tool made.
         let tool_edit = |verb: &str| {
             subject.is_some_and(|s| {
                 single_edit(&cfg.commit_prefix, s) == Some((verb, id))
@@ -496,7 +496,7 @@ fn check(
                 && was != Some(v)
                 && is_sha(Some(v))
                 && !matches!(v.len(), 40 | 64)
-                && !tool_edit(verb)
+                && !(v.len() == 12 && tool_edit(verb))
             {
                 say(
                     id,

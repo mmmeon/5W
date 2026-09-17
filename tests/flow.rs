@@ -363,6 +363,13 @@ fn a_recorded_prefix_that_is_ambiguous_or_too_short_authorises_nothing() {
     rewrite(&format!("submitted:{a}"), &format!("submitted:{}", &a[..7]));
     let err = r.refuses(&r.main, &["accept", "1"]);
     assert!(err.contains("is ambiguous"), "{err}");
+    // review does not suggest the accept that refuses.
+    let out = r.ok(&r.main, &["review"]);
+    assert!(
+        out.contains("is ambiguous") && !out.contains("→ 5w accept 1\n"),
+        "{out}"
+    );
+    assert!(out.contains("5w accept 1 --at"), "{out}");
     rewrite(
         &format!("submitted:{}", &a[..7]),
         &format!("submitted:{}", &b[..6]),
@@ -2183,6 +2190,21 @@ fn lint_passes_a_correct_hand_edit_and_names_each_violation() {
 
     // A prefix the tool recorded (releases through 0.1.3 wrote 12 digits) passes
     // in its submit or accept commit, and stays valid while the row keeps it.
+    // Any other length there is a hand edit.
+    hand_edit(
+        &r,
+        &format!("submitted:{sha}"),
+        &format!("submitted:{}", &sha[..8]),
+    );
+    r.git(
+        &r.main,
+        &["commit", "-qm", "chore(tasks): submit #1 for review"],
+    );
+    assert!(
+        r.fails(&r.main, &["lint", "HEAD"])
+            .contains("is not a full sha")
+    );
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
     let short = format!("submitted:{}", &sha[..12]);
     hand_edit(&r, &format!("submitted:{sha}"), &short);
     r.git(&r.main, &["commit", "-qm", "chore(tasks): shorten #1"]);
@@ -3165,8 +3187,18 @@ impl Repo {
 
 #[test]
 fn pre_receive_accepts_the_protocol_and_rejects_the_rest() {
+    pre_receive_checks_pushes_to("server.git");
+}
+
+#[test]
+fn pre_receive_reads_the_quarantine_of_a_repository_whose_path_holds_a_colon() {
+    // git C-quotes such a path in GIT_ALTERNATE_OBJECT_DIRECTORIES.
+    pre_receive_checks_pushes_to("q:x/server.git");
+}
+
+fn pre_receive_checks_pushes_to(name: &str) {
     let r = Repo::new("prereceive");
-    let server = r.root.join("server.git");
+    let server = r.root.join(name);
     r.git(
         &r.root,
         &[

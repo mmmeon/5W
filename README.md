@@ -205,7 +205,7 @@ Hand edits are checked, not trusted:
   every row that changed by its transition: `[ ]→[~]` carries `branch:` and `submitted:`,
   `[~]→[x]` carries `via:review` and `reviewed:`, a close carries its lane's `via:`, a reject its
   `rework:`, and nothing else gains one. A `submitted:` or `reviewed:` written or changed is a full sha
-  (a prefix passes only in a submit or accept commit, as releases through 0.1.3 wrote 12 digits);
+  (a 12-digit prefix passes only in a submit or accept commit, as releases through 0.1.3 wrote them);
   a prefix is read only while it names exactly one commit, and one under 7 digits never. Closed rows are immutable except to reopen, reflow (`split`)
   or archive; no row is deleted and no id reused; a queue edit is its own commit on the trunk. A
   single edit's subject (`chore(tasks): set #4 level 1`) names the only row its commit may change, and

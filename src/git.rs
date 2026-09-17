@@ -92,7 +92,73 @@ fn quarantined() -> bool {
     let Some(store) = Path::new(&q).parent().and_then(canon) else {
         return false;
     };
-    std::env::split_paths(&alt).any(|a| canon(&a).as_ref() == Some(&store))
+    alternates(std::os::unix::ffi::OsStrExt::as_bytes(alt.as_os_str()))
+        .iter()
+        .any(|a| canon(a).as_ref() == Some(&store))
+}
+
+/// GIT_ALTERNATE_OBJECT_DIRECTORIES as git reads it: entries separated by `:`,
+/// an entry that starts with `"` C-quoted — as git writes a path holding `:`.
+fn alternates(mut s: &[u8]) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut out = Vec::new();
+    while !s.is_empty() {
+        let mut entry = Vec::new();
+        if s[0] == b'"' {
+            let mut i = 1;
+            loop {
+                match s.get(i) {
+                    None => return out, // unterminated: git ignores the rest too
+                    Some(b'"') => {
+                        i += 1;
+                        break;
+                    }
+                    Some(b'\\') => {
+                        let (byte, len) = match s.get(i + 1) {
+                            Some(d @ b'0'..=b'3')
+                                if s.get(i + 2).is_some_and(|c| (b'0'..=b'7').contains(c))
+                                    && s.get(i + 3).is_some_and(|c| (b'0'..=b'7').contains(c)) =>
+                            {
+                                (
+                                    (d - b'0') << 6 | (s[i + 2] - b'0') << 3 | (s[i + 3] - b'0'),
+                                    4,
+                                )
+                            }
+                            Some(b'a') => (7, 2),
+                            Some(b'b') => (8, 2),
+                            Some(b't') => (b'\t', 2),
+                            Some(b'n') => (b'\n', 2),
+                            Some(b'v') => (11, 2),
+                            Some(b'f') => (12, 2),
+                            Some(b'r') => (b'\r', 2),
+                            Some(c @ (b'\\' | b'"')) => (*c, 2),
+                            _ => return out,
+                        };
+                        entry.push(byte);
+                        i += len;
+                    }
+                    Some(c) => {
+                        entry.push(*c);
+                        i += 1;
+                    }
+                }
+            }
+            s = &s[i..];
+            match s.first() {
+                None => {}
+                Some(b':') => s = &s[1..],
+                Some(_) => return out,
+            }
+        } else {
+            let end = s.iter().position(|&c| c == b':').unwrap_or(s.len());
+            entry.extend_from_slice(&s[..end]);
+            s = &s[(end + 1).min(s.len())..];
+        }
+        if !entry.is_empty() {
+            out.push(PathBuf::from(std::ffi::OsString::from_vec(entry)));
+        }
+    }
+    out
 }
 
 /// Refuse a GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR that names another

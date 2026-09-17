@@ -1363,6 +1363,8 @@ fn review(repo: &Repo, args: &[String]) -> Res<()> {
     let o = opts(args)?;
     let q = Q::load(repo)?;
     let mut found = None;
+    // Tasks whose submitted: names no one commit: a plain accept refuses them.
+    let mut unclear = Vec::new();
     for t in q.tasks.iter().filter(|t| t.state == State::Review) {
         found = found.or(Some(t.id));
         if o.ids {
@@ -1390,8 +1392,14 @@ fn review(repo: &Repo, args: &[String]) -> Res<()> {
                     ));
                     moved = n;
                 }
-                git::Recorded::Ambiguous => notes.push(format!("submitted:{sub} is ambiguous")),
-                git::Recorded::Invalid => notes.push(format!("submitted:{sub} is not a sha")),
+                git::Recorded::Ambiguous => {
+                    unclear.push(t.id);
+                    notes.push(format!("submitted:{sub} is ambiguous"))
+                }
+                git::Recorded::Invalid => {
+                    unclear.push(t.id);
+                    notes.push(format!("submitted:{sub} is not a sha"))
+                }
                 git::Recorded::Missing => notes.push(format!("submitted:{sub} is gone")),
             }
         }
@@ -1436,6 +1444,10 @@ fn review(repo: &Repo, args: &[String]) -> Res<()> {
         return Ok(());
     }
     match found {
+        Some(id) if unclear.contains(&id) => println!(
+            "→ once #{id} is reviewed: {} accept {id} --at <the commit you reviewed>",
+            repo.cfg.cmd_tasks
+        ),
         Some(id) => println!("→ {} accept {id}", repo.cfg.cmd_tasks),
         None => println!("(nothing submitted)"),
     }
