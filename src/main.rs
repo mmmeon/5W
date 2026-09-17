@@ -270,7 +270,7 @@ fn init(repo: &Repo) -> Res<()> {
 /// is checked out elsewhere to commit on.
 fn init_trunk(repo: &Repo) -> Res<String> {
     let named = repo.cfg.trunk.is_some()
-        || std::env::var("FIVEW_TRUNK").is_ok()
+        || std::env::var("FIVEW_TRUNK").is_ok_and(|s| !s.is_empty())
         || git::opt(&repo.primary, &["config", "5w.trunk"]).is_some_and(|s| !s.is_empty());
     if named || repo.bare {
         return Ok(repo.trunk.clone());

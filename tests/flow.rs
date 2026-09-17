@@ -1186,6 +1186,13 @@ fn init_off_a_branch_takes_origin_head_and_refuses_a_feature_branch() {
     let msg = origin.refuses(&clone, &["init"]);
     assert!(msg.contains("git switch master"), "{msg}");
     assert!(!clone.join(".5w.toml").exists());
+    // An empty FIVEW_TRUNK names no trunk, as everywhere else: still refused.
+    let mut c = Command::new(bin5w());
+    c.arg("init").current_dir(&clone);
+    env(&mut c, &origin.root);
+    let msg = refusal(&c.env("FIVEW_TRUNK", "").output().unwrap(), &["init"]);
+    assert!(msg.contains("git switch master"), "{msg}");
+    assert!(!clone.join(".5w.toml").exists());
     // Detached: origin/HEAD names the trunk.
     origin.git(&clone, &["checkout", "-q", "--detach"]);
     let out = origin.ok(&clone, &["init"]);
