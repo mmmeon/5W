@@ -17,6 +17,12 @@ cargo install --path .        # installs `5w`
 cd your-repo && 5w init       # writes .5w.toml, TASKS.md, PROTOCOL.md; commits them
 ```
 
+`init` commits on the trunk and writes its name as `.5w.toml`'s `trunk`: `FIVEW_TRUNK` or `git config
+5w.trunk` when set, else the branch checked out, else the one `origin/HEAD` names (then
+`git-town.main-branch`, then `main`) when HEAD is detached. On a branch `origin/HEAD` or
+`git-town.main-branch` contradicts it refuses, naming `git switch <trunk>` — the queue does not live
+on a feature branch — unless that trunk is checked out in another worktree, where it commits.
+
 To uninstall: `cargo uninstall fivew` (the package is `fivew`, the binary `5w`), or delete the release
 binary from wherever you put it. A repository keeps its committed `.5w.toml`, `TASKS.md`,
 `PROTOCOL.md` (and `DONE.md` once archived); `5w hook uninstall` (`5w hook uninstall pre-receive` on

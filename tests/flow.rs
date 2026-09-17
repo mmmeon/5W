@@ -44,6 +44,13 @@ fn env_with_relative_wt_root(c: &mut Command, _root: &Path) {
 
 impl Repo {
     fn new(name: &str) -> Repo {
+        let r = Repo::uninit(name, "main");
+        r.ok(&r.main, &["init"]);
+        r
+    }
+
+    /// A repository with one commit on `branch` and no 5W files yet.
+    fn uninit(name: &str, branch: &str) -> Repo {
         let root = std::env::temp_dir().join(format!(
             "5w-test-{name}-{}-{}",
             std::process::id(),
@@ -53,11 +60,10 @@ impl Repo {
         let main = root.join("repo");
         std::fs::create_dir_all(&main).unwrap();
         let r = Repo { root, main };
-        r.git(&r.main, &["init", "-q", "-b", "main"]);
+        r.git(&r.main, &["init", "-q", "-b", branch]);
         std::fs::write(r.main.join("README"), "hi\n").unwrap();
         r.git(&r.main, &["add", "README"]);
         r.git(&r.main, &["commit", "-qm", "init"]);
-        r.ok(&r.main, &["init"]);
         r
     }
 
@@ -1017,6 +1023,57 @@ fn a_flag_wt_report_init_lint_ship_ci_or_update_files_does_not_take_is_refused()
     ] {
         r.ok(&r.main, args);
     }
+}
+
+#[test]
+fn init_takes_the_checked_out_branch_as_the_trunk() {
+    let r = Repo::uninit("init-master", "master");
+    let out = r.ok(&r.main, &["init"]);
+    assert!(out.contains("committed on master"), "{out}");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("trunk = \"master\""), "{cfg}");
+    assert_eq!(
+        r.git(&r.main, &["log", "-1", "--format=%s", "master"]),
+        "chore(tasks): adopt 5W"
+    );
+    // Later commands find the queue on master.
+    r.ok(&r.main, &["add", "x"]);
+    assert!(
+        r.git(&r.main, &["log", "-1", "--format=%s", "master"])
+            .starts_with("chore(tasks)")
+    );
+    assert!(r.tasks().contains("x"));
+
+    let m = Repo::uninit("init-main", "main");
+    assert!(m.ok(&m.main, &["init"]).contains("committed on main"));
+    let cfg = std::fs::read_to_string(m.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("trunk = \"main\""), "{cfg}");
+}
+
+#[test]
+fn init_off_a_branch_takes_origin_head_and_refuses_a_feature_branch() {
+    let origin = Repo::uninit("init-origin", "master");
+    let clone = origin.root.join("clone");
+    origin.git(
+        &origin.root,
+        &[
+            "clone",
+            "-q",
+            origin.main.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    // A feature branch is not where the queue lives: refused, nothing written.
+    origin.git(&clone, &["checkout", "-qb", "f/x"]);
+    let msg = origin.refuses(&clone, &["init"]);
+    assert!(msg.contains("git switch master"), "{msg}");
+    assert!(!clone.join(".5w.toml").exists());
+    // Detached: origin/HEAD names the trunk.
+    origin.git(&clone, &["checkout", "-q", "--detach"]);
+    let out = origin.ok(&clone, &["init"]);
+    let cfg = std::fs::read_to_string(clone.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("trunk = \"master\""), "{cfg}\n{out}");
+    assert!(out.contains("not on master"), "{out}");
 }
 
 #[test]

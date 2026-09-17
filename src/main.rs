@@ -164,7 +164,8 @@ fn dispatch(args: Vec<String>) -> Res<()> {
 /// This one commit goes through `git commit`, deliberately: it is the only time
 /// the tool creates files rather than editing a line.
 fn init(repo: &Repo) -> Res<()> {
-    let checkout = repo.trunk_checkout()?;
+    let trunk = init_trunk(repo)?;
+    let checkout = git::worktree_of(&repo.primary, &trunk)?;
     let p = checkout.as_ref().unwrap_or(&repo.primary);
     let mut created = Vec::new();
     let cfg = p.join(store::CONFIG_FILE);
@@ -172,7 +173,7 @@ fn init(repo: &Repo) -> Res<()> {
         std::fs::write(
             &cfg,
             TEMPLATE_CONFIG
-                .replace("{trunk}", &repo.trunk)
+                .replace("{trunk}", &trunk)
                 .replace("{version}", upkeep::VERSION),
         )
         .map_err(|e| e.to_string())?;
@@ -200,10 +201,7 @@ fn init(repo: &Repo) -> Res<()> {
         println!("init: wrote {c}");
     }
     if checkout.is_none() {
-        println!(
-            "init: the primary worktree is not on {}; commit these there yourself",
-            repo.trunk
-        );
+        println!("init: the primary worktree is not on {trunk}; commit these there yourself");
         return Ok(());
     }
     let mut add = vec!["add", "--"];
@@ -217,6 +215,46 @@ fn init(repo: &Repo) -> Res<()> {
         commit.truncate(4);
     }
     git::git(p, &commit)?;
-    println!("init: committed on {}", repo.trunk);
+    println!("init: committed on {trunk}");
     Ok(())
+}
+
+/// The trunk `init` writes: one named already (`.5w.toml`, `FIVEW_TRUNK`,
+/// `5w.trunk`), else the branch checked out here, else what `origin/HEAD` or
+/// `git-town.main-branch` names, else `main`. A checked-out branch that one of
+/// those two contradicts is a feature branch, and the queue does not live there:
+/// refused, unless the trunk they name is checked out elsewhere to commit on.
+fn init_trunk(repo: &Repo) -> Res<String> {
+    let named = repo.cfg.trunk.is_some()
+        || std::env::var("FIVEW_TRUNK").is_ok()
+        || git::opt(&repo.primary, &["config", "5w.trunk"]).is_some_and(|s| !s.is_empty());
+    if named || repo.bare {
+        return Ok(repo.trunk.clone());
+    }
+    let origin = git::opt(
+        &repo.cwd,
+        &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
+    )
+    .and_then(|r| r.strip_prefix("refs/remotes/origin/").map(String::from))
+    .filter(|b| !b.is_empty())
+    .map(|b| (b, "origin/HEAD"));
+    let other = origin.or_else(|| {
+        git::opt(&repo.cwd, &["config", "git-town.main-branch"])
+            .filter(|s| !s.is_empty())
+            .map(|b| (b, "git-town.main-branch"))
+    });
+    Ok(match (store::head_branch(&repo.cwd), other) {
+        (Some(here), Some((there, _))) if here == there => here,
+        (Some(here), Some((there, from))) => {
+            if git::worktree_of(&repo.primary, &there)?.is_none() {
+                return Err(format!(
+                    "{here} is not the trunk ({from} names {there}) — `git switch {there}`, then `5w init`; or `git config 5w.trunk {here}`"
+                ));
+            }
+            there
+        }
+        (Some(here), None) => here,
+        (None, Some((there, _))) => there,
+        (None, None) => "main".into(),
+    })
 }
