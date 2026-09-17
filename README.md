@@ -250,7 +250,8 @@ The queue is read by agents, so every read is priced in tokens.
 - **A flag a command does not take is refused** (`unknown flag --jsn for ready (5w ready --help)`),
   not ignored: an agent that invents a flag learns so, instead of trusting output the flag never
   shaped. So are `wt`, `report`, `init` and `lint` (`unknown flag --x for wt ls (5w wt ls --help)`;
-  `lint` also refuses `-x` and a second argument, since it takes one of `--staged`, `<rev>` or a range;
+  `lint` also refuses `-x`, a second argument and a revision that is not a commit, such as `^HEAD`,
+  since it takes one of `--staged`, `<rev>` or a range;
   `wt` and `report` subcommands print their usage for `--help`). `done`'s flags are the lanes' close words; text (`reject`'s reason, `--body`) may still
   start with `--`.
 - **Colour only for a person:** styling is off when stdout is not a terminal, under `NO_COLOR` or

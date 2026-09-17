@@ -99,15 +99,32 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             check(&repo.cfg, repo, &old, &new, None, "staged", &mut problems);
         }
         range => {
-            let commits = if range.contains("..") {
-                git::git(&repo.cwd, &["rev-list", "--reverse", range])?
-            } else {
-                git::git(
-                    &repo.cwd,
-                    &["rev-parse", "--verify", &format!("{range}^{{commit}}")],
-                )?
+            // Resolve each side to a plain sha: rev-parse answers `^HEAD` with
+            // `^<sha>`, which is not a commit to lint.
+            let commit = |r: &str| {
+                git::rev(&repo.cwd, if r.is_empty() { "HEAD" } else { r })
+                    .filter(|s| s.len() >= 40 && is_sha(Some(s)))
+                    .ok_or_else(|| {
+                        format!(
+                            "lint: {range} is not a commit or a <from>..<to> range ({} lint --help)",
+                            repo.cfg.cmd_tasks
+                        )
+                    })
             };
-            let list: Vec<String> = commits.lines().map(String::from).collect();
+            let list: Vec<String> = match range.split_once("..") {
+                Some((from, to)) => {
+                    let (sep, to) = match to.strip_prefix('.') {
+                        Some(to) => ("...", to),
+                        None => ("..", to),
+                    };
+                    let spec = format!("{}{sep}{}", commit(from)?, commit(to)?);
+                    git::git(&repo.cwd, &["rev-list", "--reverse", &spec])?
+                        .lines()
+                        .map(String::from)
+                        .collect()
+                }
+                None => vec![commit(range)?],
+            };
             let trunk = repo.trunk.clone();
             commits_on(
                 repo,

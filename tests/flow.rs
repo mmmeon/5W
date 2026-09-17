@@ -553,6 +553,29 @@ fn lint_refuses_a_dash_flag_or_a_second_argument_in_one_line() {
 }
 
 #[test]
+fn lint_refuses_a_revision_that_is_not_a_commit_in_one_line() {
+    let r = Repo::new("lint-revs");
+    r.ok(&r.main, &["add", "x"]);
+    r.ok(&r.main, &["add", "y"]);
+    // `^HEAD` resolves to `^<sha>`, which lint once took for a commit on a branch.
+    for arg in [
+        "^HEAD",
+        "nope",
+        "^HEAD~1..HEAD",
+        "HEAD~1..^HEAD",
+        "HEAD..nope",
+        "^HEAD...",
+    ] {
+        let want =
+            format!("5w: lint: {arg} is not a commit or a <from>..<to> range (5w lint --help)\n");
+        assert_eq!(r.fails(&r.main, &["lint", arg]), want, "{arg}");
+    }
+    for arg in ["HEAD~1", "HEAD~1..", "..HEAD", "HEAD~1...HEAD"] {
+        r.ok(&r.main, &["lint", arg]);
+    }
+}
+
+#[test]
 fn no_color_is_global_but_never_eats_text() {
     let r = Repo::new("nocolor");
     // Before, after or among a command's arguments, on every tool.
