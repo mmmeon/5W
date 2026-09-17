@@ -35,6 +35,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   While the trunk .5w.toml is broken, ship of a real repair branch forked before the break usually conflicts in the merged-result check and refuses with "ship the repair", when the fix is to rebase the repair onto the trunk first. Name the rebase when the merge conflicts. Found in review of #86.
 - [ ] #98 Server and client resolve queue names from different fallback configs on a broken trunk
   On a trunk whose .5w.toml has a syntax error, the server judge (ci/pre-receive, #83) takes queue file/archive/commit_prefix from the last config that parses as TOML (even if 5w rejects it), while the client repair open (#86) takes them from the last config 5w accepts. After two consecutive breaks that also renamed queue names, client landing records and server judgement disagree. Use one shared resolution for both. Found in review of #86.
+- [ ] #99 5w done --self and lint ranges judge under an uncommitted trunk config
+  With close = "review" committed for a lane and that line removed only in the working copy, 5w done <id> --self commits close via:self on the trunk through commit-tree, which the pre-commit hook (#94) and ci would refuse. 5w lint <range> in a checkout likewise judges under the working-copy config. Queue writes and lint ranges should judge lane/close rules under the committed trunk config, as the hook does. Found in review of #94.
 
 ## Done
 
