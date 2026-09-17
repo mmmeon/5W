@@ -37,6 +37,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found by #87's worker: '[sections' with no ']' produces a multi-line error from config parsing; main.rs's one-line refusal assertion (#44 debug_assert) panics, exit 101. Make the parser's errors one line for every syntax error (fold or trim), and test unterminated headers, unterminated strings and arrays.
 - [ ] #90 An installed pre-commit hook blocks the commit that repairs a broken .5w.toml (lint --staged opens the config strictly) @queue !1
   Found by #87's worker: once .5w.toml on the trunk breaks, the pre-commit hook's 5w lint --staged refuses to open, so the local repair commit is blocked unless --no-verify. Let lint --staged open leniently when the only problem is the committed/working config and the staged .5w.toml parses (judge the staged queue under the staged config's names only if they match the last readable trunk config's — the #83 rule), and name the fix otherwise; test a repair commit through the hook.
+- [ ] #91 Re-running hook install on a server whose trunk pin was removed does not pin it again
+  On a bare server where 5w.trunk was unset after the pre-receive hook was installed, running hook install pre-receive again stops at "already installed" and never pins the trunk from HEAD, so the broken-config note names the trunk from the broken .5w.toml, which the hook does not judge. Re-install should pin a missing 5w.trunk from HEAD (as a first install does) and name that trunk. Found in review of #87.
 
 ## Done
 
