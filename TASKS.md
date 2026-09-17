@@ -34,7 +34,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #58 A queue commit whose index update fails (index.lock held) leaves the trunk moved but the checkout stale @queue !2
   and the refusal doesn't say the commit landed
   Found reviewing #57: the trunk ref moves first, then the checkout's index/working copy is mirrored; if the index write fails (index.lock), 5w exits 1 with git's error, the commit is on main, and the checkout's staged copy now reads as a revert of it. Make the refusal say the commit landed and name the fix (retry mirroring: e.g. a 5w command or 'git restore --staged TASKS.md' guidance), or retry the lock briefly; test with a held index.lock.
-- [ ] #60 archive of a staged-only closed row when DONE.md isn't on the trunk unstages the row without staging DONE.md @queue !1
+- [~] #60 archive of a staged-only closed row when DONE.md isn't on the trunk unstages the row without staging DONE.md @queue !1 branch:queue/task-60 submitted:f3643468198c
   Found reviewing #59 (pre-existing): a closed row only staged, DONE.md not on main — archive removes the row from staged TASKS.md but can't stage the untracked DONE.md, so lint --staged fails 'staged #1: deleted'. Either stage the new DONE.md with just the moved rows (intent-to-add style, only if the plan's staged copy has rows) or leave the staged TASKS.md untouched; test it.
 - [ ] #61 GitLab queue-events: a failed users/:id lookup counts the approver as a non-maker @ci !1
   and a non-array 200 page loops until timeout
