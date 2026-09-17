@@ -33,6 +33,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #79 On a bare server a pinned 5w.trunk should win over (or refuse on mismatch with) the committed trunk key @ci !1
   so a trunk rename can't silently ungate
   Found reviewing #11: a reviewed change setting trunk = "x" in .5w.toml makes the real trunk ungated on the next push; the admin's git config 5w.trunk pin is silently overridden. On a bare repo, when 5w.trunk is set and differs from the committed trunk, refuse trunk pushes in one line naming both, or let the pin win; test it.
+- [ ] #80 Fresh server: a branch pushed in the same push that creates the trunk is refused as 'queue edits go on main' @ci !1
+  Found reviewing #11 (pre-existing): on an empty server, git push origin main feat judges feat against a trunk that doesn't exist yet, so trunk queue commits it contains are flagged as branch edits. Pushing main first works. Document it in README's migration note, or when the trunk is created in the same push and passes its own check, judge the new branch as if based on it — careful: #76 showed a later git refusal of the trunk update can land the branch unjudged (only safe for creation where refusal leaves no trunk: then git refuses nothing? verify), so documenting may be the right answer; test the chosen behaviour.
 
 ## Done
 
