@@ -35,7 +35,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #57 store::write drops a staged-copy fix when the committed text is unchanged @queue !2
   a plain git commit can then commit a stale queue row
   Found reviewing #54: store::write updates the index only when it makes a commit. If the committed row already reads the value but the staged copy differs (e.g. !4 staged, trunk !2, 5w set 1 level 2), the working file is rewritten but the index keeps !4 (status MM); an ordinary git commit then commits the stale row, breaking 'the next ordinary git commit does not revert the queue'. Also print a line when an edit only fixes the checkout. Same on main before #54. Test: staged stale row + same-value set → index matches trunk, tree clean.
-- [ ] #54 lint: a single-edit queue subject must name the one row the commit changes @queue !1 branch:queue/task-54
+- [~] #54 lint: a single-edit queue subject must name the one row the commit changes @queue !1 branch:queue/task-54 submitted:4cb305d20c0e
   Found reviewing #20: a hand commit 'chore(tasks): set #100 level 1' that also changes #4 passes lint and audit counts it as 5w-made. #20 checks batch subjects against changed rows; do the same for single-edit subjects (the id named equals the only changed row; archive moves and the tool's own multi-row commits, if any, must keep passing — check this repo's whole history lints). Also print a line when a batch is all no-ops ('nothing to commit').
 
 ## Done
