@@ -35,6 +35,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #57 store::write drops a staged-copy fix when the committed text is unchanged @queue !2 branch:queue/task-57 rework:"mirror_index drops the planned staged archive copy when its entry equalled the commit, so a no-commit archive now stages TASKS.md with a closed row deleted (lint --staged fails) and prints a false 'checkout fixed': stage every planned staged copy, word the line truthfully, test a no-commit archive"
   a plain git commit can then commit a stale queue row
   Found reviewing #54: store::write updates the index only when it makes a commit. If the committed row already reads the value but the staged copy differs (e.g. !4 staged, trunk !2, 5w set 1 level 2), the working file is rewritten but the index keeps !4 (status MM); an ordinary git commit then commits the stale row, breaking 'the next ordinary git commit does not revert the queue'. Also print a line when an edit only fixes the checkout. Same on main before #54. Test: staged stale row + same-value set → index matches trunk, tree clean.
+- [ ] #58 A queue commit whose index update fails (index.lock held) leaves the trunk moved but the checkout stale @queue !2
+  and the refusal doesn't say the commit landed
+  Found reviewing #57: the trunk ref moves first, then the checkout's index/working copy is mirrored; if the index write fails (index.lock), 5w exits 1 with git's error, the commit is on main, and the checkout's staged copy now reads as a revert of it. Make the refusal say the commit landed and name the fix (retry mirroring: e.g. a 5w command or 'git restore --staged TASKS.md' guidance), or retry the lock briefly; test with a held index.lock.
 
 ## Done
 
