@@ -17,7 +17,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #2 Create the report label on mmmeon/5W so 5w report send can apply it @report !1 >restricted
 - [ ] #3 Release 0.1.3: queue commits and squashes signed when the repository signs @release !1 >restricted
 - [ ] #8 Run the aarch64 release binary on real arm64 hardware @release !1 >manual
-- [ ] #9 self-update and version --latest: opt-in, the pinned version by default, checksums and signature verified @upkeep !2
+- [~] #9 self-update and version --latest: opt-in, the pinned version by default, checksums and signature verified @upkeep !2 branch:upkeep/task-9 submitted:9fe0cee283f4
 - [ ] #10 Forge events as queue transitions: a change request submits, an approving review accepts, from a CI job @ci !3
 - [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4
 - [ ] #16 Move git calls behind named operations in src/git.rs: no raw git argv outside it, output unchanged @vcs !3
