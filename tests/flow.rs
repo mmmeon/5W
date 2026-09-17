@@ -492,7 +492,10 @@ fn a_subcommand_help_prints_only_that_command() {
         ("ready", "usage: 5w ready [filters] [out]"),
         ("levels", "usage: 5w blocked | levels | all"),
         ("reopen", "usage: 5w open <id>"),
-        ("hook", "usage: 5w hook install | uninstall"),
+        (
+            "hook",
+            "usage: 5w hook install | uninstall [pre-commit | pre-receive]",
+        ),
         ("doctor", "usage: 5w doctor"),
     ] {
         let o = r.cli(&r.main, &[cmd, "--help"]);
@@ -514,6 +517,11 @@ fn a_subcommand_help_prints_only_that_command() {
             .contains("usage: 5w ship")
     );
     assert!(r.ok(&r.main, &["wt", "--help"]).contains("wt"));
+    // The full listing names every wt subcommand the binary dispatches.
+    assert!(
+        full.contains("wt <new|add|ls|path|rm|prune|link|install|setup|discard-copy>"),
+        "{full}"
+    );
     assert_eq!(r.ok(&r.main, &["branch", "--help"]), full);
 }
 

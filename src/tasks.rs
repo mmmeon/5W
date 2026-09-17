@@ -33,7 +33,7 @@ write (each commits itself to the trunk, and only itself)
 
 protocol (PROTOCOL.md — the rules, for editing without the tool)
   lint [--staged | <rev> | <a>..<b>]   check queue edits follow it
-  hook install | uninstall             pre-commit hook running `lint --staged`
+  hook install | uninstall [pre-commit | pre-receive]   `lint --staged` hook, or the pre-receive check
   update-files [--pin]                 refresh PROTOCOL.md and hooks to this 5w; --pin sets requires
   ci --base --head --ref|--branch      the forge-neutral check for CI and pre-receive
 
@@ -42,7 +42,7 @@ feedback about 5W itself
   report list | show | send [--gh|--print] | rm
 
 branches
-  wt <new|add|ls|path|rm|link|install|setup>
+  wt <new|add|ls|path|rm|prune|link|install|setup|discard-copy>
   ship [branch] [--sync] [--squash [-m msg]] [--discard-ignored] [--force]
   init
 
