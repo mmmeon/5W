@@ -6,7 +6,8 @@
 # one line in .5w.toml. The install step below is ci/install-5w.sh, inlined.
 #
 # Make the `5w` check required on the trunk. A change request stays red until its
-# task is accepted; re-run the check after `5w accept`.
+# task is accepted; re-run the check after `5w accept`. The default branch is the
+# trunk: a change request is checked against its queue whatever its base.
 #
 # This workflow is read-only, and must stay so: on a change request GitHub runs the
 # change request's own copy of it, which its author can edit. Queue edits from
@@ -74,9 +75,13 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          TRUNK: ${{ github.event.repository.default_branch }}
         run: |
           if [ "$EVENT" != push ]; then
-            5w ci --base "$PR_BASE" --head "$PR_HEAD" --branch "$PR_BRANCH"
+            # The queue and policy are read at the default branch, never at the base
+            # branch or the change request's own .5w.toml: its author picks both.
+            5w ci --base "$PR_BASE" --head "$PR_HEAD" --branch "$PR_BRANCH" \
+                  --trunk "refs/remotes/origin/$TRUNK"
           else
             5w ci --base "$BEFORE" --head "$GITHUB_SHA" --ref "$REF"
           fi

@@ -423,6 +423,13 @@ branch's or the checkout's own `.5w.toml`, as is whether its config broke renami
 | GitLab CI                                                                       | [ci/gitlab-ci.yml](ci/gitlab-ci.yml)                                                                                                                                                                                                 |
 | Anything else                                                                   | map its before/after SHAs, ref and change-request branch onto the flags                                                                                                                                                              |
 
+A change request's check reads the queue and `require_task` at the default branch, whatever branch
+the change request targets: the examples pass `--trunk refs/remotes/origin/<default branch>`
+(`github.event.repository.default_branch`, `CI_DEFAULT_BRANCH`), never the target branch — its
+author picks that, could point it at a branch with a weak or fake queue, and can retarget after the
+check passed — nor the change request's own `.5w.toml`. So the forge's default branch must be the
+trunk; a change request into any other branch is checked against the default branch's queue too.
+
 **Which branch is the trunk on a server.** `FIVEW_TRUNK`, else `git config 5w.trunk`, else the
 branch the bare repository's `HEAD` names (then `git-town.main-branch`, then `main`); `.5w.toml`'s
 `trunk` read from that branch has the last word, except over a pin (`FIVEW_TRUNK` or `5w.trunk`):

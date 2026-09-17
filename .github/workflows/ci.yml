@@ -28,9 +28,11 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PR_BRANCH: ${{ github.head_ref }}
+          TRUNK: ${{ github.event.repository.default_branch }}
         run: |
           if [ "$EVENT" = pull_request ]; then
-            target/debug/5w ci --base "$PR_BASE" --head "$PR_HEAD" --branch "$PR_BRANCH"
+            target/debug/5w ci --base "$PR_BASE" --head "$PR_HEAD" --branch "$PR_BRANCH" \
+                                --trunk "refs/remotes/origin/$TRUNK"
           else
             target/debug/5w ci --base "$BEFORE" --head "$GITHUB_SHA" --ref "$REF"
           fi

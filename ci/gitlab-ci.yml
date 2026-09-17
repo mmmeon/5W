@@ -2,7 +2,8 @@
 # .5w.toml pins (`requires`), verified against SHA256SUMS and, when present, its
 # signature; the before_script is ci/install-5w.sh, inlined. Make the pipeline
 # required to merge; a merge request stays red until its task is accepted —
-# re-run the pipeline after `5w accept`.
+# re-run the pipeline after `5w accept`. The default branch is the trunk: a merge
+# request is checked against its queue whatever branch it targets.
 #
 # The `5w` job is read-only, and must stay so: a merge request pipeline runs the
 # source branch's .gitlab-ci.yml, which its author can edit. Queue edits from
@@ -56,10 +57,12 @@
   script:
     - |
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
-        git fetch -q origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+        # The queue and policy are read at the default branch, never at the target
+        # branch: its author picks that, and can retarget after this ran.
+        git fetch -q origin "+refs/heads/$CI_DEFAULT_BRANCH:refs/remotes/origin/$CI_DEFAULT_BRANCH"
         5w ci --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" --head "$CI_COMMIT_SHA" \
               --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" \
-              --trunk "refs/remotes/origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+              --trunk "refs/remotes/origin/$CI_DEFAULT_BRANCH"
       else
         5w ci --base "$CI_COMMIT_BEFORE_SHA" --head "$CI_COMMIT_SHA" --ref "refs/heads/$CI_COMMIT_BRANCH"
       fi
