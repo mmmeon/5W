@@ -528,8 +528,18 @@ impl Config {
             }
         }
         let mut c = Config::default();
+        // A value is one line: it becomes a ref, a path, a name or a line of output.
+        // Only the brief's footer and the install command may run to several.
         let s = |v: &Val, k: &str| -> Res<String> {
             match v {
+                Val::Str(s)
+                    if s.chars().any(char::is_control)
+                        && !matches!(k, "delegate.footer" | "worktrees.install") =>
+                {
+                    Err(format!(
+                        "config: {k} must not hold a control character: {s:?}"
+                    ))
+                }
                 Val::Str(s) => Ok(s.clone()),
                 _ => Err(format!("config: {k} must be a string")),
             }

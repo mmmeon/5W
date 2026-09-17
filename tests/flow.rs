@@ -1318,13 +1318,115 @@ fn a_config_syntax_error_is_a_one_line_refusal_naming_its_line() {
         ),
         (
             cfg.replace("default_lane = \"agent\"", "default_lane = \"a\\nb\""),
-            "default_lane a\\nb is not a configured lane".into(),
+            "default_lane must not hold a control character: \"a\\nb\"".into(),
         ),
     ] {
         std::fs::write(r.main.join(".5w.toml"), &text).unwrap();
         let err = r.refuses(&r.main, &["ready"]);
         assert!(err.contains(&want), "{want:?} in {err:?}");
     }
+}
+
+#[test]
+fn a_config_value_with_a_control_character_is_a_one_line_refusal_naming_its_key() {
+    let r = Repo::new("config-control-char");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let at = |line: &str| cfg.lines().position(|l| l == line).unwrap() + 1;
+    for (line, bad, key, extra) in [
+        ("trunk = \"main\"", "trunk = \"ma\\nin\"", "trunk", 0),
+        ("file = \"TASKS.md\"", "file = \"TAS\\nKS.md\"", "file", 0),
+        (
+            "archive = \"DONE.md\"",
+            "archive = \"DO\\tNE.md\"",
+            "archive",
+            0,
+        ),
+        (
+            "perennial = []",
+            "perennial = [\"re\\nlease\"]",
+            "perennial",
+            0,
+        ),
+        (
+            "commit_prefix = \"chore(tasks)\"",
+            "commit_prefix = \"chore\\r\"",
+            "commit_prefix",
+            0,
+        ),
+        (
+            "open = \"## Open\"",
+            "open = \"## Op\\u0000en\"",
+            "sections.open",
+            0,
+        ),
+        (
+            "links_file = \".worktree-links\"",
+            "links_file = \".work\\ntree-links\"",
+            "worktrees.links_file",
+            0,
+        ),
+        (
+            "kind = \"restricted\"",
+            "kind = \"restricted\"\nsection = \"## Re\\nstricted\"",
+            "lanes.restricted.section",
+            1,
+        ),
+        (
+            "area_docs = [\"README.md\", \"DESIGN.md\"]",
+            "area_docs = [\"READ\\nME.md\"]",
+            "delegate.area_docs",
+            0,
+        ),
+    ] {
+        std::fs::write(r.main.join(".5w.toml"), cfg.replace(line, bad)).unwrap();
+        let want = format!(
+            "config line {}: {key} must not hold a control character",
+            at(line) + extra
+        );
+        for cmd in [&["ready"][..], &["ls"], &["doctor"], &["add", "x"]] {
+            let err = r.refuses(&r.main, cmd);
+            assert!(err.contains(&want), "{cmd:?}: {want:?} in {err:?}");
+        }
+    }
+    // Committed, it is refused as broken where the config is read leniently too,
+    // and the trunk that refusal names is not the broken value.
+    for (line, bad, key) in [
+        ("trunk = \"main\"", "trunk = \"ma\\nin\"", "trunk"),
+        ("file = \"TASKS.md\"", "file = \"TAS\\nKS.md\"", "file"),
+    ] {
+        std::fs::write(r.main.join(".5w.toml"), cfg.replace(line, bad)).unwrap();
+        r.git(
+            &r.main,
+            &["commit", "-qam", "break the config", "--no-verify"],
+        );
+        let want = format!(
+            "config line {}: {key} must not hold a control character",
+            at(line)
+        );
+        for cmd in [
+            &["lint", "HEAD"][..],
+            &["ci", "--ref", "HEAD"],
+            &["ci", "--branch", "main"],
+        ] {
+            let err = r.refuses(&r.main, cmd);
+            assert!(err.contains(&want), "{cmd:?}: {want:?} in {err:?}");
+        }
+        r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    }
+    // The brief's footer is text of several lines.
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace(
+            "[delegate]\n",
+            "[delegate]\nfooter = \"steps:\\n  go {id}\\n\"\n",
+        ),
+    )
+    .unwrap();
+    r.ok(&r.main, &["add", "x"]);
+    assert!(
+        r.ok(&r.main, &["delegate", "1"])
+            .ends_with("steps:\n  go 1\n")
+    );
 }
 
 #[test]

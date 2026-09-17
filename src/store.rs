@@ -316,7 +316,12 @@ impl Repo {
                         .unwrap_or_default();
                     let said = |key: &str| {
                         kv.iter().rev().find_map(|(k, v)| match v {
-                            crate::config::Val::Str(t) if k == key => Some(t.clone()),
+                            // Not a value no config takes: a ref or a path is one line.
+                            crate::config::Val::Str(t)
+                                if k == key && !t.chars().any(char::is_control) =>
+                            {
+                                Some(t.clone())
+                            }
                             _ => None,
                         })
                     };

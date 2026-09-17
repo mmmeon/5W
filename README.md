@@ -786,6 +786,9 @@ narrows hundreds of branches to the possible copies in one git call.
 that keeps its own section, a custom brief footer and a review checklist. A key given twice in the
 same table reads as its last, everywhere: the config, the version check, the gate, `self-update`
 and the CI install script; `update-files --pin` rewrites that last `requires` and drops the others.
+A string value is one line — it becomes a ref, a path, a name or a line of output — so a control
+character in one (`trunk = "ma\nin"`) is refused, naming the key; only `delegate.footer` and
+`worktrees.install` may run to several lines.
 
 | Key                                         |                                                                                       |
 | ------------------------------------------- | ------------------------------------------------------------------------------------- |
