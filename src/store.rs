@@ -153,16 +153,23 @@ impl Repo {
                 Ok(c) => c,
                 Err(e) if lenient => {
                     broken = Some(e);
-                    // The trunk it names, where the text says, as the config reads it.
-                    let named = crate::config::parse_toml(&s).ok().and_then(|kv| {
-                        kv.into_iter().rev().find_map(|(k, v)| match v {
-                            crate::config::Val::Str(t) if k == "trunk" => Some(t),
+                    // What the text says where it can be read, as the config reads
+                    // it (the last key winning): the trunk, and the names the gate
+                    // tells queue edits and landings by. A repair must not rename them.
+                    let kv = crate::config::parse_toml(&s).unwrap_or_default();
+                    let said = |key: &str| {
+                        kv.iter().rev().find_map(|(k, v)| match v {
+                            crate::config::Val::Str(t) if k == key => Some(t.clone()),
                             _ => None,
                         })
-                    });
+                    };
+                    let d = Config::default();
                     Config {
-                        trunk: named,
-                        ..Config::default()
+                        trunk: said("trunk"),
+                        file: said("file").unwrap_or(d.file.clone()),
+                        archive: said("archive").unwrap_or(d.archive.clone()),
+                        commit_prefix: said("commit_prefix").unwrap_or(d.commit_prefix.clone()),
+                        ..d
                     }
                 }
                 Err(e) => return Err(e),

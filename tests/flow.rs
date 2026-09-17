@@ -5661,6 +5661,21 @@ fn a_server_whose_trunk_config_broke_takes_only_the_push_that_repairs_it() {
     commit(".5w.toml", &cfg, "repair and ungate");
     let (ok, err) = push_to(&r, &["main"]);
     assert!(!ok && err.contains("no landing record covers"), "{err}");
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    // Nor does a repair that names its code the queue: the trunk's names hold.
+    let bogus = gated.clone() + "bogus = 1\n";
+    commit(".5w.toml", &bogus, "break it again");
+    unhooked(&|| assert!(push_to(&r, &["main"]).0));
+    std::fs::write(r.main.join("evil.sh"), "rm -rf /\n").unwrap();
+    commit(
+        ".5w.toml",
+        &gated
+            .replace("file = \"TASKS.md\"", "file = \"evil.sh\"")
+            .replace("archive = \"DONE.md\"", "archive = \".5w.toml\""),
+        "repair, and call the code the queue",
+    );
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
 
     // A requires newer than the server's 5w names upgrading it.
     r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
@@ -5674,6 +5689,36 @@ fn a_server_whose_trunk_config_broke_takes_only_the_push_that_repairs_it() {
         !ok && err.contains("requires 5w 99.0.0") && err.contains("upgrade 5w on the server"),
         "{err}"
     );
+}
+
+#[test]
+fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
+    let r = Repo::new("config-bricked-x");
+    let server = server_of(&r);
+    r.git(&server, &["config", "--unset", "5w.trunk"]);
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let hook = server.join("hooks/pre-receive");
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace("trunk = \"main\"", "trunk = \"x\"") + "bogus = 1\n",
+    )
+    .unwrap();
+    r.git(&r.main, &["commit", "-qam", "break the config, trunk x"]);
+    std::fs::rename(&hook, server.join("hook-off")).unwrap();
+    assert!(push_to(&r, &["main"]).0);
+    std::fs::rename(server.join("hook-off"), &hook).unwrap();
+
+    // No branch x: the fix is pinning the trunk the server has, not a push to x.
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "repair"]);
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(
+        !ok && err.contains("`git config 5w.trunk main`") && !err.contains("to x"),
+        "{err}"
+    );
+    r.git(&server, &["config", "5w.trunk", "main"]);
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(ok, "{err}");
 }
 
 #[test]

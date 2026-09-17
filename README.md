@@ -413,8 +413,12 @@ alias left by a rename) is judged as the branch it points at.
 lock the server: `5w ci` refuses every push naming the error and the fix — push a commit that fixes
 `.5w.toml` to the trunk, or upgrade the server's 5w when the config `requires` a newer one. A push to
 the trunk whose new tip commits a config that parses (or none) is the repair, judged under that
-config; the gate reads the broken one as on unless it says `gate_trunk = false`, so under the gate
-the repair needs a landing record like any code.
+config — except the queue file, archive and commit prefix, which the gate tells queue edits and
+landings by: those come from the broken config where it says them (defaults where it cannot be
+read), so a repair cannot call its code the queue. The gate reads the broken config as on unless it
+says `gate_trunk = false`, so under the gate the repair needs a landing record like any code. A
+broken config naming a trunk an unpinned server has no branch for names the pin instead:
+`git config 5w.trunk <HEAD's branch>`, then the repair.
 
 The wrappers install exactly the version the project pins (see *Staying current*), verified —
 [ci/install-5w.sh](ci/install-5w.sh), inlined.

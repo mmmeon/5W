@@ -133,9 +133,14 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 }
                 None => None,
             };
-            let Some(cfg) = cfg else {
+            let Some(mut cfg) = cfg else {
                 return Err(unreadable(repo, err));
             };
+            // Queue edits and landings are told by the names the trunk had, never
+            // by the pushed config: a repair naming code its queue would ungate it.
+            cfg.file = repo.cfg.file.clone();
+            cfg.archive = repo.cfg.archive.clone();
+            cfg.commit_prefix = repo.cfg.commit_prefix.clone();
             eprintln!(
                 "5w ci: {}'s .5w.toml is unreadable; this push repairs it and is judged under the one it commits",
                 repo.trunk
@@ -377,6 +382,16 @@ fn unreadable(repo: &Repo, err: &str) -> String {
         format!(
             "upgrade 5w{}",
             if repo.bare { " on the server" } else { "" }
+        )
+    } else if repo.bare
+        && repo.pin.is_none()
+        && git::rev(&repo.primary, &format!("refs/heads/{}", repo.trunk)).is_none()
+    {
+        // It names a trunk this server does not have: pin the one it does.
+        let head = crate::store::head_branch(&repo.primary).unwrap_or_else(|| "<name>".into());
+        format!(
+            "it names trunk {}, which this server has no branch for: `git config 5w.trunk {head}`, then push a commit that fixes .5w.toml to {head}",
+            repo.trunk
         )
     } else {
         format!("push a commit that fixes .5w.toml to {}", repo.trunk)
