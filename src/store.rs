@@ -560,24 +560,31 @@ impl Repo {
     /// (`lint::restores_accepted_names`), pushed past a gated server's hook.
     fn unmoved_queue(&self, e: &str) -> String {
         let (t, new) = (&self.trunk, &self.cfg.file);
-        let old = git::rev(&self.primary, &format!("refs/heads/{t}"))
-            .and_then(|tip| last_accepted_config(&self.primary, &tip))
-            .map(|c| c.file)
-            .filter(|old| old != new && matches!(self.load_file(old), Ok(Some(_))));
-        let Some(old) = old else {
-            return format!(
+        self.restore_fix(e, "file").unwrap_or_else(|| {
+            format!(
                 "no {new} on {t}, the queue its broken {CONFIG_FILE} names ({e}) — fix {CONFIG_FILE} on {t}"
-            );
-        };
+            )
+        })
+    }
+
+    /// The refusal naming the repair of a break (`e`) that renamed `key`'s file in
+    /// place: every name that repair restores (`lint::names_to_restore`, over the
+    /// trunk's committed tip). None: the break did not rename `key` in place.
+    fn restore_fix(&self, e: &str, key: &str) -> Option<String> {
+        let t = &self.trunk;
+        let restores = crate::lint::trunk_tip(&self.primary, t)
+            .map(|tip| crate::lint::names_to_restore(&self.primary, &tip, &self.cfg))
+            .filter(|r| r.iter().any(|(k, ..)| *k == key))?;
+        let (what, names) = crate::lint::describe_restore(&restores);
         let fix = match self.cfg.gate_trunk {
             true => format!(
-                "an admin commits a {CONFIG_FILE} that parses with file = \"{old}\" on {t} and pushes it past the server's hook"
+                "an admin commits a {CONFIG_FILE} that parses with {names} on {t} and pushes it past the server's hook"
             ),
-            false => format!(
-                "commit a {CONFIG_FILE} that parses with file = \"{old}\" on {t} and push it"
-            ),
+            false => format!("commit a {CONFIG_FILE} that parses with {names} on {t} and push it"),
         };
-        format!("{CONFIG_FILE} on {t} is broken ({e}) and names the queue {new}, not {old} — {fix}")
+        Some(format!(
+            "{CONFIG_FILE} on {t} is broken ({e}) and names {what} — {fix}"
+        ))
     }
 
     /// Closed tasks moved out of the queue by `archive`. Empty when there is none.
@@ -607,23 +614,10 @@ impl Repo {
         let Some(e) = &self.broken else {
             return Ok(String::new());
         };
-        let (t, new) = (&self.trunk, &self.cfg.archive);
-        let old = git::rev(&self.primary, &format!("refs/heads/{t}"))
-            .and_then(|tip| last_accepted_config(&self.primary, &tip))
-            .map(|c| c.archive)
-            .filter(|old| old != new && matches!(self.load_file(old), Ok(Some(_))));
-        let Some(old) = old else {
-            return Ok(String::new());
-        };
-        let fix = match self.cfg.gate_trunk {
-            true => format!(
-                "an admin commits a {CONFIG_FILE} that parses with archive = \"{old}\" on {t} and pushes it past the server's hook"
-            ),
-            false => format!(
-                "commit a {CONFIG_FILE} that parses with archive = \"{old}\" on {t} and push it"
-            ),
-        };
-        bail!("{CONFIG_FILE} on {t} is broken ({e}) and names the archive {new}, not {old} — {fix}")
+        match self.restore_fix(e, "archive") {
+            Some(fix) => bail!("{fix}"),
+            None => Ok(String::new()),
+        }
     }
 
     /// Worktree root for new branches, with `.` and `..` resolved lexically so every path

@@ -587,10 +587,9 @@ fn unmoved_repair(repo: &Repo, c: &str, k: &Commit) -> Option<String> {
     let cfg =
         crate::config::Config::from_toml(&git::opt(p, &["show", &format!("{c}:{file}")])?).ok()?;
     let broken = crate::store::broken_names(p, &text, Some(fp));
-    let (kind, new, old) = lint::restored_name(p, fp, &broken, &cfg)?;
-    let key = if kind == "queue" { "file" } else { "archive" };
+    let (what, names) = lint::describe_restore(&lint::restored_name(p, fp, &broken, &cfg)?);
     Some(format!(
-        "{}: {file} on {t} is broken ({e}) and names the {kind} {new}, not {old} — no landing covers its repair: an admin pushes this {key} = \"{old}\" past the server's hook",
+        "{}: {file} on {t} is broken ({e}) and names {what} — no landing covers its repair: an admin pushes this {names} past the server's hook",
         short(c)
     ))
 }

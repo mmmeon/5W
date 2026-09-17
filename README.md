@@ -481,10 +481,11 @@ refuses that push naming this step, since no landing record can cover it. A brea
 that renames the archive while the file stays put is refused the same way, by queue commands, ship,
 the server's landing check and a forge's `5w ci --branch` alike (not blamed on the task), with the
 old `archive` as the repair: read as empty, its closed tasks would drop out, their ids be reused and
-their accepted rows stop authorising a ship. The pre-commit hook takes
-either repair: it may restore the `file`, `archive` and `commit_prefix` of the trunk's last config
-that parsed while the trunk holds the queue or archive under a name it restores and nothing under a
-broken name it drops.
+their accepted rows stop authorising a ship. The repair restores, from the trunk's last config that
+parsed, each of `file` and `archive` the trunk's tip holds nothing under by its broken name but holds
+under the old one, and then `commit_prefix` too; a name whose file moved with it stays. The
+refusals, the server's included, name every one of them; the pre-commit hook takes that repair, and
+no other name.
 
 A forge's check is judged the same way: `5w ci --branch` on a change request whose head commits a
 config that parses (or none) runs the ship check under that config, with the trunk's queue file,

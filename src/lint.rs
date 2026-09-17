@@ -796,64 +796,136 @@ fn staged_repair(repo: &Repo, err: &str, env: &[(&str, &str)]) -> Res<Repo> {
             repo.trunk
         )
     };
-    let was = &repo.cfg;
-    if restores_accepted_names(repo, &cfg) {
-        return Ok(with_config(repo, cfg));
-    }
-    for (key, old, new) in [
-        ("file", &was.file, &cfg.file),
-        ("archive", &was.archive, &cfg.archive),
-        ("commit_prefix", &was.commit_prefix, &cfg.commit_prefix),
-    ] {
-        if old != new {
-            bail!(
-                "a commit repairing {}'s {file} keeps {key} = {old:?}: stage it so, and rename in a later commit",
-                repo.trunk
-            );
-        }
+    // One that keeps every broken name is taken as any repair is: the refusal
+    // names the other, which restores a queue or archive renamed in place.
+    let restores = restores_accepted_names(repo);
+    if kept(&repo.cfg, &[], &cfg).is_some()
+        && let Some((key, want)) = kept(&repo.cfg, &restores, &cfg)
+    {
+        bail!(
+            "a commit repairing {}'s {file} keeps {key} = {want:?}: stage it so, and rename in a later commit",
+            repo.trunk
+        );
     }
     Ok(with_config(repo, cfg))
 }
 
 /// A break that renamed the queue or its archive in place — the trunk has no file
 /// under the name its broken config gives, and has one under the name its last
-/// accepted config gave — is repaired by a config restoring that one's file,
-/// archive and commit prefix, so long as the trunk has no file under either broken
-/// name the restore drops. Anything this cannot read keeps the broken names.
-fn restores_accepted_names(repo: &Repo, cfg: &Config) -> bool {
-    let t = &repo.trunk;
+/// accepted config gave — is repaired by a config restoring the names
+/// `names_to_restore` gives for the trunk's tip, keeping the others. Anything this
+/// cannot read keeps the broken names.
+fn restores_accepted_names(repo: &Repo) -> Vec<Restore> {
+    trunk_tip(&repo.primary, &repo.trunk)
+        .map(|tip| names_to_restore(&repo.primary, &tip, &repo.cfg))
+        .unwrap_or_default()
+}
+
+/// A name a repair restores: its key, the name the broken config gives, the name
+/// the last accepted config gave.
+pub(crate) type Restore = (&'static str, String, String);
+
+/// The trunk's tip commit, or origin's copy when there is no local branch.
+pub(crate) fn trunk_tip(dir: &std::path::Path, t: &str) -> Option<String> {
     [
         format!("refs/heads/{t}"),
         format!("refs/remotes/origin/{t}"),
     ]
     .iter()
-    .find_map(|r| git::rev(&repo.primary, r))
-    .is_some_and(|tip| restored_name(&repo.primary, &tip, &repo.cfg, cfg).is_some())
+    .find_map(|r| git::rev(dir, r))
+}
+
+/// The names a repair of commit `tip`, whose broken config gives the names in
+/// `broken`, restores. None unless the break renamed the queue or archive in place
+/// (`tip` has no file under the broken name and one under the accepted name); then
+/// each queue name `tip` has no file under by its broken name, and the commit
+/// prefix, go back to the last accepted config's — a name whose file moved stays.
+pub(crate) fn names_to_restore(dir: &std::path::Path, tip: &str, broken: &Config) -> Vec<Restore> {
+    let Some(last) = crate::store::last_accepted_config(dir, tip) else {
+        return Vec::new();
+    };
+    let has = |name: &str| git::ok(dir, &["cat-file", "-e", &format!("{tip}:{name}")]);
+    let files = [
+        ("file", &broken.file, &last.file),
+        ("archive", &broken.archive, &last.archive),
+    ];
+    let moved: Vec<bool> = files.iter().map(|(_, new, _)| has(new)).collect();
+    let in_place = files
+        .iter()
+        .zip(&moved)
+        .any(|((_, new, old), moved)| old != new && !moved && has(old));
+    if !in_place {
+        return Vec::new();
+    }
+    files
+        .into_iter()
+        .zip(moved)
+        .filter(|(_, moved)| !moved)
+        .map(|(f, _)| f)
+        .chain([("commit_prefix", &broken.commit_prefix, &last.commit_prefix)])
+        .filter(|(_, new, old)| old != new)
+        .map(|(key, new, old)| (key, new.clone(), old.clone()))
+        .collect()
 }
 
 /// Whether `cfg` restores, over commit `tip` whose broken config gives the names
-/// in `broken`, a queue or archive renamed in place (`restores_accepted_names`):
-/// the first it restores, as ("queue" or "archive", broken name, accepted name).
+/// in `broken`, a queue or archive renamed in place: the names it restores
+/// (`names_to_restore`), when it gives exactly those back and keeps the rest.
 pub(crate) fn restored_name(
     dir: &std::path::Path,
     tip: &str,
     broken: &Config,
     cfg: &Config,
-) -> Option<(&'static str, String, String)> {
-    let last = crate::store::last_accepted_config(dir, tip)?;
-    let names = |c: &Config| (c.file.clone(), c.archive.clone(), c.commit_prefix.clone());
-    let has = |name: &str| git::ok(dir, &["cat-file", "-e", &format!("{tip}:{name}")]);
-    let pairs = [
-        ("queue", &broken.file, &last.file),
-        ("archive", &broken.archive, &last.archive),
-    ];
-    if names(cfg) != names(&last) || pairs.iter().any(|(_, new, old)| old != new && has(new)) {
-        return None;
-    }
-    pairs
-        .into_iter()
-        .find(|(_, new, old)| old != new && has(old))
-        .map(|(kind, new, old)| (kind, new.clone(), old.clone()))
+) -> Option<Vec<Restore>> {
+    let restores = names_to_restore(dir, tip, broken);
+    (!restores.is_empty() && kept(broken, &restores, cfg).is_none()).then_some(restores)
+}
+
+/// The first name `cfg` does not give as a repair restoring `restores` over the
+/// names in `broken` must, as (key, the name it must give).
+fn kept<'a>(
+    broken: &'a Config,
+    restores: &'a [Restore],
+    cfg: &Config,
+) -> Option<(&'static str, &'a str)> {
+    [
+        ("file", &broken.file, &cfg.file),
+        ("archive", &broken.archive, &cfg.archive),
+        ("commit_prefix", &broken.commit_prefix, &cfg.commit_prefix),
+    ]
+    .into_iter()
+    .map(|(key, old, new)| {
+        let want = restores
+            .iter()
+            .find(|(k, ..)| *k == key)
+            .map_or(old.as_str(), |(.., accepted)| accepted.as_str());
+        (key, want, new)
+    })
+    .find(|(_, want, new)| want != new)
+    .map(|(key, want, _)| (key, want))
+}
+
+/// A repair as refusals name it: what the broken config names ("the queue Q.md,
+/// not TASKS.md"), and the names to give back (`file = "TASKS.md", …`).
+pub(crate) fn describe_restore(restores: &[Restore]) -> (String, String) {
+    let what = restores
+        .iter()
+        .filter_map(|(key, new, old)| {
+            let kind = match *key {
+                "file" => "queue",
+                "archive" => "archive",
+                _ => return None,
+            };
+            Some(format!("the {kind} {new}, not {old}"))
+        })
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let names = restores
+        .iter()
+        .map(|(key, _, old)| format!("{key} = {old:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (what, names)
 }
 
 /// A file as the index `env` names (the caller's, see `git::caller_index`) holds it.

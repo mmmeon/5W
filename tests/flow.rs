@@ -7464,6 +7464,119 @@ fn the_server_names_an_archive_renamed_in_place_not_the_task() {
 }
 
 #[test]
+fn a_break_mixing_a_moved_queue_and_an_archive_renamed_in_place_names_each_repair() {
+    for moved in [true, false] {
+        let r = Repo::new(&format!("config-mixed-rename-{moved}"));
+        r.ok(&r.main, &["add", "first"]);
+        r.ok(&r.main, &["wt", "new", "a/x"]);
+        let wt = r.wt("a/x");
+        r.commit_in(&wt, "f", "1\n");
+        r.ok(&wt, &["submit", "1"]);
+        r.ok(&r.main, &["accept", "1"]);
+        r.ok(&r.main, &["archive"]);
+        let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+            .unwrap()
+            .replace("gate_trunk = false", "gate_trunk = true");
+        std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+        r.git(&r.main, &["commit", "-qam", "gate"]);
+        let server = server_of(&r);
+        r.ok(&r.main, &["hook", "install", "pre-commit"]);
+        let hook = server.join("hooks/pre-receive");
+        let past_hook = || {
+            std::fs::rename(&hook, server.join("hook-off")).unwrap();
+            assert!(push_to(&r, &["main"]).0);
+            std::fs::rename(server.join("hook-off"), &hook).unwrap();
+        };
+        // One break renames the queue (moving its file, or leaving it in place),
+        // the archive in place, and the commit prefix.
+        if moved {
+            r.git(&r.main, &["mv", "TASKS.md", "Q.md"]);
+        }
+        let named = |file: &str, archive: &str, prefix: &str| {
+            cfg.replace("file = \"TASKS.md\"", &format!("file = \"{file}\""))
+                .replace("archive = \"DONE.md\"", &format!("archive = \"{archive}\""))
+                .replace(
+                    "commit_prefix = \"chore(tasks)\"",
+                    &format!("commit_prefix = \"{prefix}\""),
+                )
+        };
+        let broken = named("Q.md", "DONE2.md", "queue")
+            .replace("[sections]\n", "[sections]\ntrunk = \"main\"\n");
+        assert!(broken.contains("[sections]\ntrunk") && broken.contains("DONE2.md"));
+        std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+        r.git(
+            &r.main,
+            &["commit", "--no-verify", "-qam", "break the config"],
+        );
+        past_hook();
+
+        // The refusal names every name the repair restores, and no name whose file moved.
+        let restored = ["archive = \"DONE.md\"", "commit_prefix = \"chore(tasks)\""];
+        let err = r.refuses(&r.main, &["ready"]);
+        let what = match moved {
+            true => "names the archive DONE2.md, not DONE.md",
+            false => "names the queue Q.md, not TASKS.md",
+        };
+        assert!(
+            err.contains(what)
+                && restored.iter().all(|n| err.contains(n))
+                && err.contains("file = \"TASKS.md\"") != moved
+                && err.contains("an admin"),
+            "{err}"
+        );
+
+        // The pre-commit hook takes exactly that repair.
+        let commit = |text: &str, msg: &str| {
+            std::fs::write(r.main.join(".5w.toml"), text).unwrap();
+            r.git_path(&r.main, &path_with_5w(), &["commit", "-qam", msg])
+        };
+        let fix = named(
+            if moved { "Q.md" } else { "TASKS.md" },
+            "DONE.md",
+            "chore(tasks)",
+        );
+        let wrong = [
+            (
+                named("TASKS.md", "DONE.md", "chore(tasks)"),
+                "keeps file = \"Q.md\"",
+            ),
+            (
+                named("Q.md", "DONE.md", "chore(tasks)"),
+                "keeps file = \"TASKS.md\"",
+            ),
+            (
+                fix.replace("\"chore(tasks)\"", "\"queue\""),
+                "keeps commit_prefix = \"chore(tasks)\"",
+            ),
+            (
+                fix.replace("\"DONE.md\"", "\"DONE2.md\""),
+                "keeps archive = \"DONE.md\"",
+            ),
+        ];
+        for (text, want) in wrong.iter().filter(|(t, _)| *t != fix) {
+            let o = commit(text, "a wrong repair");
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert!(!o.status.success() && err.contains(want), "{text}\n{err}");
+        }
+        let o = commit(&fix, "repair the config");
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+        // The server refuses it naming the same names, pushed by an admin past its hook.
+        let (ok, err) = push_to(&r, &["main"]);
+        assert!(
+            !ok && err.contains(what)
+                && restored.iter().all(|n| err.contains(n))
+                && err.contains("file = \"TASKS.md\"") != moved
+                && err.contains("past the server's hook"),
+            "{err}"
+        );
+        past_hook();
+        r.ok(&r.main, &["add", "second"]);
+        assert!(r.ok(&r.main, &["show", "1"]).contains("archived"));
+    }
+}
+
+#[test]
 fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
     let r = Repo::new("config-bricked-x");
     let server = server_of(&r);
