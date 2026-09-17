@@ -157,7 +157,9 @@ hand. Not after a repo's first archive: the checkout's queue still holds the row
 archive has, so every command refuses on duplicate ids before a write can run, and that refusal
 names the same diff to apply. While the queue or archive is in conflict in the trunk checkout
 (unmerged, mid-merge), writes refuse until it is resolved and `git add`ed: one would collapse the
-conflict to a single entry and leave the markers in the file. Writers take a lock, so
+conflict to a single entry and leave the markers in the file. `5w doctor` names such a conflict, a git conflict
+marker line in either file (outside ``` fences), and an id repeated within the archive as well as
+within the queue — duplicates in the archive stop reads just as the queue's do. Writers take a lock, so
 parallel `add`s mint distinct ids, and state checks read the committed queue under that lock — a
 hand-edited `[~]` in a working copy does not make a task acceptable. A command that names an
 uncommitted row commits it; `add` mints past uncommitted rows, so when a higher id is committed

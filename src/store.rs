@@ -653,6 +653,28 @@ pub fn refuse_unmerged(repo: &Repo, checkout: &Path) -> Res<()> {
     Ok(())
 }
 
+/// Whether any checkout of the repository is part way through a merge, rebase,
+/// cherry-pick or revert — read from the git dirs, so a clean repository costs
+/// no git command to rule out unmerged queue stages.
+pub fn mid_operation(repo: &Repo) -> bool {
+    let mut dirs = vec![repo.common.clone()];
+    if let Ok(rd) = fs::read_dir(repo.common.join("worktrees")) {
+        dirs.extend(rd.flatten().map(|e| e.path()));
+    }
+    dirs.iter().any(|d| {
+        [
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "AUTO_MERGE",
+            "rebase-merge",
+            "rebase-apply",
+        ]
+        .iter()
+        .any(|f| d.join(f).exists())
+    })
+}
+
 /// Refuse a queue write where the trunk tracks `name` as a symlink: a commit to
 /// the link's path would turn it into a file, and one to the path it names would
 /// let a retargeted link aim queue writes at any file in the repository.

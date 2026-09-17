@@ -1582,6 +1582,31 @@ fn duplicate_ids_stop_every_command() {
 }
 
 #[test]
+fn doctor_and_reads_catch_duplicates_and_conflict_markers_in_the_archive() {
+    let r = Repo::new("dup-archive");
+    r.ok(&r.main, &["add", "one"]);
+    // Markers left by a hand merge of DONE.md repeat #2 on both sides.
+    let done = "# Done\n\n- [x] #2 two\n<<<<<<< HEAD\n- [x] #3 three\n=======\n\
+                - [x] #2 two\n>>>>>>> side\n\n```\n<<<<<<< not a marker\n```\n";
+    std::fs::write(r.main.join("DONE.md"), done).unwrap();
+    let out = r.fails(&r.main, &["doctor"]);
+    assert!(
+        out.contains("#2 appears twice in DONE.md: lines 3 and 7")
+            && out.contains(
+                "DONE.md line 4 holds a git conflict marker — resolve the conflict, then commit"
+            )
+            && !out.contains("line 11")
+            && !out.contains("TASKS.md line")
+            && !out.contains(" ok "),
+        "{out}"
+    );
+    assert!(
+        r.refuses(&r.main, &["ready"])
+            .contains("#2 lines 3 and 7 of DONE.md"),
+    );
+}
+
+#[test]
 fn a_subcommand_help_prints_only_that_command() {
     let r = Repo::new("subhelp");
     let full = r.ok(&r.main, &["--help"]);
@@ -3292,6 +3317,37 @@ fn a_queue_write_refuses_while_the_queue_has_an_unresolved_conflict() {
     // Both sides keep a #1: the conflict, not its duplicate, is what to fix.
     let r = queue_in_conflict("queue-conflict-dup", "- [ ] #1 first, ours\n");
     is_conflict_refusal(&r.refuses(&r.main, &["ready"]));
+}
+
+#[test]
+fn doctor_names_an_unresolved_queue_conflict() {
+    let r = queue_in_conflict("doctor-conflict", "");
+    let out = r.fails(&r.main, &["doctor"]);
+    assert!(
+        out.contains("TASKS.md has an unresolved conflict in ")
+            && out.contains("TASKS.md line ")
+            && out.contains("holds a git conflict marker"),
+        "{out}"
+    );
+    // Markers removed by hand but never added: the stages still stand.
+    let clean = r
+        .tasks()
+        .lines()
+        .filter(|l| {
+            !l.starts_with("<<<<<<<") && !l.starts_with("=======") && !l.starts_with(">>>>>>>")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(r.main.join("TASKS.md"), clean).unwrap();
+    let out = r.fails(&r.main, &["doctor"]);
+    assert!(
+        out.contains("TASKS.md has an unresolved conflict in ") && !out.contains("marker"),
+        "{out}"
+    );
+    r.git(&r.main, &["add", "TASKS.md"]);
+    r.git(&r.main, &["commit", "-qm", "merged", "--no-verify"]);
+    r.ok(&r.main, &["doctor"]);
 }
 
 #[test]

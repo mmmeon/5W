@@ -179,12 +179,13 @@ impl<'a> Q<'a> {
         let mut both = tasks.clone();
         both.extend(archived.iter().cloned());
         let dup = queue::duplicates(&tasks);
+        let dup_archived = queue::duplicates(&archived);
         let cross: Vec<u64> = archived
             .iter()
             .filter(|a| tasks.iter().any(|t| t.id == a.id))
             .map(|a| a.id)
             .collect();
-        if !dup.is_empty() || !cross.is_empty() {
+        if !dup.is_empty() || !dup_archived.is_empty() || !cross.is_empty() {
             // Conflict markers hold both sides' rows: the conflict is the fix.
             if let Some(w) = repo.trunk_checkout()? {
                 store::refuse_unmerged(repo, &w)?;
@@ -192,6 +193,9 @@ impl<'a> Q<'a> {
             let mut parts = Vec::new();
             for (id, a, b) in dup {
                 parts.push(format!("#{id} lines {a} and {b} of {}", repo.cfg.file));
+            }
+            for (id, a, b) in dup_archived {
+                parts.push(format!("#{id} lines {a} and {b} of {}", repo.cfg.archive));
             }
             for id in cross {
                 parts.push(format!(
@@ -1008,6 +1012,29 @@ pub fn doctor_findings(repo: &Repo) -> Res<Doctor> {
     let mut say = |s: String| problems.push(s);
     for (id, a, b) in queue::duplicates(&tasks) {
         say(format!("#{id} appears twice: lines {a} and {b}"));
+    }
+    for (id, a, b) in queue::duplicates(&archived) {
+        say(format!(
+            "#{id} appears twice in {}: lines {a} and {b}",
+            repo.cfg.archive
+        ));
+    }
+    let mut marked = false;
+    for (name, body) in [(&repo.cfg.file, &text), (&repo.cfg.archive, &archive)] {
+        if let Some(l) = queue::conflict_marker(body) {
+            marked = true;
+            say(format!(
+                "{name} line {l} holds a git conflict marker — resolve the conflict, then commit"
+            ));
+        }
+    }
+    // Stages outlive their markers; look for them only where a conflict is likely,
+    // so a clean repository pays no git command for it.
+    if (marked || store::mid_operation(repo))
+        && let Some(w) = repo.trunk_checkout()?
+        && let Err(e) = store::refuse_unmerged(repo, &w)
+    {
+        say(e);
     }
     for a in &archived {
         if tasks.iter().any(|t| t.id == a.id) {

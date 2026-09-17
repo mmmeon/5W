@@ -338,6 +338,31 @@ pub fn unclosed_fence(text: &str) -> bool {
     text.split('\n').filter(|l| is_fence(l)).count() % 2 == 1
 }
 
+/// The line (1-based) of the first git conflict marker outside a fence. A lone
+/// `=======` counts only after a `<<<<<<< `: on its own it underlines a heading.
+pub fn conflict_marker(text: &str) -> Option<usize> {
+    let mut fenced = false;
+    let mut opened = false;
+    for (i, l) in text.split('\n').enumerate() {
+        let l = l.trim_end_matches('\r');
+        if is_fence(l) {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let open = l.starts_with("<<<<<<< ") || l == "<<<<<<<";
+        let close = l.starts_with(">>>>>>> ") || l == ">>>>>>>";
+        let mid = l == "=======" || l.starts_with("||||||| ") || l == "|||||||";
+        if open || close || (opened && mid) {
+            return Some(i + 1);
+        }
+        opened |= open;
+    }
+    None
+}
+
 // --- editing ----------------------------------------------------------------------
 
 pub fn set_mark(line: &str, s: State) -> String {
@@ -686,6 +711,17 @@ mod tests {
     use super::*;
 
     const DOC: &str = "# Tasks\n\n```\n- [ ] #1 example @x\n```\n\n## Open\n\n- [ ] #1 real one @faces !3 >agent needs:#2\n  body line\n- [ ] #2 second rework:\"bad | / \\\"quoted\\\"\"\n\n## Done\n\n- [x] #3 old via:self\n";
+
+    #[test]
+    fn conflict_markers_outside_fences_only() {
+        assert_eq!(conflict_marker(DOC), None);
+        assert_eq!(conflict_marker("Title\n=======\n\n- [ ] #1 x\n"), None);
+        assert_eq!(
+            conflict_marker("```\n<<<<<<< a\n```\n>>>>>>> b\r\n"),
+            Some(4)
+        );
+        assert_eq!(conflict_marker("x\n<<<<<<< HEAD\n=======\n"), Some(2));
+    }
 
     #[test]
     fn parses_fields_and_skips_fences() {
