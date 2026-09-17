@@ -30,6 +30,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #11 (pre-existing, affects ship and the gate): git::change_id normalises away hunk line numbers so clean rebases pass; with two identical blocks in a file and no distinguishing context line, inserting the reviewed line into the other block yields byte-identical normalised patches, so ship/ci accept code placed somewhere nobody reviewed. Find a rebase-stable way to pin position (e.g. compare the post-image of each changed file region with more context, or verify the resulting blob of each touched file equals the reviewed commit's blob rebased — 3-way apply of the reviewed diff onto the new base and compare trees), keep a clean rebase passing, and test the two-identical-blocks case.
 - [ ] #78 5w init in a repository whose branch is master writes trunk = "main" into .5w.toml @queue !1
   Found reviewing #11 (pre-existing): init doesn't detect the current branch / origin HEAD, so a master-based repo gets trunk = "main" and later commands and server hooks look for a ref that doesn't exist. Detect the trunk at init (current branch, else origin/HEAD, else main) and test with a master repo.
+- [ ] #79 On a bare server a pinned 5w.trunk should win over (or refuse on mismatch with) the committed trunk key @ci !1
+  so a trunk rename can't silently ungate
+  Found reviewing #11: a reviewed change setting trunk = "x" in .5w.toml makes the real trunk ungated on the next push; the admin's git config 5w.trunk pin is silently overridden. On a bare repo, when 5w.trunk is set and differs from the committed trunk, refuse trunk pushes in one line naming both, or let the pin win; test it.
 
 ## Done
 
