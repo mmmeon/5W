@@ -737,7 +737,10 @@ fn write(
         .iter()
         .any(|(c, new, _, _)| *new != &c.committed && !(c.old_blob.is_none() && new.is_empty()));
     if changed {
-        let index = repo.common.join(format!("5w-index-{}", std::process::id()));
+        // Under the queue lock, a private index already there is one a killed
+        // run (say, at the pinentry during commit-tree) left behind: it goes.
+        remove_stale(&repo.common, INDEX, "", 1);
+        let index = repo.common.join(format!("{INDEX}{}", std::process::id()));
         let idx = index.to_string_lossy().into_owned();
         let env = [("GIT_INDEX_FILE", idx.as_str())];
         let run = |args: &[&str]| -> Res<String> {
@@ -917,6 +920,9 @@ struct Tmp {
 /// beside the target.
 const TMP: &str = "5w-write-";
 
+/// The private index a queue commit is built in: `5w-index-<pid>` in the git dir.
+const INDEX: &str = "5w-index-";
+
 impl Pending {
     /// Called under the queue lock, so a temporary file already there is one a
     /// killed run left behind: it goes first.
@@ -955,10 +961,10 @@ impl Pending {
             let id = format!("{}-{}", std::process::id(), p.files.len());
             let beside = dir.join(format!(".{file}.{TMP}{id}"));
             let at = if same_fs(common, dir) {
-                remove_stale(common, TMP, &format!("-{file}"));
+                remove_stale(common, TMP, &format!("-{file}"), 2);
                 common.join(format!("{TMP}{id}-{file}"))
             } else {
-                remove_stale(dir, &format!(".{file}.{TMP}"), "");
+                remove_stale(dir, &format!(".{file}.{TMP}"), "", 2);
                 beside.clone()
             };
             let mode = fs::metadata(&target).ok().map(|m| m.permissions());
@@ -1008,7 +1014,7 @@ impl Tmp {
             // the rename: copy beside the target and rename that.
             Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices && self.at != self.beside => {
                 if let Some(dir) = self.beside.parent() {
-                    remove_stale(dir, &format!(".{}.{TMP}", self.file), "");
+                    remove_stale(dir, &format!(".{}.{TMP}", self.file), "", 2);
                 }
                 let r = fs::copy(&self.at, &self.beside)
                     .and_then(|_| rename(&self.beside, &self.target));
@@ -1063,9 +1069,9 @@ fn resolve(path: &Path) -> PathBuf {
 }
 
 /// Remove the temporary files a killed run left in `dir`: exactly
-/// `<prefix><pid>-<n><suffix>`, so a file of the user's that merely looks alike
-/// stays.
-fn remove_stale(dir: &Path, prefix: &str, suffix: &str) {
+/// `<prefix><pid>-<n><suffix>` (`parts` 2) or `<prefix><pid><suffix>` (`parts`
+/// 1), all digits, so a file of the user's that merely looks alike stays.
+fn remove_stale(dir: &Path, prefix: &str, suffix: &str, parts: usize) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -1075,8 +1081,10 @@ fn remove_stale(dir: &Path, prefix: &str, suffix: &str) {
         let stale = name
             .strip_prefix(prefix)
             .and_then(|n| n.strip_suffix(suffix))
-            .and_then(|n| n.split_once('-'))
-            .is_some_and(|(pid, n)| digits(pid) && digits(n));
+            .is_some_and(|n| {
+                let fields: Vec<&str> = n.split('-').collect();
+                fields.len() == parts && fields.iter().all(|f| digits(f))
+            });
         if stale {
             let _ = fs::remove_file(e.path());
         }

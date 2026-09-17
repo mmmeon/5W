@@ -2473,6 +2473,27 @@ fn follow_fix(r: &Repo, err: &str) {
 }
 
 #[test]
+fn a_queue_write_removes_a_private_index_a_killed_run_left() {
+    let r = Repo::new("stale-private-index");
+    // A killed run (say, at the pinentry during commit-tree) leaves its private
+    // index in the git dir; the next write removes it under the lock.
+    let stale = r.main.join(".git/5w-index-99999");
+    std::fs::write(&stale, "stale\n").unwrap();
+    // The user's look-alikes stay.
+    let mine: Vec<_> = ["5w-index-mine", "5w-index-99999.bak", "5w-index-1-2"]
+        .iter()
+        .map(|n| r.main.join(".git").join(n))
+        .collect();
+    for m in &mine {
+        std::fs::write(m, "mine\n").unwrap();
+    }
+    r.ok(&r.main, &["add", "first"]);
+    assert!(r.tasks().contains("#1 first"));
+    assert!(!stale.exists());
+    assert!(mine.iter().all(|m| m.exists()));
+}
+
+#[test]
 fn an_archive_whose_checkout_index_is_locked_says_it_committed_and_keeps_a_hand_line() {
     let r = Repo::new("archive-index-locked");
     r.ok(&r.main, &["add", "first"]);
