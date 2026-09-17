@@ -41,6 +41,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #10: in ci/gitlab-ci.yml, emails=$(api users/$id | jq ...) || emails='[]' fails open (approver passes the maker check) — use || continue. pages() treats any 200 body as a non-empty page: an error object or proxy HTML loops until the job times out holding resource_group — check jq -e 'type == "array"' per page and cap pages. YAML parses; shellcheck clean.
 - [ ] #62 archive into a missing directory rewrites TASKS.md then fails writing the archive, leaving the moved row in no file @queue !1
   Found reviewing #60 (pre-existing): with archive = docs/CLOSED.md and no docs/, a checkout archive rewrites the working TASKS.md and then fails 'cannot write docs/CLOSED.md'; the moved row is in no working file. Create the parent directory, or validate every write target before writing anything (write both files, or neither); test it.
+- [ ] #63 reopen accepts an id that is also in the archive, and lint on a commit misses the same id in TASKS.md and DONE.md @queue !1
+  Found reviewing #60: with #1 open in the working TASKS.md and closed in main's DONE.md, 5w reopen 1 succeeds and main ends with #1 in both files; every command then refuses 'duplicate ids', yet 5w lint (without --staged) exits 0. reopen must refuse when the id is in the archive (name moving the block back); lint on a commit/range must flag an id present in both files. Test both.
 
 ## Done
 
