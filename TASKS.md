@@ -36,6 +36,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found by #87's worker: once .5w.toml on the trunk breaks, the pre-commit hook's 5w lint --staged refuses to open, so the local repair commit is blocked unless --no-verify. Let lint --staged open leniently when the only problem is the committed/working config and the staged .5w.toml parses (judge the staged queue under the staged config's names only if they match the last readable trunk config's — the #83 rule), and name the fix otherwise; test a repair commit through the hook.
 - [ ] #91 Re-running hook install on a server whose trunk pin was removed does not pin it again
   On a bare server where 5w.trunk was unset after the pre-receive hook was installed, running hook install pre-receive again stops at "already installed" and never pins the trunk from HEAD, so the broken-config note names the trunk from the broken .5w.toml, which the hook does not judge. Re-install should pin a missing 5w.trunk from HEAD (as a first install does) and name that trunk. Found in review of #87.
+- [ ] #92 With a broken trunk config, an unresolvable --head or --branch is blamed on the config
+  While the trunk .5w.toml is broken, 5w ci --branch/--head (and the pushed-trunk path from #83) with a tip that does not resolve refuses with the broken-config message ("fix .5w.toml on <b>...") instead of naming the unresolvable --head/--branch. Resolve the tip first and refuse naming it. Found in review of #85.
 
 ## Done
 
