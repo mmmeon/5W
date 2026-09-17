@@ -37,6 +37,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #28: ship --bogus, ci 'unexpected', update-files, and tasks.rs 'text first' / 'unexpected' refusals print the error then a usage block on following lines (now all red on a colour terminal). CLAUDE.md: refusals one line naming the fix. Replace the block with a pointer such as '(5w <cmd> --help)', which #25 made print only that command's usage; test each.
 - [~] #46 lint ^HEAD: a negated revision is taken as a commit and misreported as a branch queue edit @queue !1 branch:queue/task-46 submitted:3dd8ea9bdb7b
   Found reviewing #45: 5w lint ^HEAD prints '^<sha>: queue edits go on main, not a branch' because rev-parse --verify ^HEAD^{commit} returns a ^-prefixed sha used as a commit. Refuse a revision starting with ^ (or any rev-parse output that is not a plain sha) in one line; test it.
+- [ ] #47 ci --head/--base accept a negated revision: ci --head ^HEAD checks nothing and passes @ci !2
+  Found by #46's worker: git::rev returns ^<sha> for ^HEAD. 5w ci --head ^HEAD with no base yields an empty commit list and passes without checking anything; a ^ in --base fails with a raw git error. pre-receive passes plain shas so is unaffected, but a CI job templated from user input could be. Make git::rev (or ci's resolution) refuse anything that is not a plain sha, in one line; test ci --head ^HEAD refuses.
 
 ## Done
 
