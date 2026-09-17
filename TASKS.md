@@ -31,6 +31,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Under gate_trunk the server (ci trunk_gate) refuses the repair of a queue name renamed in place with "ship it from an accepted branch (gate_trunk)", but #106 established no queue commit can land that repair; only the client refusal says it is an admin push past the hook. Make the server refusal name the admin step for a push that restores the last accepted names over a broken config. Found in review of #108.
 - [ ] #112 A deleted .5w.toml in trunk history reads as the default config when walking back
   store.rs last_config_where returns Some("") at a commit that deleted .5w.toml without checking ok, so last_accepted_config / open_for_repair read "deleted" as a default config instead of walking further back to the last config that exists and is accepted. Verify with a test and fix. Found in review of #108.
+- [ ] #113 A break mixing a moved queue and an in-place archive rename names a repair the hook refuses
+  A single broken commit that renames the queue with git mv (TASKS.md -> Q.md) AND renames the archive in place (or also changes commit_prefix): 5w ready names the fix "commit a config with archive = DONE.md", but the pre-commit hook refuses that ("keeps archive = DONE2.md") and a full restore ("keeps file = Q.md"), so only --no-verify gets through; the message also names only archive when commit_prefix changed too. Make the named fix and restores_accepted_names agree per name (restore exactly the names renamed in place, keep names whose files moved). Also: no_archive/unmoved_queue test the old name with load_file (trunk checkout working copy) while the hook tests the committed tip — use the committed tip for both. Found in review of #109.
 
 ## Done
 
