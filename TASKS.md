@@ -40,7 +40,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #60: a row closed on main but deleted by hand from the checkout, DONE.md not yet on main — archive commits the move but the checkout never gets DONE.md (' D DONE.md'); a git commit -a would delete the archive from main. When the commit creates the archive file and the working plan's copy is empty, write main's copy into the checkout (and index if tracked). Test it.
 - [ ] #65 5w commits a symlinked TASKS.md as a regular 100644 blob, turning the trunk entry into a file (' T TASKS.md') @queue !1
   Found reviewing #62 (pre-existing): when TASKS.md (or the archive) is tracked as a symlink (mode 120000), 5w's queue commit writes the target's content as a 100644 blob at that path, so main's entry changes type and the checkout shows ' T TASKS.md'. Either commit to the symlink's target path, or refuse in one line naming it; test it.
-- [ ] #66 5w-index-<pid> private index is left in the git dir when 5w is killed during commit-tree @queue !1
+- [~] #66 5w-index-<pid> private index is left in the git dir when 5w is killed during commit-tree @queue !1 branch:queue/task-66 submitted:05f9bcc4c779
   Found reviewing #62: the private index 5w uses for queue commits (5w-index-<pid> in the git dir) is not removed when 5w is killed (e.g. Ctrl-C at the gpg pinentry during commit-tree) and nothing cleans it later. Delete stale 5w-index-<pid> files (exact name shape, pid not alive or simply under the queue lock) at the start of a write; test with a leftover file.
 
 ## Done
