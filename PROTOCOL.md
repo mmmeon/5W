@@ -68,7 +68,7 @@ Never:
   `chore(tasks): land #<id>` whose body is `Landed: <trunk before>..<landed tip>` (full shas) and
   `Change: <change id>`. Its task is `[x] via:review`, the range holds only commits new in the push,
   and it adds exactly what `reviewed:` added. A push to the trunk is refused when it brings code no
-  such record covers, or deletes the trunk. This ties code to an accepted row, not to a reviewer
+  such record covers, or deletes or rewinds the trunk. This ties code to an accepted row, not to a reviewer
   other than the pusher: whoever may push an accept can accept their own change.
 - A CI job may make the submit and accept edits for a change request (`5w ci --event`): the same
   edits, pushed to the trunk, from a job that runs nothing from the change request. Accept is then

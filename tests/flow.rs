@@ -4848,6 +4848,7 @@ fn gate_trunk_lets_only_recorded_landings_of_reviewed_changes_onto_the_trunk() {
     )
     .unwrap();
     r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+    let gate_on = r.git(&r.main, &["rev-parse", "HEAD"]);
     let (ok, err) = push(&["main"]);
     assert!(ok, "{err}");
 
@@ -4967,6 +4968,37 @@ fn gate_trunk_lets_only_recorded_landings_of_reviewed_changes_onto_the_trunk() {
     r.git(&r.main, &["reset", "-q", "--hard", &accepted3]);
     r.ok(&r.main, &["add", "four"]);
     r.git(&r.main, &["merge", "-q", "--no-edit", &landed]);
+    let (ok, err) = push(&["main"]);
+    assert!(ok, "{err}");
+
+    // Rewinding the trunk to before the gate, to push code on top, is refused.
+    // A bare clone leaves receive.denyNonFastForwards unset: git itself allows the force push.
+    assert!(
+        !Command::new("git")
+            .args(["config", "receive.denyNonFastForwards"])
+            .current_dir(&server)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let server_main = r.git(&server, &["rev-parse", "main"]);
+    let (ok, err) = push(&["-f", &format!("{gate_on}~1:main")]);
+    assert!(
+        !ok && err.contains("rewinding main is refused under gate_trunk"),
+        "{err}"
+    );
+    assert_eq!(r.git(&server, &["rev-parse", "main"]), server_main);
+    r.git(
+        &r.main,
+        &["checkout", "-qb", "rewound", &format!("{gate_on}~1")],
+    );
+    code("unreviewed.txt");
+    let (ok, err) = push(&["-f", "rewound:main"]);
+    assert!(!ok && err.contains("rewinding main is refused"), "{err}");
+    assert_eq!(r.git(&server, &["rev-parse", "main"]), server_main);
+    r.git(&r.main, &["checkout", "-q", "main"]);
+    r.ok(&r.main, &["add", "forward"]);
     let (ok, err) = push(&["main"]);
     assert!(ok, "{err}");
 

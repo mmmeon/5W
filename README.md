@@ -244,8 +244,11 @@ commits; merge instead, or ship again.
   (`git push origin main <sha>:refs/5w/reviewed/11`) — ship names it.
 - **Only a `via:review` row lands under the gate.** `--force`, or a task closed without review,
   records no landing, and the push is refused.
-- **The trunk cannot be deleted** under the gate: a push re-creating it would have no trunk to be
-  judged against. Turn the gate off through a shipped change first.
+- **The trunk cannot be deleted or rewound** under the gate: a push re-creating it would have no
+  trunk to be judged against, and a force push to an older commit judges nothing, drops landings the
+  server has, and can reset to before the gate was on. A trunk update whose old tip is not below the
+  new one is refused when the old tip has `gate_trunk` on (or a config that does not parse). Turn
+  the gate off through a shipped change first.
 - **What it does not check.** Who reviewed: the accept may arrive in the same push as the landing,
   and who may push one is the queue's own trust (see *Forge events*). A forge's merge button records no landing; its
   push job goes red after the fact, which only a server hook prevents. Coverage is of the range's

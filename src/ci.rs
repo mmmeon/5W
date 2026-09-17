@@ -144,6 +144,19 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             .and_then(|t| git::opt(p, &["merge-base", t, &head])),
     };
     let onto_trunk = refname.as_deref() == Some(format!("refs/heads/{}", repo.trunk).as_str());
+    // Under the gate the trunk only moves forward: a rewind judges no commits, drops
+    // landings the server has, and can reset to before the gate was turned on.
+    if let Some(b) = base.as_deref().filter(|_| onto_trunk)
+        && !git::ok(p, &["merge-base", "--is-ancestor", b, &head])
+        && gate_settings(repo, &[b.to_string()])?
+            .values()
+            .any(|on| *on)
+    {
+        bail!(
+            "rewinding {} is refused under gate_trunk — ship a change that turns it off first",
+            repo.trunk
+        );
+    }
     let span = match &base {
         Some(b) => format!("{b}..{head}"),
         None => head.clone(),
