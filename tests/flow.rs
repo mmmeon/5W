@@ -1395,10 +1395,11 @@ fn a_config_value_with_a_control_character_is_a_one_line_refusal_naming_its_key(
             assert!(err.contains(&want), "{cmd:?}: {want:?} in {err:?}");
         }
     }
-    // Free text may hold tabs and run to several lines.
-    std::fs::write(
-        r.main.join(".5w.toml"),
-        cfg.replace(
+    // Free text may hold tabs and run to several lines, committed as the queue reads it.
+    r.commit_in(
+        &r.main,
+        ".5w.toml",
+        &cfg.replace(
             "[delegate]\n",
             "[delegate]\nfooter = \"steps:\\n  go {id}\\n\"\n",
         )
@@ -1409,8 +1410,7 @@ fn a_config_value_with_a_control_character_is_a_one_line_refusal_naming_its_key(
         )
         .replace("1 = \"mechanical", "1 = \"\\tmechanical")
         .replace("\"Tests were run", "\"Tests\\twere run"),
-    )
-    .unwrap();
+    );
     r.ok(&r.main, &["add", "x", "level:1"]);
     let brief = r.ok(&r.main, &["delegate", "1"]);
     for want in ["one\ntwo", "\tmechanical", "tabs\tand\nlines"] {
@@ -6544,6 +6544,65 @@ fn queue_writes_and_lint_ranges_judge_under_the_committed_trunk_config() {
     );
     r.ok(&r.main, &["done", "1", "--self"]);
     assert!(r.line(1).contains("via:self"), "{}", r.line(1));
+    r.lint_history();
+}
+
+#[test]
+fn queue_writes_take_lanes_names_and_prefix_from_the_committed_trunk_config() {
+    let r = Repo::new("writes-committed-names");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    r.ok(&r.main, &["add", "decide it", ">owner"]);
+    r.ok(&r.main, &["add", "do it"]);
+    let audit = r.ok(&r.main, &["audit", "--json"]);
+    // The trunk checkout's copy renames what the queue is written by, uncommitted:
+    // a new lane, a delegable owner lane, the default lane, the prefix, the
+    // done section and the queue file.
+    let edited = cfg
+        .replace("file = \"TASKS.md\"", "file = \"QUEUE.md\"")
+        .replace(
+            "commit_prefix = \"chore(tasks)\"",
+            "commit_prefix = \"queue\"",
+        )
+        .replace("default_lane = \"agent\"", "default_lane = \"owner\"")
+        .replace("done = \"## Done\"", "done = \"## Closed\"")
+        .replace(
+            "[lanes.owner]\nkind = \"decision\"\n",
+            "[lanes.owner]\nkind = \"agent\"\n\n[lanes.extra]\nkind = \"agent\"\n",
+        );
+    assert_eq!(edited.matches("QUEUE.md").count(), 1, "{edited}");
+    assert!(edited.contains("\"queue\"") && edited.contains("## Closed"));
+    assert!(edited.contains("[lanes.extra]") && edited.contains("\"owner\""));
+    std::fs::write(r.main.join(".5w.toml"), &edited).unwrap();
+    // Audit reads the history by the trunk's names,
+    assert_eq!(r.ok(&r.main, &["audit", "--json"]), audit);
+
+    // a lane only the checkout names is no lane to add or set,
+    let err = r.refuses(&r.main, &["add", "more", ">extra"]);
+    assert!(err.contains("unknown lane >extra"), "{err}");
+    let err = r.refuses(&r.main, &["set", "2", "lane", "extra"]);
+    assert!(err.contains("unknown lane >extra"), "{err}");
+    // and a lane the trunk makes the owner's is not delegated.
+    let err = r.refuses(&r.main, &["delegate", "1"]);
+    assert!(err.contains(">owner (decision)"), "{err}");
+
+    // A write lands in the trunk's file, section and subject, on its default lane.
+    r.ok(&r.main, &["done", "2", "--self"]);
+    assert!(!r.main.join("QUEUE.md").exists());
+    assert!(r.line(2).contains("via:self"), "{}", r.line(2));
+    let tasks = r.tasks();
+    assert!(
+        !tasks.contains("## Closed") && tasks.find("## Done") < tasks.find("] #2 "),
+        "{tasks}"
+    );
+    assert_eq!(
+        r.git(&r.main, &["log", "-1", "--format=%s", "main"]),
+        "chore(tasks): close #2 via:self"
+    );
+    assert_eq!(
+        std::fs::read_to_string(r.main.join(".5w.toml")).unwrap(),
+        edited
+    );
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
     r.lint_history();
 }
 

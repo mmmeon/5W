@@ -705,6 +705,14 @@ pub fn committed_rules(repo: &Repo) -> Option<Config> {
     committed_config(repo)?.ok()
 }
 
+/// `repo` as queue commands read and write it: under the config its trunk
+/// commits (`committed_rules`), so an uncommitted edit to the trunk checkout's
+/// copy renames no lane, section, prefix or queue file a write commits by.
+/// None: `repo` itself.
+pub fn under_committed_rules(repo: &Repo) -> Option<Repo> {
+    committed_rules(repo).map(|cfg| with_config(repo, cfg))
+}
+
 /// `repo` judged under `cfg`, on the trunk committed state names.
 fn with_config(repo: &Repo, cfg: Config) -> Repo {
     Repo {

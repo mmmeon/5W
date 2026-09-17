@@ -513,6 +513,16 @@ pub fn run(repo: &Repo, cmd: &str, args: &[String]) -> Res<()> {
     {
         return Err(unknown_flag(repo, cmd, f));
     }
+    // The queue is read and written under the config the trunk commits, as the
+    // hook and ci judge it. Doctor reports on the checkout as it stands.
+    let judged;
+    let repo = match crate::lint::under_committed_rules(repo) {
+        Some(r) if cmd != "doctor" => {
+            judged = r;
+            &judged
+        }
+        _ => repo,
+    };
     match cmd {
         "ready" => ready(repo, args),
         "next" => next(repo, args),
@@ -1738,10 +1748,7 @@ fn reject(repo: &Repo, args: &[String]) -> Res<()> {
 fn done(repo: &Repo, args: &[String]) -> Res<()> {
     let id = parse_id(args.first().ok_or("usage: 5w done <id> --<close>")?)?;
     let flag = args.get(1).map(|s| s.as_str()).unwrap_or("");
-    // A close is judged by the lanes the trunk commits, as the hook and ci judge
-    // it: an uncommitted edit to the trunk checkout's config closes nothing.
-    let trunk_cfg = crate::lint::committed_rules(repo);
-    let rules = trunk_cfg.as_ref().unwrap_or(&repo.cfg);
+    let rules = &repo.cfg;
     // The flags `done` takes are the lanes' close words, from the config.
     if let Some(extra) = args.get(2)
         && extra.starts_with("--")

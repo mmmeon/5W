@@ -785,6 +785,15 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         }
         i += 1;
     }
+    // History is read by the names the trunk commits, as lint reads it.
+    let judged;
+    let repo = match crate::lint::under_committed_rules(repo) {
+        Some(r) => {
+            judged = r;
+            &judged
+        }
+        None => repo,
+    };
 
     let trunk_ref = [
         format!("refs/heads/{}", repo.trunk),

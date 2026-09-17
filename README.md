@@ -354,8 +354,11 @@ Hand edits are checked, not trusted:
   checkout's working copy or the staged one, so an uncommitted lane edit does not let a close skip
   the review the committed config asks for: commit the config change first, on its own. Nor does
   an uncommitted `trunk` edit: the trunk is the one the committed config names. `5w lint
-  <rev>` and `<from>..<to>` in a checkout, and `5w done`'s close, judge lanes under that committed
-  config too; a trunk that commits none, or one that does not parse, is judged under the checkout's.
+  <rev>` and `<from>..<to>` in a checkout judge under that committed config too, and so do the queue
+  commands and `audit`: lanes and their kinds (`add`/`set` validation, `delegate`, `done`'s close),
+  `default_lane`, `commit_prefix`, sections, the queue and archive files and the trunk they commit
+  to — as do the texts a brief prints. `doctor` reads the checkout as it stands. A trunk that
+  commits none, or one that does not parse, is read under the checkout's.
   Where `5w` is not installed the hook lets the commit through with a warning to follow
   PROTOCOL.md; `5w lint <range>` catches what that let through, later.
 - **A hook's environment.** git runs a hook with `GIT_DIR` set in a linked worktree and
