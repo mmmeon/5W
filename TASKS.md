@@ -38,7 +38,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   On a bare server where 5w.trunk was unset after the pre-receive hook was installed, running hook install pre-receive again stops at "already installed" and never pins the trunk from HEAD, so the broken-config note names the trunk from the broken .5w.toml, which the hook does not judge. Re-install should pin a missing 5w.trunk from HEAD (as a first install does) and name that trunk. Found in review of #87.
 - [ ] #92 With a broken trunk config, an unresolvable --head or --branch is blamed on the config
   While the trunk .5w.toml is broken, 5w ci --branch/--head (and the pushed-trunk path from #83) with a tip that does not resolve refuses with the broken-config message ("fix .5w.toml on <b>...") instead of naming the unresolvable --head/--branch. Resolve the tip first and refuse naming it. Found in review of #85.
-- [ ] #85 Forge CI on a broken trunk config: ci --event and --branch refuse outright @ci !1 branch:ci/task-85
+- [~] #85 Forge CI on a broken trunk config: ci --event and --branch refuse outright @ci !1 branch:ci/task-85 submitted:07321a7f72c57b1259a3df37f2583cf472dfe2a1
   so a PR repairing .5w.toml can never pass a required check
   Found reviewing #83: when the trunk's .5w.toml is rejected, 5w ci --branch (PR check) and --event refuse, so a change request that fixes the config fails its required check forever. Let --branch judge a PR whose head repairs the config (same rules as the trunk repair push from #83: queue file names from the broken config's lenient read, gate fail-closed), and name the fix otherwise; test with a repairing PR.
 
