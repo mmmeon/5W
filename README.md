@@ -156,10 +156,14 @@ trunk's, and each working row changed since takes the trunk's version unless edi
 hand. Not after a repo's first archive: the checkout's queue still holds the rows the trunk's new
 archive has, so every command refuses on duplicate ids before a write can run, and that refusal
 names the same diff to apply. Its index lacks the archive too, so an ordinary `git commit` there
-would take the archive off the trunk: `5w doctor` names that diff as well, and `lint` (the pre-commit
-hook, a push) refuses the closed rows it would move back into the queue — the hook, which cannot see
-the commit's subject yet, only where the index lacks the archive or is a trunk commit the checkout
-missed. While the queue or archive is in conflict in the trunk checkout
+would take the archive off the trunk (after a later archive, its new rows): `5w doctor` names that
+diff as well, and `lint` (the pre-commit hook, a push) refuses the closed rows it would move back into
+the queue. The hook cannot see the commit's subject yet, and a missed archive stages exactly what a
+deliberate unarchive does, so a commit the checkout's index missed leaves a marker,
+`5w-missed-<trunk>` in the git dir, holding the trunk's tip before and after: the hook reads an
+archived row back in the queue as the missed commit, naming the diff, only while the marker stands.
+A write that catches the checkout up or updates its index removes it, and so does the hook once the
+index holds the trunk's files (after that diff is applied by hand). While the queue or archive is in conflict in the trunk checkout
 (unmerged, mid-merge), writes refuse until it is resolved and `git add`ed: one would collapse the
 conflict to a single entry and leave the markers in the file. `5w doctor` names such a conflict, a git conflict
 marker line in either file (outside ``` fences), and an id repeated within the archive as well as

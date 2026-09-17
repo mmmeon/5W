@@ -78,6 +78,9 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     let mut problems = Vec::new();
     match arg {
         "--staged" => {
+            // Read first, so a marker the checkout no longer needs goes even on
+            // a commit that leaves the queue alone.
+            let missed = crate::store::missed_marker_fix(repo);
             let index = git::caller_index();
             let env: Vec<(&str, &str)> = index
                 .iter()
@@ -123,22 +126,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 archive: show_index(repo, &env, &repo.cfg.archive),
             };
             check(&repo.cfg, repo, &old, &new, None, "staged", &mut problems);
-            let archive_staged = git::raw(
-                &repo.cwd,
-                &["ls-files", "--", &format!(":(top){}", repo.cfg.archive)],
-                &env,
-                None,
-            )
-            .map_or(true, |o| !o.ok || !o.stdout.trim().is_empty());
-            unarchived(
-                repo,
-                &old,
-                &new,
-                None,
-                archive_staged,
-                "staged",
-                &mut problems,
-            );
+            unarchived(repo, &old, &new, None, missed, "staged", &mut problems);
         }
         range => {
             // Resolve each side to a plain sha (git::rev refuses `^HEAD`).
@@ -207,6 +195,7 @@ pub fn commits_on(
             ],
         )?;
         let files: Vec<&str> = files.lines().collect();
+        unarchive_elsewhere(repo, c, short, &files, problems)?;
         if !touches_queue(&repo.cfg, &files) {
             continue;
         }
@@ -245,7 +234,7 @@ pub fn commits_on(
             &old,
             &new,
             Some(subject.trim()),
-            true,
+            None,
             short,
             problems,
         );
@@ -267,22 +256,44 @@ fn unarchive_ids(prefix: &str, subject: &str) -> Option<BTreeSet<u64>> {
         .collect()
 }
 
+/// An unarchive subject on a commit that leaves the queue files alone: it moves
+/// no row, so it names rows it does not move.
+fn unarchive_elsewhere(
+    repo: &Repo,
+    c: &str,
+    at: &str,
+    files: &[&str],
+    out: &mut Vec<String>,
+) -> Res<()> {
+    if touches_queue(&repo.cfg, files) {
+        return Ok(());
+    }
+    let subject = git::git(&repo.cwd, &["log", "-1", "--format=%s", c])?;
+    for id in unarchive_ids(&repo.cfg.commit_prefix, subject.trim()).unwrap_or_default() {
+        out.push(format!(
+            "{at} #{id}: named by an unarchive commit that does not move it from {} back to {}",
+            repo.cfg.archive, repo.cfg.file
+        ));
+    }
+    Ok(())
+}
+
 /// A closed row the old archive holds that the new queue holds instead. Only an
 /// unarchive commit moves one back, unchanged, naming exactly the rows it moves
 /// and changing none — the way to reopen an archived row. Anything else is what a
 /// trunk checkout that missed an archive stages: committed, it takes the archive
 /// (or its new rows) off the trunk.
 ///
-/// A staged change has no subject yet, so it is flagged only where it is that
-/// missed archive — the index lacks the archive file, or holds an earlier trunk
-/// commit's queue files exactly — and the refusal names the diff that catches the
-/// checkout up; the commit itself is judged by its subject.
+/// A staged change has no subject yet, and its content cannot tell the two
+/// apart, so it is flagged only while `missed` holds a missed commit's fix (see
+/// `store::missed_marker_fix`), naming it; the commit itself is judged by its
+/// subject.
 fn unarchived(
     repo: &Repo,
     old: &Snap,
     new: &Snap,
     subject: Option<&str>,
-    archive_staged: bool,
+    missed: Option<String>,
     at: &str,
     out: &mut Vec<String>,
 ) {
@@ -305,20 +316,12 @@ fn unarchived(
             if back.is_empty() {
                 return;
             }
-            let fix = crate::store::missed_commit_fix(repo);
-            if archive_staged && fix.is_none() {
-                return;
-            }
-            let why = match fix {
-                Some(f) => format!(
-                    "the trunk checkout missed a commit to {}, and `{f}` catches it up",
-                    repo.trunk
-                ),
-                None => format!(
-                    "{} is staged as deleted; restore it with `git restore --staged --worktree --source=HEAD -- {}`",
-                    repo.cfg.archive, repo.cfg.archive
-                ),
-            };
+            // No marker: a deliberate move, judged by its subject once committed.
+            let Some(fix) = missed else { return };
+            let why = format!(
+                "the trunk checkout missed a commit to {}, and `{fix}` catches it up",
+                repo.trunk
+            );
             for id in back {
                 say(out, id, &why);
             }

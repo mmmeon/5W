@@ -3137,11 +3137,17 @@ fn a_first_archive_the_checkout_missed_names_the_fix_in_the_duplicate_ids_refusa
         err.contains("diff ") && err.contains("| git -C") && err.contains("apply --cached"),
         "{err}"
     );
+    assert!(r.main.join(".git/5w-missed-main").exists());
     follow_fix(&r, &err);
     r.ok(&r.main, &["ready"]);
     assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
     let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
     assert!(done.contains("- [x] #1 first"), "{done}");
+    // The fix typed by hand leaves the marker of the missed commit; the next
+    // `lint --staged` (the hook) finds the checkout caught up and removes it.
+    assert!(r.main.join(".git/5w-missed-main").exists());
+    r.ok(&r.main, &["lint", "--staged"]);
+    assert!(!r.main.join(".git/5w-missed-main").exists());
 }
 
 #[test]
@@ -3208,6 +3214,54 @@ fn a_commit_over_a_missed_first_archive_does_not_delete_the_archive() {
         err.contains("#1: archived in DONE.md, back in TASKS.md"),
         "{err}"
     );
+}
+
+#[test]
+fn a_commit_over_a_missed_later_archive_is_refused_by_the_hook() {
+    let r = Repo::new("later-archive-commit");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["archive"]);
+    r.ok(&r.main, &["done", "2", "--self"]);
+    r.ok(&r.main, &["hook", "install"]);
+    std::fs::write(r.main.join(".git/index.lock"), "").unwrap();
+    r.refuses(&r.main, &["archive"]);
+    std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
+    let marker = r.main.join(".git/5w-missed-main");
+    assert!(marker.exists());
+    let commit = |args: &[&str]| {
+        let mut c = Command::new("git");
+        c.args(args).current_dir(&r.main);
+        env(&mut c, &r.root);
+        let o = c.output().unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+    // DONE.md is still there: only the marker tells the hook this is the missed
+    // archive and not an unarchive.
+    for args in [&["commit", "-qm", "wip"][..], &["commit", "-qam", "wip"]] {
+        let (ok, err) = commit(args);
+        assert!(!ok, "{args:?}: {err}");
+        assert!(
+            err.contains("#2: archived in DONE.md, back in TASKS.md")
+                && err.contains("missed a commit to main")
+                && err.contains("apply --cached"),
+            "{err}"
+        );
+    }
+    assert!(
+        r.git(&r.main, &["show", "main:DONE.md"])
+            .contains("#2 second")
+    );
+
+    // The next write catches the checkout up and removes the marker.
+    let out = r.ok(&r.main, &["add", "third"]);
+    assert!(out.contains("checkout caught up: #2"), "{out}");
+    assert!(!marker.exists());
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
 }
 
 #[test]
@@ -3577,13 +3631,19 @@ fn an_edit_of_a_row_archived_on_the_trunk_is_refused_even_when_the_checkout_stil
 #[test]
 fn an_unarchive_commit_moves_an_archived_row_back_to_be_reopened() {
     let r = Repo::new("unarchive");
-    r.ok(&r.main, &["add", "first"]);
-    r.ok(&r.main, &["add", "second"]);
+    for t in ["a", "b", "c"] {
+        r.ok(&r.main, &["add", t]);
+    }
     r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["archive"]);
     r.ok(&r.main, &["done", "2", "--self"]);
     r.ok(&r.main, &["archive"]);
     r.ok(&r.main, &["hook", "install"]);
     let head = r.git(&r.main, &["rev-parse", "HEAD"]);
+    assert!(
+        r.refuses(&r.main, &["reopen", "2"])
+            .contains("unarchive #2")
+    );
     let git = |args: &[&str]| {
         let mut c = Command::new("git");
         c.args(args).current_dir(&r.main);
@@ -3594,56 +3654,85 @@ fn an_unarchive_commit_moves_an_archived_row_back_to_be_reopened() {
             String::from_utf8_lossy(&o.stderr).to_string(),
         )
     };
-    // The move the refusal names: #1's block, as DONE.md has it, under TASKS.md's
-    // `## Done`.
+    // The move the refusal names: #2's block, as DONE.md has it, under TASKS.md's
+    // `## Done` — which leaves both files as the trunk had them before the
+    // second archive, so the content alone reads like a missed archive.
     let move_back = |row: &str| {
         let tasks = r
             .tasks()
-            .replace("## Done\n", &format!("## Done\n\n{row}\n"));
+            .replace("## Done\n\n", &format!("## Done\n\n{row}\n"));
         std::fs::write(r.main.join("TASKS.md"), tasks).unwrap();
-        let done = r
-            .git(&r.main, &["show", "HEAD:DONE.md"])
-            .replace("- [x] #1 first via:self\n", "");
+        // `git` trims the output's last newline.
+        let done = format!("{}\n", r.git(&r.main, &["show", "HEAD:DONE.md"]))
+            .replace("- [x] #2 b via:self\n", "");
         std::fs::write(r.main.join("DONE.md"), done).unwrap();
-        r.git(&r.main, &["add", "TASKS.md", "DONE.md"]);
     };
+    let reset = || r.git(&r.main, &["reset", "-q", "--hard", &head]);
 
-    // Under another subject the move is flagged once committed; the hook cannot
-    // see the subject yet, and the index is no missed trunk commit.
-    move_back("- [x] #1 first via:self");
-    r.ok(&r.main, &["lint", "--staged"]);
-    let (ok, err) = git(&["commit", "-qm", "reopen first"]);
+    // No checkout missed a commit, so the hook passes the move, staged or with
+    // `commit -a`, and the unarchive subject passes once committed; #2 reopens.
+    move_back("- [x] #2 b via:self");
+    r.git(&r.main, &["add", "TASKS.md", "DONE.md"]);
+    assert_eq!(
+        r.git(
+            &r.main,
+            &["diff", "--cached", "HEAD~1", "--", "TASKS.md", "DONE.md"]
+        ),
+        ""
+    );
+    let (ok, err) = git(&["commit", "-qm", "chore(tasks): unarchive #2"]);
+    assert!(ok, "{err}");
+    r.ok(&r.main, &["lint", "HEAD"]);
+    reset();
+    move_back("- [x] #2 b via:self");
+    let (ok, err) = git(&["commit", "-qam", "chore(tasks): unarchive #2"]);
+    assert!(ok, "{err}");
+    r.ok(&r.main, &["lint", "HEAD"]);
+    r.ok(&r.main, &["reopen", "2"]);
+    assert!(r.tasks().contains("- [ ] #2 b"), "{}", r.tasks());
+    r.lint_history();
+    reset();
+
+    // Under another subject the same move is flagged once committed.
+    move_back("- [x] #2 b via:self");
+    let (ok, err) = git(&["commit", "-qam", "reopen b"]);
     assert!(ok, "{err}");
     let err = r.fails(&r.main, &["lint", "HEAD"]);
     assert!(
-        err.contains("#1: archived in DONE.md, back in TASKS.md")
-            && err.contains("`chore(tasks): unarchive #1`"),
+        err.contains("#2: archived in DONE.md, back in TASKS.md")
+            && err.contains("`chore(tasks): unarchive #2`"),
         "{err}"
     );
-    r.git(&r.main, &["reset", "-q", "--hard", &head]);
+    reset();
 
     // An unarchive commit that also edits the row is refused, by the hook and
     // once committed.
-    move_back("- [x] #1 first, edited via:self");
-    let (ok, err) = git(&["commit", "-qm", "chore(tasks): unarchive #1"]);
+    move_back("- [x] #2 b, edited via:self");
+    let (ok, err) = git(&["commit", "-qam", "chore(tasks): unarchive #2"]);
     assert!(!ok && err.contains("a closed row changed"), "{err}");
-    let (ok, err) = git(&["commit", "-qm", "chore(tasks): unarchive #1", "--no-verify"]);
+    let (ok, err) = git(&[
+        "commit",
+        "-qam",
+        "chore(tasks): unarchive #2",
+        "--no-verify",
+    ]);
     assert!(ok, "{err}");
     let err = r.fails(&r.main, &["lint", "HEAD"]);
     assert!(
-        err.contains("#1: an unarchive commit moves rows back unchanged"),
+        err.contains("#2: an unarchive commit moves rows back unchanged"),
         "{err}"
     );
-    r.git(&r.main, &["reset", "-q", "--hard", &head]);
+    reset();
 
-    // Unchanged, under the unarchive subject: it passes, and #1 reopens.
-    move_back("- [x] #1 first via:self");
-    let (ok, err) = git(&["commit", "-qm", "chore(tasks): unarchive #1"]);
+    // An unarchive subject on a commit that moves no row is flagged too.
+    std::fs::write(r.main.join("README"), "changed\n").unwrap();
+    let (ok, err) = git(&["commit", "-qam", "chore(tasks): unarchive #2"]);
     assert!(ok, "{err}");
-    r.ok(&r.main, &["lint", "HEAD"]);
-    r.ok(&r.main, &["reopen", "1"]);
-    assert!(r.tasks().contains("- [ ] #1 first"), "{}", r.tasks());
-    r.lint_history();
+    let err = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(
+        err.contains("#2: named by an unarchive commit that does not move it"),
+        "{err}"
+    );
 }
 
 #[test]
