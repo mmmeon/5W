@@ -51,6 +51,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #33 (pre-existing). A relative FIVEW_WT_ROOT is checked relative to the current directory, then handed to git worktree add run from the primary checkout, so the two can name different directories when 5w runs from a subdirectory or another worktree. Resolve it once against one base (the primary checkout, as worktrees.root is) in Repo::wt_root(); test by running wt new from inside another worktree with a relative FIVEW_WT_ROOT.
 - [ ] #39 USAGE hook line omits [pre-commit | pre-receive], so hook --help under-describes it @output !1
   Found reviewing #25: tasks::USAGE has 'hook install | uninstall' while src/lint.rs refusals accept 'install | uninstall [pre-commit | pre-receive]'. Make USAGE match; command_usage() then prints it for 5w hook --help.
+- [ ] #41 wt prune: keep any <area>/task-<id> branch of an open task, not only the currently suggested name @wt !1
+  Found reviewing #17: after 5w set <id> area <new>, the untouched <old>/task-<id> worktree is listed for removal because the suggestion changed. Keep any branch whose last component is task-<id> for a task not closed; test with set area after wt new.
 
 ## Done
 
