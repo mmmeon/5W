@@ -52,7 +52,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig: link to web docs in help text.
 - [ ] #31 README: one-line uninstall note (cargo uninstall 5w) next to the install line @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning.
-- [ ] #33 wt: resolve .. in the worktree root once, so refusals and the --install line print clean paths too @wt !1 needs:#6
+- [~] #33 wt: resolve .. in the worktree root once, so refusals and the --install line print clean paths too @wt !1 needs:#6 branch:wt/task-33 submitted:7eae06317748
   #6 canonicalizes only the printed 'cd' line. The 'already exists' refusals in wt new/add and 'wt: <cmd> (in <dir>)' still show '..'. Normalize lexically in Repo::wt_root() instead; fs::canonicalize also follows symlinks (/tmp to /private/tmp on macOS).
 - [ ] #34 USAGE: one example invocation under the usage line, e.g. 5w ready area:output @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig 'lead with examples', adopted narrowly; missing from the doc's own follow-up list. No longer worked sequence.
