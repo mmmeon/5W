@@ -43,7 +43,8 @@ pub fn raw(dir: &Path, args: &[&str], env: &[(&str, &str)], input: Option<&str>)
     Ok(Out {
         ok: o.status.success(),
         stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        // Only ever carried into a refusal, which is one line.
+        stderr: crate::util::one_line(&String::from_utf8_lossy(&o.stderr)),
     })
 }
 

@@ -61,6 +61,7 @@ fn main() {
         if !reporting {
             report::record_failure(&args, &e);
         }
+        debug_assert!(!e.contains('\n'), "a refusal is one line: {e:?}");
         eprintln!("{}", util::Sty::stderr().refusal(&e));
         std::process::exit(1);
     }

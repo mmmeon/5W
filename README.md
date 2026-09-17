@@ -251,7 +251,8 @@ The queue is read by agents, so every read is priced in tokens.
 - **Output is compact off a terminal**, or with `FIVEW_AGENT=1`: one line per task
   (`#14 !3 @faces title + [branch] >lane — note`, `+` marking a body; a title still over `title_max`
   ends `…(+53 chars: 5w show 14)`), no headers, one-line
-  refusals naming the fix. `FIVEW_AGENT=0` or `--full` gives the human layout. `ready`'s summary
+  refusals naming the fix (a usage mistake points at `5w <cmd> --help` rather than printing the
+  usage; git's own stderr is folded onto the line). `FIVEW_AGENT=0` or `--full` gives the human layout. `ready`'s summary
   line ends with the next step (`→ 5w delegate 14`) and `review` closes with `→ 5w accept 14`, as
   `next` does; `--json` and `--ids` carry no hint.
 - **`--json`**, **`--ids`**, **`--limit N`** on every list; **`5w next [filters]`** returns just the

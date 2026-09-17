@@ -511,7 +511,7 @@ fn a_flag_a_command_does_not_take_is_refused() {
 }
 
 #[test]
-fn a_flag_wt_report_init_or_lint_does_not_take_is_refused() {
+fn a_flag_wt_report_init_lint_ship_ci_or_update_files_does_not_take_is_refused() {
     let r = Repo::new("unknown-flag-tools");
     r.ok(&r.main, &["wt", "new", "a/x"]);
     r.ok(&r.main, &["report", "something odd"]);
@@ -534,6 +534,9 @@ fn a_flag_wt_report_init_or_lint_does_not_take_is_refused() {
         (&["init", "--bogus"], "init"),
         (&["lint", "--bogus"], "lint"),
         (&["lint", "HEAD", "--bogus"], "lint"),
+        (&["ship", "a/x", "--bogus"], "ship"),
+        (&["ci", "--bogus"], "ci"),
+        (&["update-files", "--bogus"], "update-files"),
     ] {
         let out = r.fails(&r.main, args);
         assert_eq!(
@@ -560,6 +563,51 @@ fn a_flag_wt_report_init_or_lint_does_not_take_is_refused() {
     ] {
         r.ok(&r.main, args);
     }
+}
+
+#[test]
+fn a_refusal_that_once_appended_a_usage_block_is_one_line() {
+    let r = Repo::new("one-line-refusals");
+    r.ok(&r.main, &["add", "x"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.git(&wt, &["checkout", "-q", "--detach"]);
+    let before = r.git(&r.main, &["rev-parse", "HEAD"]);
+    for (cwd, args, want) in [
+        (
+            &r.main,
+            &["ship", "-x"][..],
+            "unknown flag -x for ship (5w ship --help)",
+        ),
+        (
+            &wt,
+            &["ship"],
+            "not on a branch: name the one to ship (5w ship --help)",
+        ),
+        (
+            &r.main,
+            &["ci", "-x"],
+            "unknown flag -x for ci (5w ci --help)",
+        ),
+        (
+            &r.main,
+            &["ci", "extra"],
+            "ci takes only flags, not \"extra\" (5w ci --help)",
+        ),
+        (
+            &r.main,
+            &["update-files", "extra"],
+            "update-files takes only --pin, not \"extra\" (5w update-files --help)",
+        ),
+        (
+            &r.main,
+            &["add", "-x", "y"],
+            "text first, not a flag: -x (5w add --help)",
+        ),
+    ] {
+        assert_eq!(r.fails(cwd, args), format!("5w: {want}\n"), "{args:?}");
+    }
+    assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), before);
 }
 
 #[test]
@@ -949,7 +997,13 @@ fn duplicate_ids_stop_every_command() {
         .tasks()
         .replace("- [ ] #1 one", "- [ ] #1 one\n- [ ] #1 again");
     std::fs::write(r.main.join("TASKS.md"), t).unwrap();
-    assert!(r.fails(&r.main, &["ready"]).contains("duplicate ids"));
+    std::fs::write(r.main.join("DONE.md"), "- [x] #1 old\n").unwrap();
+    let out = r.fails(&r.main, &["ready"]);
+    assert_eq!(
+        out,
+        "5w: duplicate ids — fix before anything else: #1 lines 17 and 18 of TASKS.md; \
+         #1 in both TASKS.md and DONE.md\n"
+    );
     assert!(r.fails(&r.main, &["doctor"]).contains("appears twice"));
 }
 

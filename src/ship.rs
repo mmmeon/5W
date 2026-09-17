@@ -64,7 +64,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 println!("{USAGE}");
                 return Ok(());
             }
-            a if a.starts_with('-') => bail!("unknown flag {a}\n{USAGE}"),
+            a if a.starts_with('-') => return Err(crate::tasks::unknown_flag(repo, "ship", a)),
             a => {
                 if branch.is_some() {
                     bail!("one branch at a time (every accepted one: --accepted)");
@@ -93,7 +93,10 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     }
     let branch = match branch.or_else(|| git::current_branch(&repo.cwd)) {
         Some(b) => b,
-        None => bail!("{USAGE}"),
+        None => bail!(
+            "not on a branch: name the one to ship ({} ship --help)",
+            repo.cfg.cmd_tasks
+        ),
     };
     ship(repo, &branch, &o)
 }
@@ -388,7 +391,7 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
         .map(|_| ()),
     };
     if let Err(e) = ff {
-        bail!("fast-forward of {trunk} to {branch} failed; nothing was changed:\n{e}");
+        bail!("fast-forward of {trunk} to {branch} failed; nothing was changed: {e}");
     }
     if land != tip {
         println!("ship: squashed into {}", short(&land));

@@ -183,17 +183,20 @@ impl<'a> Q<'a> {
             .map(|a| a.id)
             .collect();
         if !dup.is_empty() || !cross.is_empty() {
-            let mut msg = String::from("duplicate ids — fix before anything else:");
+            let mut parts = Vec::new();
             for (id, a, b) in dup {
-                msg += &format!("\n  #{id} lines {a} and {b} of {}", repo.cfg.file);
+                parts.push(format!("#{id} lines {a} and {b} of {}", repo.cfg.file));
             }
             for id in cross {
-                msg += &format!(
-                    "\n  #{id} in both {} and {}",
+                parts.push(format!(
+                    "#{id} in both {} and {}",
                     repo.cfg.file, repo.cfg.archive
-                );
+                ));
             }
-            return Err(msg);
+            return Err(format!(
+                "duplicate ids — fix before anything else: {}",
+                parts.join("; ")
+            ));
         }
         let done = both
             .iter()
@@ -1146,7 +1149,10 @@ fn add(repo: &Repo, args: &[String]) -> Res<()> {
         }
         if text.is_none() {
             if a.starts_with('-') {
-                bail!("text first, not a flag: {a}\n{usage}");
+                bail!(
+                    "text first, not a flag: {a} ({} add --help)",
+                    repo.cfg.cmd_tasks
+                );
             }
             text = Some(a.clone());
         } else {

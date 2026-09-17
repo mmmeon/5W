@@ -59,6 +59,13 @@ pub fn colour(tty: bool, no_color_env: bool, term: Option<&std::ffi::OsStr>, fla
     tty && !no_color_env && !flag && term.is_none_or(|t| t != "dumb")
 }
 
+/// A tool's stderr as one line for a refusal: its non-blank lines, trimmed,
+/// joined with `; `.
+pub fn one_line(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    lines.join("; ")
+}
+
 /// `#14`, `14` and `'#14'` all name task 14. Accepting the bare number is what
 /// lets zsh users stop quoting: an unquoted `#14` there is a comment.
 pub fn parse_id(s: &str) -> Res<u64> {
@@ -82,7 +89,7 @@ pub fn truncate(s: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Sty, colour};
+    use super::{Sty, colour, one_line};
     use std::ffi::OsStr;
 
     #[test]
@@ -94,6 +101,15 @@ mod tests {
         assert!(!colour(true, true, xterm, false));
         assert!(!colour(true, false, Some(OsStr::new("dumb")), false));
         assert!(!colour(true, false, xterm, true));
+    }
+
+    #[test]
+    fn one_line_joins_a_tools_stderr() {
+        assert_eq!(
+            one_line("error: bad\n\nhint: do this\r\n  hint: or that\n"),
+            "error: bad; hint: do this; hint: or that"
+        );
+        assert_eq!(one_line("  \n"), "");
     }
 
     #[test]

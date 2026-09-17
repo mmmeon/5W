@@ -315,7 +315,7 @@ fn send(d: &Path, args: &[String]) -> Res<()> {
             if !o.status.success() {
                 bail!(
                     "gh issue create failed: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
+                    crate::util::one_line(&String::from_utf8_lossy(&o.stderr))
                 );
             }
             let link = String::from_utf8_lossy(&o.stdout).trim().to_string();

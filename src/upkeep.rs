@@ -131,7 +131,13 @@ pub fn notes(repo: &Repo) -> Res<Vec<String>> {
 pub fn update_files(repo: &Repo, args: &[String]) -> Res<()> {
     let pin = args.iter().any(|a| a == "--pin");
     if let Some(a) = args.iter().find(|a| *a != "--pin") {
-        bail!("unexpected {a:?}\nusage: 5w update-files [--pin]");
+        if a.starts_with('-') {
+            return Err(crate::tasks::unknown_flag(repo, "update-files", a));
+        }
+        bail!(
+            "update-files takes only --pin, not {a:?} ({} update-files --help)",
+            repo.cfg.cmd_tasks
+        );
     }
     let top = git::git(&repo.cwd, &["rev-parse", "--show-toplevel"])
         .map_err(|_| "update-files writes into a worktree; run it inside one".to_string())?;

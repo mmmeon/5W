@@ -44,7 +44,11 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             "--ref" => refname = v,
             "--branch" => branch = v,
             "--trunk" => trunk_ref = v,
-            _ => bail!("unexpected {a:?}\n{USAGE}"),
+            _ if a.starts_with('-') => return Err(crate::tasks::unknown_flag(repo, "ci", a)),
+            _ => bail!(
+                "ci takes only flags, not {a:?} ({} ci --help)",
+                repo.cfg.cmd_tasks
+            ),
         }
         i += 2;
     }
