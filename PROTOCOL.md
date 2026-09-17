@@ -34,7 +34,7 @@ If `5w` is installed, use it instead of editing.
 | Reject (the reviewer) | `[~]`→`[ ]` | gain `rework:"why"`; lose `submitted:` |
 | Close without review | `[ ]`→`[x]` | gain `via:` = its lane's close word; move to `## Done`. Never for work someone else did |
 | Reopen | `[x]`→`[ ]` | lose `via:`, `reviewed:`, `submitted:`; move back to its open heading |
-| Retitle, re-field | `[ ]`→`[ ]` | change anything but the id and the closure fields |
+| Retitle, re-field | `[ ]`→`[ ]` | change anything but the id and the closure fields; gain no `rework:` — only a reject adds one |
 | Archive | `[x]` row | move, byte for byte, from `TASKS.md` to `DONE.md` |
 
 Never:

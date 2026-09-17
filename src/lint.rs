@@ -362,6 +362,13 @@ fn check(cfg: &Config, repo: &Repo, old: &Snap, new: &Snap, at: &str, out: &mut 
         };
 
         let same_content = words(o) == words(n) && fields(o) == fields(n);
+        if o.rework.is_none()
+            && n.rework.is_some()
+            && n.state != State::Done
+            && (o.state, n.state) != (State::Review, State::Open)
+        {
+            say(id, "gained rework: outside a reject ([~]→[ ])".into());
+        }
         match (o.state, n.state) {
             (State::Done, State::Done) => {
                 if !same_content {

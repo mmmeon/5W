@@ -141,7 +141,7 @@ Hand edits are checked, not trusted:
 - **`5w lint`** compares the queue before and after — `--staged`, one commit, or a range — and judges
   every row that changed by its transition: `[ ]→[~]` carries `branch:` and `submitted:`,
   `[~]→[x]` carries `via:review` and `reviewed:`, a close carries its lane's `via:`, a reject its
-  `rework:`. Closed rows are immutable except to reopen, reflow (`split`) or archive; no row is
+  `rework:` (and nothing else gains one). Closed rows are immutable except to reopen, reflow (`split`) or archive; no row is
   deleted and no id reused; a queue edit is its own commit on the trunk. Every commit `5w` itself
   makes passes it — the test suite lints its own history.
 - **`5w hook install`** (also run by `5w wt setup`) adds a pre-commit hook running `5w lint --staged`.

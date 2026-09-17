@@ -243,7 +243,10 @@ fn reject_refuses_work_that_was_never_submitted() {
     // Closed was never pending review either; `open` alone would not make it rejectable.
     r.ok(&r.main, &["done", "1", "--self"]);
     let out = r.fails(&r.main, &["reject", "1", "not good"]);
-    assert!(out.contains("nothing to reject"), "{out}");
+    assert!(
+        out.contains("not pending review, so there is nothing to reject"),
+        "{out}"
+    );
     assert!(!out.contains("open 1` first"), "{out}");
     assert!(r.line(1).starts_with("- [x] #1") && !r.line(1).contains("rework:"));
 }
@@ -956,6 +959,44 @@ fn lint_passes_a_correct_hand_edit_and_names_each_violation() {
         r.fails(&r.main, &["lint"])
             .contains("queue edits go on main")
     );
+}
+
+#[test]
+fn lint_flags_rework_gained_outside_a_reject() {
+    let r = Repo::new("lint-rework");
+    r.ok(&r.main, &["add", "agent work"]);
+    r.ok(&r.main, &["add", "other"]);
+    r.ok(&r.main, &["done", "2", "--self"]);
+
+    // An open row that gains a reason was never rejected.
+    hand_edit(
+        &r,
+        "- [ ] #1 agent work",
+        "- [ ] #1 agent work rework:\"bad\"",
+    );
+    let out = r.fails(&r.main, &["lint"]);
+    assert!(out.contains("gained rework:"), "{out}");
+    r.git(&r.main, &["reset", "-q", "--hard"]);
+
+    // Nor was a closed row reopened with one.
+    hand_edit(
+        &r,
+        "- [x] #2 other via:self",
+        "- [ ] #2 other rework:\"bad\"",
+    );
+    let out = r.fails(&r.main, &["lint"]);
+    assert!(out.contains("gained rework:"), "{out}");
+    r.git(&r.main, &["reset", "-q", "--hard"]);
+
+    // A real reject passes, and so does fixing its reason afterwards.
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["reject", "1", "bad"]);
+    r.ok(&r.main, &["lint", "HEAD"]);
+    hand_edit(&r, "rework:\"bad\"", "rework:\"worse\"");
+    r.ok(&r.main, &["lint"]);
 }
 
 #[test]
