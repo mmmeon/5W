@@ -136,8 +136,12 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     let repo = match &repo.broken {
         Some(err) if !zeros(&head) => {
             let onto = refname.as_deref() == Some(format!("refs/heads/{}", repo.trunk).as_str());
-            let tip = git::rev(p, head.as_deref().unwrap_or("HEAD"));
-            let cfg = match tip.filter(|_| onto || branch.is_some()) {
+            // A tip that is not there is the fix to name, not the config.
+            let h = head.as_deref().unwrap_or("HEAD");
+            let tip = git::rev(p, h).ok_or_else(|| {
+                format!("ci: --head {h} is not a commit — pass a branch, tag or sha")
+            })?;
+            let cfg = match (onto || branch.is_some()).then_some(tip) {
                 Some(t) => {
                     match git::opt(p, &["show", &format!("{t}:{}", crate::store::CONFIG_FILE)]) {
                         Some(text) => crate::config::Config::from_toml(&text).ok(),

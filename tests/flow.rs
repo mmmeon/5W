@@ -6348,6 +6348,37 @@ fn a_change_request_repairing_a_broken_trunk_config_passes_its_branch_check() {
 }
 
 #[test]
+fn an_unresolvable_head_under_a_broken_trunk_config_is_named_not_the_config() {
+    let r = Repo::new("config-bricked-head");
+    r.git(&r.main, &["branch", "a/x"]);
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n"),
+    )
+    .unwrap();
+    r.git(&r.main, &["commit", "-qam", "break the config"]);
+    let forge = r.root.join("forge.git");
+    let fp = forge.to_str().unwrap();
+    r.git(
+        &r.root,
+        &["clone", "-q", "--bare", r.main.to_str().unwrap(), fp],
+    );
+    let ci = ci_clone(&r, &forge, "ci");
+    // A change request and a trunk push alike: the tip that is not there is the fix.
+    for args in [
+        &["ci", "--branch", "a/x", "--head", "origin/nope"][..],
+        &["ci", "--ref", "refs/heads/main", "--head", "origin/nope"][..],
+    ] {
+        let err = r.refuses(&ci, args);
+        assert!(
+            err.contains("--head origin/nope is not a commit") && !err.contains(".5w.toml"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
 fn gate_trunk_given_twice_reads_as_the_last() {
     let r = Repo::new("gate-twice");
     let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
