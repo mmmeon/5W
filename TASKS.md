@@ -38,6 +38,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #60: with #1 open in the working TASKS.md and closed in main's DONE.md, 5w reopen 1 succeeds and main ends with #1 in both files; every command then refuses 'duplicate ids', yet 5w lint (without --staged) exits 0. reopen must refuse when the id is in the archive (name moving the block back); lint on a commit/range must flag an id present in both files. Test both.
 - [ ] #65 5w commits a symlinked TASKS.md as a regular 100644 blob, turning the trunk entry into a file (' T TASKS.md') @queue !1
   Found reviewing #62 (pre-existing): when TASKS.md (or the archive) is tracked as a symlink (mode 120000), 5w's queue commit writes the target's content as a 100644 blob at that path, so main's entry changes type and the checkout shows ' T TASKS.md'. Either commit to the symlink's target path, or refuse in one line naming it; test it.
+- [ ] #67 This repository's PROTOCOL.md is stamped 0.1.2: refresh it with update-files so doctor is clean @upkeep !1
+  5w doctor here notes 'PROTOCOL.md is from 0.1.2; this is 0.1.3 — 5w update-files'. Many branches edited PROTOCOL.md and templates/PROTOCOL.md in step; confirm update-files only changes the stamp line (diff), commit it on a branch, and check doctor reports ok with no PROTOCOL note. The local pre-commit hook note is machine-local (.git/hooks), not part of the change.
 
 ## Done
 
