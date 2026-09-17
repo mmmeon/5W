@@ -648,6 +648,17 @@ pub fn parse_all(texts: [&str; 2]) -> Vec<Task> {
     texts.into_iter().flat_map(parse).collect()
 }
 
+/// The rows in both readings that sit under a different heading.
+pub fn moved_ids(
+    old: &std::collections::HashMap<u64, &Task>,
+    new: &std::collections::HashMap<u64, &Task>,
+) -> std::collections::BTreeSet<u64> {
+    new.iter()
+        .filter(|(id, n)| old.get(id).is_some_and(|o| o.section != n.section))
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 /// Rows by id; a later one wins.
 pub fn by_id(v: &[Task]) -> std::collections::HashMap<u64, &Task> {
     v.iter().map(|t| (t.id, t)).collect()

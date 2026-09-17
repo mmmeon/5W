@@ -400,10 +400,14 @@ pub fn batch(repo: &Repo, edits: impl FnOnce() -> Res<()>) -> Res<()> {
     };
     result?;
     let message = match b.messages.as_slice() {
-        [] => {
+        [] if (0..2).all(|i| {
+            (b.cur[i].working == b.orig[i].working) && (b.cur[i].staged == b.orig[i].staged)
+        }) =>
+        {
             println!("  nothing to commit: every edit leaves its row as it is");
             return Ok(());
         }
+        [] => String::new(),
         [one] => one.clone(),
         many => {
             let head = format!("{}: ", repo.cfg.commit_prefix);
@@ -467,6 +471,7 @@ pub fn transact(
         // Lint judges a commit row by row, before against after: a second edit
         // of one row would reach it as one transition, which may be no legal one.
         let changed = rows_changed([&q.committed, &a.committed], [&plan.new_q, &plan.new_a]);
+        let no_op = no_op(&q, &a, &plan);
         BATCH.with(|b| {
             let mut b = b.borrow_mut();
             let Some(b) = b.as_mut() else {
@@ -476,14 +481,17 @@ pub fn transact(
                 bail!("#{id} is already edited in this batch; edit it again in the next one");
             }
             // An edit that changes nothing is not one: the subject names only rows it changes.
-            if changed.is_empty() {
+            if no_op {
                 return Ok(());
             }
-            b.edited.extend(changed);
             {
                 let [cq, ca] = &mut b.cur;
-                cq.committed = plan.new_q;
-                ca.committed = plan.new_a;
+                // One that changes only the checkout's copies is carried there, unnamed.
+                if !changed.is_empty() {
+                    cq.committed = plan.new_q;
+                    ca.committed = plan.new_a;
+                    b.messages.push(plan.message);
+                }
                 if let Some((wq, wa)) = plan.working {
                     cq.working = Some(wq);
                     ca.working = ca.working.is_some().then_some(wa);
@@ -492,8 +500,8 @@ pub fn transact(
                     cq.staged = cq.staged.is_some().then_some(sq);
                     ca.staged = ca.staged.is_some().then_some(sa);
                 }
-                b.messages.push(plan.message);
             }
+            b.edited.extend(changed);
             Ok(())
         })?;
         return Ok(());
@@ -503,7 +511,7 @@ pub fn transact(
     // An edit of a named row that leaves every row as it was (`set` to the value
     // a row has) commits nothing: its subject would name a row it does not change.
     if let Some(id) = ids.first()
-        && rows_changed([&q.committed, &a.committed], [&plan.new_q, &plan.new_a]).is_empty()
+        && no_op(&q, &a, &plan)
     {
         println!("  nothing to commit: #{id} is already so");
         return Ok(());
@@ -511,13 +519,40 @@ pub fn transact(
     write(repo, &old, checkout.as_deref(), &q, &a, &plan)
 }
 
-/// The rows an edit changes between two copies of the queue and its archive,
-/// as lint reads a commit: a line rewritten to say the same is no change.
+/// The rows an edit changes or moves to another section between two copies of
+/// the queue and its archive, as lint reads a batch: a line rewritten to say
+/// the same is no change.
 fn rows_changed(old: [&str; 2], new: [&str; 2]) -> Vec<u64> {
     let (old, new) = (queue::parse_all(old), queue::parse_all(new));
-    queue::changed_ids(&queue::by_id(&old), &queue::by_id(&new))
-        .into_iter()
-        .collect()
+    let (old, new) = (queue::by_id(&old), queue::by_id(&new));
+    let mut ids = queue::changed_ids(&old, &new);
+    ids.extend(queue::moved_ids(&old, &new));
+    ids.into_iter().collect()
+}
+
+/// Whether a plan leaves every copy — committed, working and staged — reading
+/// as it did: no row changed or moved.
+fn no_op(q: &Copies, a: &Copies, plan: &Plan) -> bool {
+    let same = |old: [&str; 2], new: [&str; 2]| rows_changed(old, new).is_empty();
+    same([&q.committed, &a.committed], [&plan.new_q, &plan.new_a])
+        && plan.working.as_ref().is_none_or(|(wq, wa)| {
+            same(
+                [
+                    q.working.as_deref().unwrap_or_default(),
+                    a.working.as_deref().unwrap_or(&a.committed),
+                ],
+                [wq, wa],
+            )
+        })
+        && plan.staged.as_ref().is_none_or(|(sq, sa)| {
+            same(
+                [
+                    q.staged.as_deref().unwrap_or(&q.committed),
+                    a.staged.as_deref().unwrap_or(&a.committed),
+                ],
+                [sq, sa],
+            )
+        })
 }
 
 /// Refuse to pull a named row from the working copy into a commit when its id is

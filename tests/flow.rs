@@ -2164,6 +2164,62 @@ fn a_single_edit_subject_may_rewrite_its_own_row_but_changes_no_other() {
 }
 
 #[test]
+fn a_same_value_edit_still_fixes_the_checkout_and_the_rows_section() {
+    let r = Repo::new("same-value-writes");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+        .unwrap()
+        .replace(
+            "[lanes.manual]\nkind = \"manual\"",
+            "[lanes.manual]\nkind = \"manual\"\nsection = \"## By hand\"",
+        );
+    std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
+    r.git(
+        &r.main,
+        &["commit", "-qam", "manual rows sit under By hand"],
+    );
+    r.ok(&r.main, &["add", "first", "level:2"]);
+    r.ok(&r.main, &["add", "by hand", "lane:manual"]);
+    assert!(r.tasks().contains("## By hand\n\n- [ ] #2 by hand >manual"));
+
+    // The committed row already reads so, but the checkout's copy does not:
+    // it is rewritten, alone or in a batch, and nothing is left dirty.
+    for batch in [false, true] {
+        let t = r.tasks().replace("#1 first !2", "#1 first !4");
+        std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+        let out = match batch {
+            false => r.ok(&r.main, &["set", "1", "level", "2"]),
+            true => r.batch("set 1 level 2\n").1,
+        };
+        assert!(!out.contains("nothing to commit"), "{out}");
+        assert!(r.line(1).ends_with("#1 first !2"), "{}", r.tasks());
+        assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    }
+
+    // A row outside its lane's section reads the same, but `set` to its lane
+    // moves it there, alone or in a batch, and lint passes the commit.
+    let moved = "## Open\n\n- [ ] #1 first !2\n\n## By hand\n\n- [ ] #2 by hand >manual";
+    let astray = "## Open\n\n- [ ] #1 first !2\n- [ ] #2 by hand >manual\n\n## By hand\n";
+    for input in ["", "set 2 lane manual\nset 1 level 3\n"] {
+        let t = r.tasks();
+        assert!(t.contains(moved), "{t}");
+        std::fs::write(r.main.join("TASKS.md"), t.replace(moved, astray)).unwrap();
+        r.git(&r.main, &["commit", "-qam", "a row astray"]);
+        let out = match input {
+            "" => r.ok(&r.main, &["set", "2", "lane", "manual"]),
+            i => r.batch(i).1,
+        };
+        assert!(!out.contains("nothing to commit"), "{out}");
+        assert!(
+            r.tasks().contains("## By hand\n\n- [ ] #2 by hand >manual"),
+            "{}",
+            r.tasks()
+        );
+        r.ok(&r.main, &["lint", "HEAD"]);
+        r.ok(&r.main, &["set", "1", "level", "2"]);
+    }
+}
+
+#[test]
 fn a_closed_row_is_immutable_but_may_be_reflowed_or_archived() {
     let r = Repo::new("immutable");
     r.ok(&r.main, &["add", "One sentence here. And a second sentence that is long enough to push well past the title limit of the queue for sure."]);

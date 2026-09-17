@@ -329,7 +329,11 @@ pub fn subject_rows(
         None => (vec![single_edit(prefix, subject)?], false),
     };
     let named: BTreeSet<u64> = edits.iter().map(|e| e.1).collect();
-    let changed = queue::changed_ids(old, new);
+    let mut changed = queue::changed_ids(old, new);
+    if batch {
+        // A batch names a row it moves to its lane's section, too.
+        changed.extend(queue::moved_ids(old, new));
+    }
     let fits = match batch {
         true => named == changed && named.len() == edits.len(),
         false => changed.is_subset(&named),

@@ -200,7 +200,7 @@ Hand edits are checked, not trusted:
   a batch's names exactly the rows it changes; a line rewritten to read the same is no change. Every
   commit `5w` itself makes passes it — a `reject` commit may gain `rework:` from any state, as
   releases through 0.1.3 rejected unsubmitted tasks, and a `set` to the value a row has (which now
-  commits nothing, and says so) may rewrite its row's line — and the test suite lints its own history.
+  commits nothing, and says so, unless it moves the row to its lane's section or fixes the checkout's copy) may rewrite its row's line — and the test suite lints its own history.
 - **`5w hook install`** (also run by `5w wt setup`) adds a pre-commit hook running `5w lint --staged`.
   Where `5w` is not installed the hook lets the commit through with a warning to follow
   PROTOCOL.md; `5w lint <range>` catches what that let through, later.
