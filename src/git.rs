@@ -92,6 +92,8 @@ pub fn current_branch(dir: &Path) -> Option<String> {
 pub struct Worktree {
     pub path: PathBuf,
     pub branch: Option<String>,
+    /// Locked, or its directory gone (`prunable`): not ours to remove.
+    pub held: bool,
 }
 
 pub fn worktrees(dir: &Path) -> Res<Vec<Worktree>> {
@@ -102,11 +104,16 @@ pub fn worktrees(dir: &Path) -> Res<Vec<Worktree>> {
             v.push(Worktree {
                 path: PathBuf::from(p),
                 branch: None,
+                held: false,
             });
         } else if let Some(b) = line.strip_prefix("branch refs/heads/")
             && let Some(w) = v.last_mut()
         {
             w.branch = Some(b.to_string());
+        } else if (line == "locked" || line.starts_with("locked ") || line.starts_with("prunable"))
+            && let Some(w) = v.last_mut()
+        {
+            w.held = true;
         }
     }
     Ok(v)

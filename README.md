@@ -336,6 +336,7 @@ finished is measured from the submit. Blocked time still running is measured to 
 5w wt add <branch>        # worktree for an existing branch
 5w wt ls | path | rm | link | install | setup
 5w wt discard-copy <branch>   # drop the trunk checkout's uncommitted copy of <branch>'s diff
+5w wt prune [--yes]       # list, then remove, branches and worktrees left with nothing in them
 ```
 
 Worktrees go in `worktrees.root` (default `../<repo>-wt`, or `$FIVEW_WT_ROOT`); a relative root is
@@ -349,6 +350,14 @@ set `worktrees.install` to run a real install per worktree.
 Stacking records the parent in git-town's own config keys, so `git town sync` and friends work on
 these branches when git-town is installed, and nothing requires it when it is not. `5w wt setup`
 configures both.
+
+`5w wt prune` lists the branches safe to drop, with their worktrees: no commits past the recorded
+parent (the trunk when none is recorded), no task in the queue or archive naming the branch, and a
+worktree — if there is one — that is clean, unlocked and holds no gitignored files ship would refuse
+to delete (`worktrees.disposable` exempt). The trunk, perennial branches and the primary checkout are
+never touched, nor the worktree you stand in, nor a branch another kept branch is stacked on. A
+branch that qualifies but for its worktree is listed as kept, with the reason. `--yes` removes them —
+all checked before the first goes, children before parents — with their git-town config keys.
 
 A branch's change copied into the trunk checkout and left uncommitted — a worker that edited the
 wrong directory, a patch applied to try it — blocks shipping that branch. `5w doctor` names each

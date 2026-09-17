@@ -1583,6 +1583,88 @@ fn wt_rm_finds_force_anywhere_in_the_arguments() {
 }
 
 #[test]
+fn wt_prune_lists_then_removes_only_empty_clean_unnamed_branches() {
+    let r = Repo::new("wt-prune");
+    std::fs::write(r.main.join(".gitignore"), ".env\ntarget\n").unwrap();
+    r.git(&r.main, &["add", ".gitignore"]);
+    r.git(&r.main, &["commit", "-qm", "ignore"]);
+    // Empty and clean: removable, worktree or not, stacked or not.
+    r.ok(&r.main, &["wt", "new", "t/empty"]);
+    r.ok(&r.main, &["wt", "new", "t/stacked", "--from", "t/empty"]);
+    r.git(&r.main, &["branch", "t/bare"]);
+    // Kept: a commit past its parent; a task naming it; uncommitted or ignored files.
+    r.ok(&r.main, &["wt", "new", "t/work"]);
+    r.commit_in(&r.wt("t/work"), "x", "x\n");
+    r.ok(&r.main, &["add", "named", "branch:t/named"]);
+    r.ok(&r.main, &["wt", "new", "t/named"]);
+    r.ok(&r.main, &["wt", "new", "t/dirty"]);
+    std::fs::write(r.wt("t/dirty").join("scratch"), "s\n").unwrap();
+    r.ok(&r.main, &["wt", "new", "t/ignored"]);
+    std::fs::write(r.wt("t/ignored").join(".env"), "SECRET=1\n").unwrap();
+    r.ok(&r.main, &["wt", "new", "t/disposable"]);
+    std::fs::create_dir_all(r.wt("t/disposable").join("target")).unwrap();
+    std::fs::write(r.wt("t/disposable").join("target/o"), "o\n").unwrap();
+    r.ok(&r.main, &["wt", "new", "t/perennial"]);
+    r.git(
+        &r.main,
+        &[
+            "config",
+            "git-town-branch.t/perennial.branchtype",
+            "perennial",
+        ],
+    );
+
+    let empty_wt = r.wt("t/empty");
+    let dry = r.ok(&r.main, &["wt", "prune"]);
+    for b in ["t/empty", "t/stacked", "t/bare", "t/disposable"] {
+        assert!(dry.contains(&format!("remove {b}")), "{b}: {dry}");
+    }
+    assert!(
+        dry.contains("kept t/dirty") && dry.contains("kept t/ignored"),
+        "{dry}"
+    );
+    assert!(dry.contains(".env"), "{dry}");
+    for b in ["t/work", "t/named", "t/perennial", "main"] {
+        assert!(!dry.contains(&format!(" {b}")), "{b}: {dry}");
+    }
+    assert!(dry.contains("--yes"), "{dry}");
+    // A dry run touches nothing.
+    assert!(empty_wt.exists());
+    r.git(&r.main, &["rev-parse", "--verify", "t/bare"]);
+
+    assert!(
+        r.fails(&r.main, &["wt", "prune", "--yse"])
+            .contains("unknown flag")
+    );
+
+    let out = r.ok(&r.main, &["wt", "prune", "--yes"]);
+    assert!(out.contains("removed"), "{out}");
+    assert!(!empty_wt.exists());
+    let branches = r.git(&r.main, &["branch", "--format=%(refname:short)"]);
+    for b in ["t/empty", "t/stacked", "t/bare", "t/disposable"] {
+        assert!(!branches.lines().any(|l| l == b), "{b}: {branches}");
+        assert!(
+            r.git(&r.main, &["config", "--get-regexp", "git-town-branch"])
+                .lines()
+                .all(|l| !l.starts_with(&format!("git-town-branch.{b}."))),
+            "{b}"
+        );
+    }
+    for b in [
+        "main",
+        "t/work",
+        "t/named",
+        "t/dirty",
+        "t/ignored",
+        "t/perennial",
+    ] {
+        assert!(branches.lines().any(|l| l == b), "{b}: {branches}");
+    }
+    assert!(r.wt("t/ignored").join(".env").exists());
+    assert!(r.main.join(".gitignore").exists());
+}
+
+#[test]
 fn doctor_names_a_trunk_copy_of_a_branch_and_discard_copy_takes_only_an_exact_one() {
     let r = Repo::new("copy");
     r.ok(&r.main, &["wt", "new", "a/x"]);

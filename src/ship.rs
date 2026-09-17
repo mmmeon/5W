@@ -359,7 +359,7 @@ fn compose(p: &std::path::Path, base: &str, tip: &str) -> Res<String> {
 
 /// Gitignored files in a worktree that removing it would delete: not the
 /// symlinks `wt` made, not anything under a `worktrees.disposable` name.
-fn ignored_files(repo: &Repo, w: &std::path::Path) -> Res<Vec<String>> {
+pub fn ignored_files(repo: &Repo, w: &std::path::Path) -> Res<Vec<String>> {
     let out = git::git(
         w,
         &[

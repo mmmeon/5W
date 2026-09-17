@@ -21,6 +21,8 @@ usage: 5w wt <command> [args]
   ls                          Worktrees with their parent branch
   path <branch>               Print the worktree path: cd \"$(5w wt path <branch>)\"
   rm <branch> [--force]       Remove the worktree; the branch is kept
+  prune [--yes]               List branches with no commits past their parent, no task naming
+                              them and a clean worktree (or none); --yes removes both
   link [<path>]               Re-link gitignored artifacts (default: cwd)
   install [<path>]            Run the configured install command
   setup                       Configure git (and git-town, if present). Idempotent
@@ -62,6 +64,14 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             }
             remove(repo, branch.ok_or(usage)?, force)
         }
+        "prune" => match rest {
+            [] => prune(repo, false),
+            [y] if y == "--yes" => prune(repo, true),
+            [f, ..] if f.starts_with("--") && f != "--yes" => {
+                bail!("unknown flag {f} (usage: 5w wt prune [--yes])")
+            }
+            _ => bail!("usage: 5w wt prune [--yes]"),
+        },
         "link" => link(repo, &target(repo, rest)?).map(|_| ()),
         "install" => install(repo, &target(repo, rest)?),
         "setup" => setup(repo),
@@ -199,13 +209,20 @@ pub fn add_worktree(repo: &Repo, branch: &str, do_install: bool) -> Res<()> {
     Ok(())
 }
 
-fn ls(repo: &Repo) -> Res<()> {
+fn tilde(path: &Path) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    for w in git::worktrees(&repo.primary)? {
-        let mut p = w.path.display().to_string();
-        if !home.is_empty() && p.starts_with(&home) {
-            p = format!("~{}", &p[home.len()..]);
+    let p = path.display().to_string();
+    match p.strip_prefix(&home) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => {
+            format!("~{rest}")
         }
+        _ => p,
+    }
+}
+
+fn ls(repo: &Repo) -> Res<()> {
+    for w in git::worktrees(&repo.primary)? {
+        let p = tilde(&w.path);
         match &w.branch {
             Some(b) => {
                 let parent = git::parent_of(&repo.primary, b).unwrap_or("-".into());
@@ -214,6 +231,179 @@ fn ls(repo: &Repo) -> Res<()> {
             None => println!("{:<32} {p}", "(detached)"),
         }
     }
+    Ok(())
+}
+
+/// Branches safe to drop: no commits past the recorded parent (else the trunk), no
+/// task in the queue or archive naming them, not the trunk or perennial, not checked
+/// out in the primary, and a worktree — if any — clean, unlocked and without
+/// ignored files ship would refuse to delete. Every candidate is checked before
+/// anything is removed; a refusal on one removes none.
+fn prune(repo: &Repo, yes: bool) -> Res<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let p = &repo.primary;
+    let mut named = BTreeSet::new();
+    for text in [
+        repo.load()?,
+        repo.committed()?.unwrap_or_default(),
+        repo.load_archive()?,
+        repo.committed_file(&repo.cfg.archive)?.unwrap_or_default(),
+    ] {
+        named.extend(
+            crate::queue::parse(&text)
+                .into_iter()
+                .filter_map(|t| t.branch),
+        );
+    }
+    let wts = git::worktrees(p)?;
+    let primary = fs::canonicalize(p).unwrap_or(p.clone());
+    let cwd = fs::canonicalize(&repo.cwd).unwrap_or(repo.cwd.clone());
+    let branches: Vec<String> =
+        git::git(p, &["for-each-ref", "--format=%(refname)", "refs/heads"])?
+            .lines()
+            .filter_map(|r| r.strip_prefix("refs/heads/"))
+            .map(String::from)
+            .collect();
+    let parents: BTreeMap<&str, String> = branches
+        .iter()
+        .map(|b| {
+            (
+                b.as_str(),
+                git::parent_of(p, b).unwrap_or(repo.trunk.clone()),
+            )
+        })
+        .collect();
+
+    // (branch, tip, worktree) that may go; (branch, reason) that could but may not.
+    let mut go: Vec<(String, String, Option<PathBuf>)> = Vec::new();
+    let mut kept: Vec<(String, String)> = Vec::new();
+    for b in &branches {
+        let parent = &parents[b.as_str()];
+        if *b == repo.trunk
+            || repo.is_perennial(b)
+            || named.contains(b)
+            || parent == b
+            || !git::branch_exists(p, parent)
+        {
+            continue;
+        }
+        let Some(tip) = git::rev(p, &format!("refs/heads/{b}")) else {
+            continue;
+        };
+        let range = format!("refs/heads/{parent}..refs/heads/{b}");
+        if git::opt(p, &["rev-list", "--count", &range]).as_deref() != Some("0") {
+            continue;
+        }
+        let Some(w) = wts.iter().find(|w| w.branch.as_deref() == Some(b)) else {
+            go.push((b.clone(), tip, None));
+            continue;
+        };
+        let dir = fs::canonicalize(&w.path).unwrap_or(w.path.clone());
+        if dir == primary {
+            continue;
+        }
+        let why = if w.held {
+            "worktree is locked or missing — `git worktree list`".to_string()
+        } else if cwd.starts_with(&dir) {
+            "you are in its worktree — run from elsewhere".to_string()
+        } else if git::dirty(&w.path).unwrap_or(true) {
+            format!("uncommitted or untracked files in {}", tilde(&w.path))
+        } else {
+            match crate::ship::ignored_files(repo, &w.path) {
+                Err(e) => e,
+                Ok(f) if f.is_empty() => String::new(),
+                Ok(f) => format!(
+                    "ignored files: {}{} — move them or add to worktrees.disposable",
+                    f.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
+                    if f.len() > 5 {
+                        format!(" (+{} more)", f.len() - 5)
+                    } else {
+                        String::new()
+                    }
+                ),
+            }
+        };
+        if why.is_empty() {
+            go.push((b.clone(), tip, Some(w.path.clone())));
+        } else {
+            kept.push((b.clone(), why));
+        }
+    }
+    // A branch stays while a branch that stays records it as parent.
+    loop {
+        let going: BTreeSet<&str> = go.iter().map(|g| g.0.as_str()).collect();
+        let child = |b: &str| {
+            parents
+                .iter()
+                .find(|(c, par)| par.as_str() == b && !going.contains(*c))
+                .map(|(c, _)| c.to_string())
+        };
+        let Some(i) = go.iter().position(|g| child(&g.0).is_some()) else {
+            break;
+        };
+        let c = child(&go[i].0).unwrap_or_default();
+        let (b, _, _) = go.remove(i);
+        kept.push((b, format!("parent of {c}")));
+    }
+    kept.sort();
+    // Children before their parents, so a stopped run never leaves a branch whose
+    // recorded parent is gone.
+    let mut ordered = Vec::with_capacity(go.len());
+    while !go.is_empty() {
+        let i = (0..go.len())
+            .find(|&i| !go.iter().any(|g| parents[g.0.as_str()] == go[i].0))
+            .unwrap_or(0);
+        ordered.push(go.remove(i));
+    }
+    let go = ordered;
+
+    let at = |w: &Option<PathBuf>| w.as_deref().map(tilde).unwrap_or("(no worktree)".into());
+    if !yes {
+        for (b, _, w) in &go {
+            println!("remove {b} {}", at(w));
+        }
+    }
+    for (b, why) in &kept {
+        println!("kept {b} — {why}");
+    }
+    if go.is_empty() {
+        println!("wt prune: nothing to remove");
+        return Ok(());
+    }
+    if !yes {
+        println!(
+            "wt prune: {} to remove — `5w wt prune --yes` removes them",
+            go.len()
+        );
+        return Ok(());
+    }
+    for (b, tip, w) in &go {
+        if let Some(dir) = w {
+            // Checked again at the moment of removal: git refuses a dirty worktree.
+            if git::dirty(dir)? {
+                bail!(
+                    "{} changed since it was checked; stopped before {b}",
+                    dir.display()
+                );
+            }
+            unlink(repo, dir)?;
+            git::git(p, &["worktree", "remove", &dir.to_string_lossy()])?;
+        }
+        // Deleted only if the branch still points where it was checked.
+        git::git(p, &["update-ref", "-d", &format!("refs/heads/{b}"), tip])?;
+        let _ = git::raw(
+            p,
+            &[
+                "config",
+                "--remove-section",
+                &format!("git-town-branch.{b}"),
+            ],
+            &[],
+            None,
+        );
+        println!("removed {b} {}", at(w));
+    }
+    println!("wt prune: removed {} branch(es)", go.len());
     Ok(())
 }
 
@@ -317,7 +507,7 @@ pub fn link(repo: &Repo, dest: &Path) -> Res<usize> {
 }
 
 /// Remove only the links that point into the primary — never anything real.
-fn unlink(repo: &Repo, dest: &Path) -> Res<()> {
+fn unlink(repo: &Repo, dest: &Path) -> Res<usize> {
     let mut n = 0;
     for pat in patterns(repo) {
         for rel in expand(&repo.primary, &pat) {
@@ -328,10 +518,7 @@ fn unlink(repo: &Repo, dest: &Path) -> Res<()> {
             }
         }
     }
-    if n > 0 {
-        println!("wt: unlinked {n} artifact(s)");
-    }
-    Ok(())
+    Ok(n)
 }
 
 pub fn install(repo: &Repo, dest: &Path) -> Res<()> {
@@ -401,7 +588,10 @@ pub fn remove(repo: &Repo, branch: &str, force: bool) -> Res<()> {
             dir.display()
         );
     }
-    unlink(repo, &dir)?;
+    let n = unlink(repo, &dir)?;
+    if n > 0 {
+        println!("wt: unlinked {n} artifact(s)");
+    }
     let d = dir.to_string_lossy();
     let mut args = vec!["worktree", "remove"];
     if force {
