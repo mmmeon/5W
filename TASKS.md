@@ -31,6 +31,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   After a break that renames a queue name in place (#106), the pre-commit hook (lint --staged / staged_repair) refuses the only repair that lands — a staged .5w.toml restoring the trunk's last accepted file/archive/commit_prefix — with "a commit repairing main's .5w.toml keeps file = …", gated or not, forcing --no-verify. Accept such a restore when the trunk has no file under the broken config's name and has one under the last accepted name; then drop --no-verify from #106's refusal text. Found in review of #106.
 - [ ] #109 An archive renamed in place by a broken config is silently read as empty
   load_archive reads a missing archive file as empty. When a broken trunk config renames the archive in place (the old archive file still exists under its last accepted name), accepted and closed tasks silently drop out of ship and audit. Refuse (or at least note) with the same unmoved-name message #106 gives for the queue file. Found in review of #106.
+- [ ] #110 The uncommitted-config note prints after wt has already run the committed install command
+  wt new --install / wt install run worktrees.install from the committed trunk config (#107), but the "uncommitted edits" note prints only after the command has run, so an operator who removed or changed the install command in an uncommitted edit learns it ran the committed one too late. Print the note before running the install command (and before other side effects in wt). Also the note text says "queue commands read the committed one" even for wt/ship; word it for all commands. Found in review of #107.
 
 ## Done
 
