@@ -205,10 +205,14 @@ added at the reviewed commit — whitespace, modes and bytes included, only blob
 numbers normalised away, and read with plumbing and every diff setting pinned, so a textconv
 driver, a `-diff` attribute, `diff.context` or `diff.ignoreSubmodules` cannot hide a change. Not
 `git patch-id`, which ignores whitespace and would pass an indentation change made after review. A
-line number gives way to which copy of the hunk's lines it applies to: in a file that holds the same
+line number gives way to a position among identical copies: how many copies of the hunk's lines (its
+context and removed lines) start above it in the file it applies to. In a file that holds the same
 lines twice, the reviewed hunk moved to the other copy is a different change, while a rebase that
-only shifts lines keeps it. A clean rebase passes. A commit added after review, or a rebase that
-changed the lines next to the change or added another copy of them above it, does not, and a refused `--sync` puts the branch
+only shifts lines keeps it. The count is taken in each diff's own pre-image, so it pins the copy's
+number, not the block: when the trunk has since added a copy above, the change in the same-numbered
+copy — which may be the new one, where `git rebase` can put it — still reads as the reviewed one.
+A clean rebase passes. A commit added after review, or a rebase that changed the lines next to the
+change, does not, and a refused `--sync` puts the branch
 back where it was. The check runs before anything rewrites the branch, and again after the rebase. A
 stacked branch was reviewed on top of its parent; once the parent has landed, the change compared is
 what the branch added on top of the parent's reviewed commit — allowed only when that parent's

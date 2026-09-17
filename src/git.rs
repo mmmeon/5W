@@ -1,4 +1,5 @@
 use crate::util::Res;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -405,11 +406,12 @@ pub fn dirty(dir: &Path) -> Res<bool> {
 ///
 /// A line number is replaced, not just dropped: a file can hold the lines a hunk
 /// replaces (its context and removed lines) more than once, and the same hunk
-/// applied at another copy is another change. The header keeps which copy — how
-/// many times those lines start earlier in the file it applies to — which a
-/// rebase changes only when the trunk added another copy above, and then it asks
-/// for a fresh look. The first copy, the usual case, adds nothing, so ids stay
-/// as they were.
+/// applied at another copy is another change. The header keeps which copy it
+/// applies to, counted from the top of the file it applies to (`copies_above`).
+/// That is a position among identical copies, not an identity for a block: after
+/// the trunk adds a copy above, the change in the same numbered copy — which
+/// `git rebase` may well produce — still reads as the reviewed one. The first
+/// copy, the usual case, adds nothing, so ids stay as they were.
 ///
 /// The diff is `diff-tree`, plumbing, with every setting a repository's config,
 /// attributes or environment could use to change its output pinned: a textconv
@@ -427,30 +429,67 @@ pub fn change_id(dir: &Path, base: &str, tip: &str) -> Res<String> {
         return Err(format!("git diff-tree {mb} {tip}: {}", stderr.trim()));
     }
     let lines: Vec<&[u8]> = diff.split_inclusive(|b| *b == b'\n').collect();
-    // `index <old>..<new>[ <mode>]`: the blob each file's hunks apply to.
-    let old_of = |l: &[u8]| -> Option<String> {
-        let rest = std::str::from_utf8(l.strip_prefix(b"index ")?).ok()?;
-        Some(rest.split("..").next()?.to_string())
-    };
-    let olds: Vec<String> = lines.iter().filter_map(|l| old_of(l)).collect();
-    let blobs = blobs(dir, &olds)?;
-    let mut old: Option<&[u8]> = None;
-    let mut norm = Vec::with_capacity(diff.len());
-    for line in lines {
+    let bad = || format!("git diff-tree {mb} {tip}: a hunk outside its file");
+
+    // Each file's pre-image blob, from `index <old>..<new>[ <mode>]`, and its
+    // hunks as (line in the diff, first pre-image line, pre-image length). A
+    // gitlink's hunk is a `Subproject commit` line and a new file's is empty:
+    // neither has a blob to count copies in.
+    struct File {
+        old: Option<String>,
+        hunks: Vec<(usize, usize, usize)>,
+    }
+    let mut files: Vec<File> = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
         if line.starts_with(b"diff --git ") {
-            old = None;
+            files.push(File {
+                old: None,
+                hunks: Vec::new(),
+            });
+        } else if let Some(rest) = line.strip_prefix(b"index ")
+            && let Some(f) = files.last_mut()
+        {
+            let rest = String::from_utf8_lossy(rest);
+            let rest = rest.trim_end();
+            if !rest.ends_with(" 160000") {
+                f.old = rest.split("..").next().map(String::from);
+            }
+        } else if line.starts_with(b"@@ -")
+            && let Some(f) = files.last_mut()
+        {
+            let (start, len) = old_range(line).ok_or_else(bad)?;
+            if len > 0 {
+                f.hunks.push((n, start, len));
+            }
         }
+    }
+    let mut wanted: Vec<String> = files
+        .iter()
+        .filter(|f| !f.hunks.is_empty())
+        .filter_map(|f| f.old.clone())
+        .collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    let blobs = blobs(dir, &wanted)?;
+    let mut copies: HashMap<usize, usize> = HashMap::new();
+    for f in files.iter().filter(|f| !f.hunks.is_empty()) {
+        let Some(old) = &f.old else { continue };
+        let blob = blobs
+            .get(old)
+            .ok_or_else(|| format!("blob {old} missing: fetch full history"))?;
+        copies.extend(copies_above(blob, &f.hunks).ok_or_else(bad)?);
+    }
+
+    let mut norm = Vec::with_capacity(diff.len());
+    for (n, line) in lines.iter().enumerate() {
         if line.starts_with(b"index ") {
-            old = old_of(line).and_then(|o| blobs.get(&o)).map(Vec::as_slice);
             continue;
         }
         if line.starts_with(b"@@ -")
             && let Some(end) = find(&line[3..], b" @@")
         {
             norm.extend_from_slice(b"@@");
-            let k = copies_above(old, &line[4..3 + end])
-                .ok_or_else(|| format!("git diff-tree {mb} {tip}: a hunk outside its file"))?;
-            if k > 0 {
+            if let Some(k) = copies.get(&n).filter(|k| **k > 0) {
                 norm.extend_from_slice(format!("#{k}").as_bytes());
             }
             norm.extend_from_slice(&line[3 + end + 3..]);
@@ -466,30 +505,91 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// For a hunk header's `<old range> +<new range>`: how many times the lines the
-/// hunk replaces start earlier in `old`, the file it applies to. None when the
-/// range is not in the file. A gitlink's or a new file's has no blob: 0.
-fn copies_above(old: Option<&[u8]>, ranges: &[u8]) -> Option<usize> {
-    let range = std::str::from_utf8(ranges).ok()?.split(' ').next()?;
-    let (start, len) = match range.split_once(',') {
-        Some((s, n)) => (s.parse::<usize>().ok()?, n.parse::<usize>().ok()?),
-        None => (range.parse::<usize>().ok()?, 1),
-    };
-    let Some(old) = old.filter(|_| len > 0) else {
-        return Some(0);
-    };
-    let mut lines: Vec<&[u8]> = old.split(|b| *b == b'\n').collect();
-    if old.ends_with(b"\n") {
-        lines.pop();
+/// A hunk header's pre-image range: `@@ -<start>[,<len>] +...`.
+fn old_range(header: &[u8]) -> Option<(usize, usize)> {
+    let range = std::str::from_utf8(header.get(4..)?)
+        .ok()?
+        .split(' ')
+        .next()?;
+    Some(match range.split_once(',') {
+        Some((s, n)) => (s.parse().ok()?, n.parse().ok()?),
+        None => (range.parse().ok()?, 1),
+    })
+}
+
+/// For each hunk of the file `old`, as (line in the diff, first line, length):
+/// how many times the lines it replaces start earlier in `old`, as (line in the
+/// diff, count). None when a hunk is not inside the file.
+///
+/// Linear in the file for each distinct hunk length, not for each hunk: lines
+/// are numbered by content, windows of 2^j lines by the numbers of their two
+/// halves (doubling), a window of any length by the two overlapping power-of-two
+/// windows that cover it, and one pass per length counts the windows the hunks
+/// ask about. Exact: no hash of content stands in for the content.
+fn copies_above(old: &[u8], hunks: &[(usize, usize, usize)]) -> Option<Vec<(usize, usize)>> {
+    let mut text: Vec<&[u8]> = old.split(|b| *b == b'\n').collect();
+    if old.ends_with(b"\n") || old.is_empty() {
+        text.pop();
     }
-    let at = start.checked_sub(1)?;
-    let hunk = lines.get(at..at + len)?;
-    Some((0..at).filter(|&i| lines[i..i + len] == *hunk).count())
+    let n = text.len();
+    let mut at = Vec::with_capacity(hunks.len());
+    for &(line, start, len) in hunks {
+        let a = start.checked_sub(1)?;
+        if a + len > n {
+            return None;
+        }
+        at.push((a, line, len));
+    }
+    let longest = at.iter().map(|h| h.2).max().unwrap_or(0);
+    // classes[j][i]: the number of the 2^j lines from line i.
+    let mut ids: HashMap<&[u8], u32> = HashMap::new();
+    let lines: Vec<u32> = text
+        .iter()
+        .map(|l| {
+            let next = ids.len() as u32;
+            *ids.entry(l).or_insert(next)
+        })
+        .collect();
+    let mut classes = vec![lines];
+    let mut width = 1;
+    while width * 2 <= longest {
+        let prev = &classes[classes.len() - 1];
+        let mut pairs: HashMap<(u32, u32), u32> = HashMap::new();
+        let level: Vec<u32> = (0..=n - width * 2)
+            .map(|i| {
+                let next = pairs.len() as u32;
+                *pairs.entry((prev[i], prev[i + width])).or_insert(next)
+            })
+            .collect();
+        classes.push(level);
+        width *= 2;
+    }
+    let class = |a: usize, len: usize| {
+        let j = (usize::BITS - 1 - len.leading_zeros()) as usize;
+        (classes[j][a], classes[j][a + len - (1 << j)])
+    };
+    at.sort_unstable_by_key(|h| (h.2, h.0));
+    let mut out = Vec::with_capacity(at.len());
+    for group in at.chunk_by(|x, y| x.2 == y.2) {
+        let len = group[0].2;
+        let mut seen: HashMap<(u32, u32), usize> =
+            group.iter().map(|h| (class(h.0, len), 0)).collect();
+        let mut asks = group.iter().peekable();
+        for i in 0..=n - len {
+            while let Some((_, line, _)) = asks.next_if(|h| h.0 == i) {
+                out.push((*line, seen[&class(i, len)]));
+            }
+            if let Some(count) = seen.get_mut(&class(i, len)) {
+                *count += 1;
+            }
+        }
+    }
+    Some(out)
 }
 
 /// The content of each named object that is a blob, read in one call.
-fn blobs(dir: &Path, names: &[String]) -> Res<std::collections::HashMap<String, Vec<u8>>> {
-    let mut found = std::collections::HashMap::new();
+fn blobs(dir: &Path, names: &[String]) -> Res<HashMap<String, Vec<u8>>> {
+    let mut found = HashMap::new();
     if names.is_empty() {
         return Ok(found);
     }
