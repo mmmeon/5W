@@ -338,6 +338,146 @@ fn accept_takes_several_ids_one_commit_each_and_stops_at_a_refusal() {
     r.lint_history();
 }
 
+impl Repo {
+    /// `5w batch` with `input` on stdin: (succeeded, stdout and stderr).
+    fn batch(&self, input: &str) -> (bool, String) {
+        use std::io::Write;
+        let mut c = Command::new(bin5w());
+        c.arg("batch")
+            .current_dir(&self.main)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        env(&mut c, &self.root);
+        let mut child = c.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let o = child.wait_with_output().unwrap();
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        (o.status.success(), out)
+    }
+}
+
+#[test]
+fn batch_commits_every_edit_in_one_commit_that_lint_and_audit_read() {
+    let r = Repo::new("batch");
+    for (n, b) in [(1, "a/one"), (2, "a/two"), (3, "a/three")] {
+        r.ok(&r.main, &["add", &format!("task {n}")]);
+        r.ok(&r.main, &["wt", "new", b]);
+        let wt = r.wt(b);
+        r.commit_in(&wt, "f", &format!("{n}\n"));
+        r.ok(&wt, &["submit", &n.to_string()]);
+    }
+    let before = r.git(&r.main, &["rev-parse", "main"]);
+    let (ok, out) = r.batch(
+        "accept 1\n\naccept '#2'\nreject 3 'the \"why\" goes' here\nadd \"from a batch, with a comma\" area:core\n",
+    );
+    assert!(ok, "{out}");
+    // One commit on top of the trunk, naming every edit; the body keeps each message.
+    assert_eq!(r.git(&r.main, &["rev-parse", "main~1"]), before);
+    assert_eq!(
+        r.git(&r.main, &["log", "-1", "--format=%s", "main"]),
+        "chore(tasks): accept #1, accept #2, reject #3, add #4"
+    );
+    let body = r.git(&r.main, &["log", "-1", "--format=%b", "main"]);
+    assert!(
+        body.contains("chore(tasks): accept #1\n")
+            && body.contains("chore(tasks): reject #3\n")
+            && body.contains("chore(tasks): add #4 — from a batch, with a comma"),
+        "{body}"
+    );
+    assert!(r.line(1).starts_with("- [x] #1") && r.line(1).contains("reviewed:"));
+    assert!(r.line(2).starts_with("- [x] #2"));
+    assert!(
+        r.line(3).starts_with("- [ ] #3")
+            && r.line(3).contains("rework:\"the \\\"why\\\" goes here\"")
+    );
+    assert!(
+        r.line(4)
+            .starts_with("- [ ] #4 from a batch, with a comma @core")
+    );
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    r.lint_history();
+
+    // Audit counts each edit, and knows the commit as 5w's.
+    let out = r.ok(&r.main, &["audit"]);
+    assert!(out.contains("review 2 accepted"), "{out}");
+    assert!(out.contains("rework 1 rejections"), "{out}");
+    assert!(out.contains("outside 0 queue commits"), "{out}");
+}
+
+#[test]
+fn a_refusal_anywhere_in_a_batch_commits_nothing() {
+    let r = Repo::new("batch-refused");
+    for (n, b) in [(1, "a/one"), (2, "a/two")] {
+        r.ok(&r.main, &["add", &format!("task {n}")]);
+        r.ok(&r.main, &["wt", "new", b]);
+        let wt = r.wt(b);
+        r.commit_in(&wt, "f", &format!("{n}\n"));
+    }
+    r.ok(&r.main, &["submit", "1", "a/one"]);
+    let (tip, tasks) = (r.git(&r.main, &["rev-parse", "main"]), r.tasks());
+    let untouched = |out: &str| {
+        assert_eq!(r.git(&r.main, &["rev-parse", "main"]), tip, "{out}");
+        assert_eq!(r.tasks(), tasks, "{out}");
+        assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "", "{out}");
+    };
+    // #2 was never submitted: the accept of #1 before it is not committed either.
+    let (ok, out) = r.batch("accept 1\nadd \"new\"\naccept 2\n");
+    assert!(
+        !ok && out.contains("batch line 3: #2 was never submitted"),
+        "{out}"
+    );
+    assert!(out.contains("nothing committed"), "{out}");
+    untouched(&out);
+    // An edit of a row an earlier line already closed is checked against that line.
+    let (ok, out) = r.batch("accept 1\naccept 1\n");
+    assert!(
+        !ok && out.contains("batch line 2: #1 is already closed"),
+        "{out}"
+    );
+    untouched(&out);
+    // A row takes one edit per batch: lint reads a commit row by row, and
+    // submit-then-accept in one commit would read as accepted, never submitted.
+    r.ok(&r.main, &["wt", "new", "a/three"]);
+    r.commit_in(&r.wt("a/three"), "g", "3\n");
+    r.ok(&r.main, &["add", "task 3"]);
+    let (tip, tasks) = (r.git(&r.main, &["rev-parse", "main"]), r.tasks());
+    let untouched = |out: &str| {
+        assert_eq!(r.git(&r.main, &["rev-parse", "main"]), tip, "{out}");
+        assert_eq!(r.tasks(), tasks, "{out}");
+        assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "", "{out}");
+    };
+    let (ok, out) = r.batch("submit 3 a/three\naccept 3\n");
+    assert!(
+        !ok && out.contains("batch line 2: #3 is already edited in this batch"),
+        "{out}"
+    );
+    untouched(&out);
+    // Several ids on one line refuse as one edit each, with nothing tallied.
+    let (ok, out) = r.batch("accept 1 2\n");
+    assert!(!ok && !out.contains("accepted #1"), "{out}");
+    untouched(&out);
+    for (input, want) in [
+        ("ship a/one\n", "batch line 1: ship is not a batch edit"),
+        ("accept 1\nadd \"open\n", "batch line 2: unclosed \""),
+        ("add x --body -\n", "give --body its text inline"),
+        ("\n", "usage: 5w batch"),
+    ] {
+        let (ok, out) = r.batch(input);
+        assert!(!ok && out.contains(want), "{input:?}: {out}");
+        untouched(&out);
+    }
+}
+
 #[test]
 fn review_json_is_one_object_per_submitted_task() {
     let r = Repo::new("reviewjson");
@@ -1798,6 +1938,15 @@ fn lint_flags_rework_gained_outside_a_reject() {
     hand_edit(&r, "- [ ] #3 third", "- [ ] #3 third rework:\"old\"");
     r.git(&r.main, &["commit", "-qm", "chore(tasks): reject #3"]);
     r.lint_history();
+    // So does a batch commit whose subject names that reject among its edits.
+    r.ok(&r.main, &["add", "fifth"]);
+    hand_edit(&r, "- [ ] #4 fifth", "- [ ] #4 fifth rework:\"old\"");
+    r.git(
+        &r.main,
+        &["commit", "-qm", "chore(tasks): add #9, reject #4"],
+    );
+    r.lint_history();
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~2"]);
     // The same edit under any other message is a hand edit, and a range names it.
     r.ok(&r.main, &["add", "fourth"]);
     hand_edit(&r, "- [ ] #4 fourth", "- [ ] #4 fourth rework:\"old\"");

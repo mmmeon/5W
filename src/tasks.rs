@@ -32,6 +32,7 @@ write (each commits itself to the trunk, and only itself)
   open <id>
   archive                 move closed tasks to the archive file
   split [--all]           shorten over-long titles into title + body
+  batch                   write commands from stdin, one per line: one commit, or none if any refuses
 
 protocol (PROTOCOL.md — the rules, for editing without the tool)
   lint [--staged | <rev> | <a>..<b>]   check queue edits follow it
@@ -472,7 +473,9 @@ fn flags_of(cmd: &str) -> Option<&'static [&'static str]> {
         "show" => &["--json"],
         "review" => &["--checklist", "--json", "--ids", "--full"],
         "split" => &["--all"],
-        "delegate" | "branch" | "doctor" | "levels" | "archive" | "open" | "reopen" => &[],
+        "delegate" | "branch" | "doctor" | "levels" | "archive" | "open" | "reopen" | "batch" => {
+            &[]
+        }
         _ => return None,
     })
 }
@@ -515,6 +518,7 @@ pub fn run(repo: &Repo, cmd: &str, args: &[String]) -> Res<()> {
         "open" | "reopen" => reopen(repo, arg(args, 0, "open <id>")?),
         "archive" => archive(repo),
         "split" => split(repo, args),
+        "batch" => batch(repo, args),
         _ => bail!("unknown command: {cmd} (5w help)"),
     }
 }
@@ -1462,7 +1466,8 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
     let mut accepted: Vec<u64> = Vec::new();
     for (n, &id) in ids.iter().enumerate() {
         if let Err(e) = accept_one(repo, id, at.as_deref(), force) {
-            if ids.len() == 1 {
+            // In a batch nothing is committed, so there is nothing to tally.
+            if ids.len() == 1 || store::batching() {
                 return Err(e);
             }
             let done = match accepted.is_empty() {
@@ -1803,4 +1808,92 @@ fn split(repo: &Repo, args: &[String]) -> Res<()> {
     )?;
     println!("  split {} titles", ids.len());
     Ok(())
+}
+
+/// The write commands `batch` takes: the ones that edit named rows.
+const BATCH_COMMANDS: &[&str] = &[
+    "add", "set", "submit", "accept", "reject", "done", "open", "reopen",
+];
+
+/// Several queue edits in one commit — one signature for a round of review.
+/// Each stdin line is a write command as it would follow `5w`; each runs with
+/// every check it has alone, under one lock held for the whole batch and
+/// against the queue as the trunk and the lines before it leave it. The first
+/// refusal ends the batch with nothing committed.
+fn batch(repo: &Repo, args: &[String]) -> Res<()> {
+    let usage = "usage: 5w batch < edits (one write command per line, e.g. `accept 4`)";
+    if !args.is_empty() {
+        bail!("{usage}");
+    }
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|e| e.to_string())?;
+    let mut lines = Vec::new();
+    for (n, l) in input.lines().enumerate() {
+        let at = n + 1;
+        let words = split_words(l).map_err(|e| format!("batch line {at}: {e}"))?;
+        let Some(cmd) = words.first() else { continue };
+        if !BATCH_COMMANDS.contains(&cmd.as_str()) {
+            bail!(
+                "batch line {at}: {cmd} is not a batch edit (takes {})",
+                BATCH_COMMANDS.join(" ")
+            );
+        }
+        if words.windows(2).any(|w| w[0] == "--body" && w[1] == "-") {
+            bail!("batch line {at}: stdin holds the batch; give --body its text inline");
+        }
+        lines.push((at, words));
+    }
+    if lines.is_empty() {
+        bail!("{usage}");
+    }
+    store::batch(repo, || {
+        for (at, words) in &lines {
+            run(repo, &words[0], &words[1..])
+                .map_err(|e| format!("batch line {at}: {e}; nothing committed"))?;
+        }
+        Ok(())
+    })
+}
+
+/// A line split into words as a shell would for these commands: whitespace
+/// separates, '…' and "…" quote, and a backslash escapes the next character
+/// (outside single quotes).
+fn split_words(line: &str) -> Res<Vec<String>> {
+    let mut words = Vec::new();
+    let (mut word, mut started) = (String::new(), false);
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"') | None, '\\') => {
+                word.push(chars.next().ok_or("a trailing \\ escapes nothing")?);
+                started = true;
+            }
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if let Some(q) = quote {
+        bail!("unclosed {q}");
+    }
+    if started {
+        words.push(word);
+    }
+    Ok(words)
 }

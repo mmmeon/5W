@@ -93,6 +93,26 @@ each exactly as `ship <branch>` would, and stops at the first refusal with the b
 and what already landed. It takes `--sync`, `--squash` and `--discard-ignored` for every branch;
 not `-m` or `--force`, which belong to one branch.
 
+Where every commit is signed with a hardware key, a commit per edit is a touch per edit. `5w batch`
+reads write commands from stdin, one per line as they would follow `5w`, and commits them as one:
+
+```bash
+5w batch <<'EOF'
+accept 14
+accept 15
+reject 16 'the parser drops the | case'
+add "follow-up: cover the | case" area:faces
+EOF
+```
+
+Each line runs with every check it has alone, under one lock held for the whole batch, against the
+queue as the trunk and the lines before it leave it; the first refusal names its line and nothing is
+committed or written. `add`, `set`, `submit`, `accept`, `reject`, `done` and `open` are taken, and
+each row once per batch — a commit is linted row by row, and submit-then-accept in one commit would
+read as accepted, never submitted. The subject names every edit (`chore(tasks): accept #14, accept
+#15, reject #16, add #17`), the body holds each edit's own message, and `lint` and `audit` read it
+as that many edits. A batch of one commits under its edit's own message.
+
 Ids need no quoting: `14` and `'#14'` are the same. Filters and fields have shell-safe spellings —
 `lane:owner` for `'>owner'`, `level:3` for `'!3'`, `area:x` for `@x` — because an unquoted `>agent`
 is a redirect that silently creates a file called `agent`.

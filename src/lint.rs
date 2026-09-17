@@ -292,12 +292,33 @@ fn fields(t: &Task) -> String {
     )
 }
 
+/// The verbs a queue commit's subject uses for an edit of one row.
+const VERBS: &[&str] = &[
+    "add", "set", "submit", "accept", "reject", "close", "reopen",
+];
+
+/// The edits a `5w batch` commit names: its subject is `<prefix>: <verb> #<id>`
+/// for each, joined by `, ` (`chore(tasks): accept #4, reject #5`). `None` for
+/// any other subject, a single edit's own message included.
+pub fn batch_edits<'a>(prefix: &str, subject: &'a str) -> Option<Vec<(&'a str, u64)>> {
+    let rest = subject.strip_prefix(prefix)?.strip_prefix(": ")?;
+    let edits = rest
+        .split(", ")
+        .map(|part| {
+            let (verb, id) = part.split_once(" #")?;
+            let digits = !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit());
+            (VERBS.contains(&verb) && digits).then_some((verb, id.parse().ok()?))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (edits.len() > 1).then_some(edits)
+}
+
 fn is_sha(s: Option<&str>) -> bool {
     s.is_some_and(|s| s.len() >= 7 && s.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// `subject` is the commit's subject line, when there is a commit: a commit
-/// `5w reject` made is let gain `rework:` from any state, because released
+/// `5w reject` made (alone, or in a batch that names it) is let gain `rework:` from any state, because released
 /// versions through 0.1.3 rejected open and closed tasks, and lint passes every
 /// commit the tool made. The staged edit has no subject, so a hand edit is
 /// always judged.
@@ -420,6 +441,9 @@ fn check(
             && n.state != State::Done
             && (o.state, n.state) != (State::Review, State::Open)
             && subject != Some(format!("{}: reject #{id}", cfg.commit_prefix).as_str())
+            && !subject
+                .and_then(|s| batch_edits(&cfg.commit_prefix, s))
+                .is_some_and(|e| e.contains(&("reject", id)))
         {
             say(id, "gained rework: outside a reject ([~]→[ ])".into());
         }

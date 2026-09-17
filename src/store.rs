@@ -21,6 +21,8 @@ use crate::config::Config;
 use crate::git;
 use crate::queue::{self, Doc};
 use crate::util::Res;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -143,6 +145,20 @@ impl Repo {
     /// What reads see: the trunk checkout's working copy when there is one (so a
     /// just-added row is visible), otherwise the trunk's committed copy.
     fn load_file(&self, name: &str) -> Res<Option<String>> {
+        // Inside a batch, the edits before this one are written nowhere yet.
+        let pending = BATCH.with(|b| {
+            b.borrow().as_ref().and_then(|b| {
+                let c = b.cur.iter().find(|c| c.name == name)?;
+                match (&b.checkout, &c.working) {
+                    (Some(_), Some(w)) => Some(w.clone()),
+                    _ => (c.old_blob.is_some() || !c.committed.is_empty())
+                        .then(|| c.committed.clone()),
+                }
+            })
+        });
+        if pending.is_some() {
+            return Ok(pending);
+        }
         if let Some(w) = self.trunk_checkout()?
             && let Ok(s) = fs::read_to_string(w.join(name))
         {
@@ -274,6 +290,7 @@ fn carry(repo: &Repo, base: &str, donor: Option<&str>, ids: &[u64]) -> Doc {
 
 /// Per file: the committed text, the checkout's working text and the staged
 /// text where it differs from the commit, and the staged blob id.
+#[derive(Clone)]
 struct Copies {
     name: String,
     old_blob: Option<String>,
@@ -313,8 +330,115 @@ fn copies(repo: &Repo, checkout: Option<&Path>, old: &str, name: &str) -> Res<Co
     })
 }
 
+/// A batch in progress (`5w batch`): the lock, held from the first edit to the
+/// commit; the trunk and its checkout as they were when it began; and every copy
+/// of both files as the edits so far have left them.
+struct Batch {
+    _lock: Lock,
+    old: String,
+    checkout: Option<PathBuf>,
+    orig: [Copies; 2],
+    cur: [Copies; 2],
+    messages: Vec<String>,
+    /// Rows an edit in the batch has changed.
+    edited: HashSet<u64>,
+}
+
+thread_local! {
+    static BATCH: RefCell<Option<Batch>> = const { RefCell::new(None) };
+}
+
+/// Whether queue edits are being gathered into one batch commit.
+pub fn batching() -> bool {
+    BATCH.with(|b| b.borrow().is_some())
+}
+
+/// The lock, the trunk's tip and checkout, and both files' copies: where every
+/// transaction, alone or batched, starts.
+fn begin(repo: &Repo) -> Res<(Lock, String, Option<PathBuf>, Copies, Copies)> {
+    let lock = lock(repo)?;
+    let trunk_ref = format!("refs/heads/{}", repo.trunk);
+    let Some(old) = git::rev(&repo.primary, &trunk_ref) else {
+        bail!("no trunk branch {}", repo.trunk)
+    };
+    let checkout = repo.trunk_checkout()?;
+    let q = copies(repo, checkout.as_deref(), &old, &repo.cfg.file)?;
+    if q.old_blob.is_none() {
+        bail!(
+            "{} is not committed on {} — `{} init`",
+            repo.cfg.file,
+            repo.trunk,
+            repo.cfg.cmd_tasks
+        );
+    }
+    let a = copies(repo, checkout.as_deref(), &old, &repo.cfg.archive)?;
+    Ok((lock, old, checkout, q, a))
+}
+
+/// Run `edits` — ordinary queue commands, each calling `transact` — as one
+/// batch: one lock for all of them, each guarded against the queue as the trunk
+/// and the edits before it leave it, and one commit at the end. If `edits`
+/// fails, nothing is committed or written. The subject names every edit,
+/// `<prefix>: accept #4, reject #5`, and the body holds each edit's own message;
+/// a batch of one commits under that edit's own message.
+pub fn batch(repo: &Repo, edits: impl FnOnce() -> Res<()>) -> Res<()> {
+    let (lock, old, checkout, q, a) = begin(repo)?;
+    BATCH.with(|b| {
+        *b.borrow_mut() = Some(Batch {
+            _lock: lock,
+            old,
+            checkout,
+            cur: [q.clone(), a.clone()],
+            orig: [q, a],
+            messages: Vec::new(),
+            edited: HashSet::new(),
+        })
+    });
+    let result = edits();
+    let Some(b) = BATCH.with(|b| b.borrow_mut().take()) else {
+        bail!("batch ended early")
+    };
+    result?;
+    let message = match b.messages.as_slice() {
+        [] => return Ok(()),
+        [one] => one.clone(),
+        many => {
+            let head = format!("{}: ", repo.cfg.commit_prefix);
+            let parts: Vec<String> = many
+                .iter()
+                .map(|m| {
+                    let rest = m.strip_prefix(&head).unwrap_or(m);
+                    rest.split(' ').take(2).collect::<Vec<_>>().join(" ")
+                })
+                .collect();
+            format!("{head}{}\n\n{}", parts.join(", "), many.join("\n"))
+        }
+    };
+    let [q, a] = &b.orig;
+    let [cq, ca] = &b.cur;
+    let plan = Plan {
+        message,
+        new_q: cq.committed.clone(),
+        new_a: ca.committed.clone(),
+        working: q.working.is_some().then(|| {
+            (
+                cq.working.clone().unwrap_or_default(),
+                ca.working.clone().unwrap_or_else(|| ca.committed.clone()),
+            )
+        }),
+        staged: (q.staged.is_some() || a.staged.is_some()).then(|| {
+            (
+                cq.staged.clone().unwrap_or_else(|| cq.committed.clone()),
+                ca.staged.clone().unwrap_or_else(|| ca.committed.clone()),
+            )
+        }),
+    };
+    write(repo, &b.old, b.checkout.as_deref(), q, a, &plan)
+}
+
 /// Apply `op` to the queue (and its archive) and commit the result to the trunk
-/// as one commit that holds nothing else.
+/// as one commit that holds nothing else — or, inside `batch`, add it to the
+/// batch's commit.
 ///
 /// `guard` sees the task as the *committed* queue has it, under the lock — state
 /// checks made against a working copy outside the lock can be stale or hand-made.
@@ -332,23 +456,89 @@ pub fn transact(
     guard: impl Fn(Option<&queue::Task>) -> Res<()>,
     op: impl Fn(&mut Files, &Ctx) -> Res<()>,
 ) -> Res<()> {
-    let _lock = lock(repo)?;
-    let trunk_ref = format!("refs/heads/{}", repo.trunk);
-    let Some(old) = git::rev(&repo.primary, &trunk_ref) else {
-        bail!("no trunk branch {}", repo.trunk)
-    };
-    let checkout = repo.trunk_checkout()?;
-    let q = copies(repo, checkout.as_deref(), &old, &repo.cfg.file)?;
-    if q.old_blob.is_none() {
-        bail!(
-            "{} is not committed on {} — `{} init`",
-            repo.cfg.file,
-            repo.trunk,
-            repo.cfg.cmd_tasks
-        );
+    if batching() {
+        let [q, a] = BATCH
+            .with(|b| b.borrow().as_ref().map(|b| b.cur.clone()))
+            .ok_or("batch ended early")?;
+        let plan = plan(repo, &q, &a, message, ids, guard, op)?;
+        // Lint judges a commit row by row, before against after: a second edit
+        // of one row would reach it as one transition, which may be no legal one.
+        let changed = rows_changed([&q.committed, &a.committed], [&plan.new_q, &plan.new_a]);
+        BATCH.with(|b| {
+            let mut b = b.borrow_mut();
+            let Some(b) = b.as_mut() else {
+                bail!("batch ended early")
+            };
+            if let Some(id) = changed.iter().find(|id| b.edited.contains(id)) {
+                bail!("#{id} is already edited in this batch; edit it again in the next one");
+            }
+            b.edited.extend(changed);
+            {
+                let [cq, ca] = &mut b.cur;
+                cq.committed = plan.new_q;
+                ca.committed = plan.new_a;
+                if let Some((wq, wa)) = plan.working {
+                    cq.working = Some(wq);
+                    ca.working = ca.working.is_some().then_some(wa);
+                }
+                if let Some((sq, sa)) = plan.staged {
+                    cq.staged = cq.staged.is_some().then_some(sq);
+                    ca.staged = ca.staged.is_some().then_some(sa);
+                }
+                b.messages.push(plan.message);
+            }
+            Ok(())
+        })?;
+        return Ok(());
     }
-    let a = copies(repo, checkout.as_deref(), &old, &repo.cfg.archive)?;
+    let (_lock, old, checkout, q, a) = begin(repo)?;
+    let plan = plan(repo, &q, &a, message, ids, guard, op)?;
+    write(repo, &old, checkout.as_deref(), &q, &a, &plan)
+}
 
+/// The rows whose lines differ between two copies of the queue and its archive.
+fn rows_changed(old: [&str; 2], new: [&str; 2]) -> Vec<u64> {
+    let rows = |texts: [&str; 2]| {
+        let mut m: HashMap<u64, Vec<String>> = HashMap::new();
+        for text in texts {
+            let d = Doc::new(text);
+            for t in queue::parse(text) {
+                if let Some((at, len)) = d.block(t.id) {
+                    m.insert(t.id, d.lines[at..at + len].to_vec());
+                }
+            }
+        }
+        m
+    };
+    let (old, new) = (rows(old), rows(new));
+    let mut ids: Vec<u64> = new
+        .iter()
+        .filter(|(id, lines)| old.get(id) != Some(lines))
+        .map(|(id, _)| *id)
+        .chain(old.keys().filter(|id| !new.contains_key(id)).copied())
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// An edit worked out on every copy, before anything is written.
+struct Plan {
+    message: String,
+    new_q: String,
+    new_a: String,
+    working: Option<(String, String)>,
+    staged: Option<(String, String)>,
+}
+
+fn plan(
+    repo: &Repo,
+    q: &Copies,
+    a: &Copies,
+    message: impl Fn(&Ctx) -> String,
+    ids: &[u64],
+    guard: impl Fn(Option<&queue::Task>) -> Res<()>,
+    op: impl Fn(&mut Files, &Ctx) -> Res<()>,
+) -> Res<Plan> {
     let texts = [&q.committed, &a.committed].into_iter().chain(
         [&q.working, &q.staged, &a.working, &a.staged]
             .into_iter()
@@ -412,18 +602,39 @@ pub fn transact(
     } else {
         None
     };
+    Ok(Plan {
+        message: message(&ctx),
+        new_q,
+        new_a,
+        working,
+        staged,
+    })
+}
 
-    let message = message(&ctx);
+/// Commit a plan onto `old` with a compare-and-swap, then carry it into the
+/// trunk checkout's index entry and working file.
+fn write(
+    repo: &Repo,
+    old: &str,
+    checkout: Option<&Path>,
+    q: &Copies,
+    a: &Copies,
+    plan: &Plan,
+) -> Res<()> {
+    let trunk_ref = format!("refs/heads/{}", repo.trunk);
+    let message = &plan.message;
+    let subject = message.lines().next().unwrap_or_default();
+    let (new_q, new_a, working, staged) = (&plan.new_q, &plan.new_a, &plan.working, &plan.staged);
     let changes: Vec<(&Copies, &String, Option<&String>, Option<&String>)> = [
         (
-            &q,
-            &new_q,
+            q,
+            new_q,
             working.as_ref().map(|w| &w.0),
             staged.as_ref().map(|s| &s.0),
         ),
         (
-            &a,
-            &new_a,
+            a,
+            new_a,
             working.as_ref().map(|w| &w.1),
             staged.as_ref().map(|s| &s.1),
         ),
@@ -447,7 +658,7 @@ pub fn transact(
         };
         let mut blobs = Vec::new();
         let result = (|| -> Res<String> {
-            run(&["read-tree", &old])?;
+            run(&["read-tree", old])?;
             for (c, new, _, _) in &changes {
                 if c.old_blob.is_none() && new.is_empty() {
                     blobs.push(None);
@@ -463,13 +674,13 @@ pub fn transact(
                 blobs.push(Some(b));
             }
             let tree = run(&["write-tree"])?;
-            git::commit_tree(&repo.primary, &tree, &old, &message, &[])
+            git::commit_tree(&repo.primary, &tree, old, message, &[])
         })();
         let _ = fs::remove_file(&index);
         let commit = result?;
         git::git(
             &repo.primary,
-            &["update-ref", "-m", &message, &trunk_ref, &commit, &old],
+            &["update-ref", "-m", subject, &trunk_ref, &commit, old],
         )
         .map_err(|e| {
             format!(
@@ -478,7 +689,7 @@ pub fn transact(
             )
         })?;
 
-        if let Some(w) = &checkout {
+        if let Some(w) = checkout {
             for ((c, _, _, new_staged), blob) in changes.iter().zip(&blobs) {
                 let Some(blob) = blob else { continue };
                 // The index entry follows the commit — or, where something else was
@@ -499,11 +710,11 @@ pub fn transact(
                 )?;
             }
         }
-        println!("  committed: {message}");
+        println!("  committed: {subject}");
     } else if checkout.is_none() {
         return Ok(());
     }
-    if let Some(w) = &checkout {
+    if let Some(w) = checkout {
         for (c, new, new_working, _) in &changes {
             if let Some(nw) = new_working
                 && Some(*nw) != c.working.as_ref()

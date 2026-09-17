@@ -50,6 +50,8 @@ Never:
 - A queue edit is **its own commit**, on the **trunk**, touching only `TASKS.md` and `DONE.md`.
   Branches carry no queue changes.
 - Message: `chore(tasks): <verb> #<id>` — `add`, `submit`, `accept`, `reject`, `close`, `reopen`.
+- Several edits may share one commit (`5w batch`), each row edited at most once in it. Its subject
+  names every edit, `chore(tasks): <verb> #<id>, <verb> #<id>`, and its body each edit's message.
 - A branch lands only after its row is `[x] via:review`, by fast-forward, and only if what it adds
   is still exactly what was reviewed at `reviewed:`. Anything added after review needs a fresh
   submit and accept.

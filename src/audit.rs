@@ -388,7 +388,8 @@ impl Since {
     }
 }
 
-/// Would 5w itself have written this commit? Its messages are fixed, and it
+/// Would 5w itself have written this commit? Its messages are fixed (a batch's
+/// subject names each edit, see `lint::batch_edits`), and it
 /// touches nothing but the queue (and, for `init`, the files it installs).
 fn outside_why(repo: &Repo, subject: &str, files: &[String]) -> Vec<String> {
     let cfg = &repo.cfg;
@@ -400,6 +401,7 @@ fn outside_why(repo: &Repo, subject: &str, files: &[String]) -> Vec<String> {
     };
     let count = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let ours = adopt
+        || crate::lint::batch_edits(&cfg.commit_prefix, subject).is_some()
         || subject
             .strip_prefix(&format!("{}: ", cfg.commit_prefix))
             .is_some_and(|rest| {
