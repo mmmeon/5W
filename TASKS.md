@@ -42,8 +42,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 3.
 - [ ] #25 Per-subcommand --help prints that command's one-line usage, not the full global listing @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. add/submit/accept/reject --help print the ~40-line USAGE; wt/ship/lint/ci/report already have their own.
-- [~] #26 ready and review: end the summary line with a next-step hint (5w delegate / 5w accept), as next does @output !1 needs:#13 branch:output/task-26 submitted:86a8037ecb11
-  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 9.
 - [ ] #27 Color: disable for TERM=dumb and add an explicit --no-color flag @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. Sty::new() checks only isatty and NO_COLOR; --no-color is swallowed today by the opts() unknown-flag bug.
 - [ ] #28 Color the '5w: <error>' refusal red when stderr is a terminal and NO_COLOR is unset @output !1 needs:#13
@@ -88,3 +86,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found by the #14 benchmark: review --json output is byte-identical to review at every queue size.
 - [x] #33 wt: resolve .. in the worktree root once, so refusals and the --install line print clean paths too @wt !1 needs:#6 branch:wt/task-33 submitted:7eae06317748 via:review reviewed:7eae06317748
   #6 canonicalizes only the printed 'cd' line. The 'already exists' refusals in wt new/add and 'wt: <cmd> (in <dir>)' still show '..'. Normalize lexically in Repo::wt_root() instead; fs::canonicalize also follows symlinks (/tmp to /private/tmp on macOS).
+- [x] #26 ready and review: end the summary line with a next-step hint (5w delegate / 5w accept), as next does @output !1 needs:#13 branch:output/task-26 submitted:86a8037ecb11 via:review reviewed:86a8037ecb11
+  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 9.
