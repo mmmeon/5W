@@ -17,7 +17,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #2 Create the report label on mmmeon/5W so 5w report send can apply it @report !1 >restricted
 - [ ] #3 Release 0.1.3: queue commits and squashes signed when the repository signs @release !1 >restricted
 - [ ] #8 Run the aarch64 release binary on real arm64 hardware @release !1 >manual
-- [~] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4 branch:ci/task-11 submitted:1564baef77d40ad9005f24a9a2c547c755d93f7c
+- [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4 branch:ci/task-11 rework:"a landing record may pick a range start already on the trunk, so one record over old landings rolls back a reviewed change (reproduced: fix-CVE file deleted, push ok): require the covered range to be new to the server's trunk; plainer wording about self-accept; refuse trunk deletion when gated"
 - [ ] #16 Move git calls behind named operations in src/git.rs: no raw git argv outside it, output unchanged @vcs !3
   About 50 call sites in 10 modules pass raw git arguments (ship 12, wt 11, lint 5, queue 4, store 3). Move each into a named function in src/git.rs. No behaviour change: tests/flow.rs and the #14 bench baseline prove it. Groundwork for the admin commands and a version-control shim.
 - [ ] #21 Decide on a version-control shim over the git operations from #16 @vcs !4 >owner needs:#16
