@@ -498,12 +498,19 @@ fn replay(repo: &Repo, trunk_ref: &str, since: &Since) -> Res<(Found, HashMap<u6
     for c in parse_log(&log, names) {
         let inside = since.has(&c.sha, c.time);
         let no_files = Vec::new();
-        let why = outside_why(
+        let mut why = outside_why(
             repo,
             &c.subject,
             files.get(c.sha.as_str()).unwrap_or(&no_files),
         );
-        let lint_old = (inside && !why.is_empty()).then(|| [fs[0].text(), fs[1].text()]);
+        // A subject that names rows is 5w's only if the commit changes those rows.
+        let prefix = &repo.cfg.commit_prefix;
+        let names_rows = inside
+            && why.is_empty()
+            && (crate::lint::batch_edits(prefix, &c.subject).is_some()
+                || crate::lint::single_edit(prefix, &c.subject).is_some());
+        let lint_old =
+            (inside && (names_rows || !why.is_empty())).then(|| [fs[0].text(), fs[1].text()]);
 
         let (mut before, mut after) = (Vec::new(), Vec::new());
         for (f, hunks) in fs.iter_mut().zip(&c.hunks) {
@@ -516,7 +523,19 @@ fn replay(repo: &Repo, trunk_ref: &str, since: &Since) -> Res<(Found, HashMap<u6
             found.first = Some(found.first.map_or(c.time, |f| f.min(c.time)));
             found.last = Some(found.last.map_or(c.time, |l| l.max(c.time)));
         }
-        if let Some(old) = lint_old {
+        if names_rows
+            && let Some([q, a]) = &lint_old
+            && crate::lint::subject_rows_texts(
+                prefix,
+                &c.subject,
+                [q, a],
+                [&fs[0].text(), &fs[1].text()],
+            )
+            .is_some()
+        {
+            why.push("its subject and the rows it changes disagree".to_string());
+        }
+        if let Some(old) = lint_old.filter(|_| !why.is_empty()) {
             let mut lint = Vec::new();
             crate::lint::check_texts(
                 repo,

@@ -263,17 +263,6 @@ fn words(t: &Task) -> Vec<String> {
         .collect()
 }
 
-/// The same row, byte for byte in every part that is read — the common case,
-/// checked without building `words` and `fields` for every row of a large queue.
-fn identical(o: &Task, n: &Task) -> bool {
-    o.text == n.text
-        && o.body == n.body
-        && (&o.area, o.level, &o.lane, &o.needs, &o.branch)
-            == (&n.area, n.level, &n.lane, &n.needs, &n.branch)
-        && (&o.rework, &o.via, &o.submitted, &o.reviewed)
-            == (&n.rework, &n.via, &n.submitted, &n.reviewed)
-}
-
 /// Every field of a row, as one comparable value.
 fn fields(t: &Task) -> String {
     format!(
@@ -323,6 +312,59 @@ pub fn single_edit<'a>(prefix: &str, subject: &'a str) -> Option<(&'a str, u64)>
     let ok =
         VERBS.contains(&verb) && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
     ok.then_some((verb, digits.parse().ok()?))
+}
+
+/// What is wrong with a queue subject that names rows, against the rows its
+/// commit changes: a batch names exactly those, each once; a single edit
+/// changes no row but the one it names. That row may come out as it was: a
+/// `set` to the value a row has rewrote its line in releases through 0.1.3.
+pub fn subject_rows(
+    prefix: &str,
+    subject: &str,
+    old: &HashMap<u64, &Task>,
+    new: &HashMap<u64, &Task>,
+) -> Option<String> {
+    let (edits, batch) = match batch_edits(prefix, subject) {
+        Some(e) => (e, true),
+        None => (vec![single_edit(prefix, subject)?], false),
+    };
+    let named: BTreeSet<u64> = edits.iter().map(|e| e.1).collect();
+    let changed = queue::changed_ids(old, new);
+    let fits = match batch {
+        true => named == changed && named.len() == edits.len(),
+        false => changed.is_subset(&named),
+    };
+    if fits {
+        return None;
+    }
+    let list = |v: &BTreeSet<u64>| match v.is_empty() {
+        true => "no row".to_string(),
+        false => v
+            .iter()
+            .map(|i| format!("#{i}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+    Some(format!(
+        "its subject names {}, but it changes {} — a queue commit names each row it edits, once",
+        edits
+            .iter()
+            .map(|e| format!("#{}", e.1))
+            .collect::<Vec<_>>()
+            .join(" "),
+        list(&changed)
+    ))
+}
+
+/// `subject_rows` for a commit given as the texts on either side of it.
+pub fn subject_rows_texts(
+    prefix: &str,
+    subject: &str,
+    old: [&str; 2],
+    new: [&str; 2],
+) -> Option<String> {
+    let (old, new) = (queue::parse_all(old), queue::parse_all(new));
+    subject_rows(prefix, subject, &queue::by_id(&old), &queue::by_id(&new))
 }
 
 fn is_sha(s: Option<&str>) -> bool {
@@ -378,42 +420,8 @@ fn check(
     let old_max = queue::max_id(&old.queue).max(queue::max_id(&old.archive));
     let lane_of = |t: &Task| t.lane.clone().unwrap_or_else(|| cfg.default_lane.clone());
 
-    // A queue subject names the rows the commit edits: exactly those, each once.
-    if let Some(edits) = subject.and_then(|s| {
-        batch_edits(&cfg.commit_prefix, s)
-            .or_else(|| single_edit(&cfg.commit_prefix, s).map(|e| vec![e]))
-    }) {
-        let named: BTreeSet<u64> = edits.iter().map(|e| e.1).collect();
-        let changed: BTreeSet<u64> = new_all
-            .iter()
-            .filter(|(id, n)| {
-                old_all
-                    .get(id)
-                    .is_none_or(|o| o.state != n.state || !identical(o, n))
-            })
-            .map(|(id, _)| *id)
-            .chain(
-                old_all
-                    .keys()
-                    .filter(|id| !new_all.contains_key(id))
-                    .copied(),
-            )
-            .collect();
-        if named != changed || named.len() != edits.len() {
-            let list = |v: &BTreeSet<u64>| match v.is_empty() {
-                true => "no row".to_string(),
-                false => v
-                    .iter()
-                    .map(|i| format!("#{i}"))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            };
-            out.push(format!(
-                "{at}: its subject names {}, but it changes {} — a queue commit names each row it edits, once",
-                edits.iter().map(|e| format!("#{}", e.1)).collect::<Vec<_>>().join(" "),
-                list(&changed)
-            ));
-        }
+    if let Some(m) = subject.and_then(|s| subject_rows(&cfg.commit_prefix, s, &old_all, &new_all)) {
+        out.push(format!("{at}: {m}"));
     }
 
     let mut say = |id: u64, m: String| out.push(format!("{at} #{id}: {m}"));
@@ -436,7 +444,7 @@ fn check(
         // it last changed, and re-reporting it on every commit buries the news.
         if let Some(o) = old_all.get(&id)
             && o.state == n.state
-            && (identical(o, n) || (words(o) == words(n) && fields(o) == fields(n)))
+            && (queue::identical(o, n) || (words(o) == words(n) && fields(o) == fields(n)))
         {
             continue;
         }

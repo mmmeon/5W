@@ -22,7 +22,7 @@ use crate::git;
 use crate::queue::{self, Doc};
 use crate::util::Res;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -500,32 +500,24 @@ pub fn transact(
     }
     let (_lock, old, checkout, q, a) = begin(repo)?;
     let plan = plan(repo, &q, &a, message, ids, guard, op)?;
+    // An edit of a named row that leaves every row as it was (`set` to the value
+    // a row has) commits nothing: its subject would name a row it does not change.
+    if let Some(id) = ids.first()
+        && rows_changed([&q.committed, &a.committed], [&plan.new_q, &plan.new_a]).is_empty()
+    {
+        println!("  nothing to commit: #{id} is already so");
+        return Ok(());
+    }
     write(repo, &old, checkout.as_deref(), &q, &a, &plan)
 }
 
-/// The rows whose lines differ between two copies of the queue and its archive.
+/// The rows an edit changes between two copies of the queue and its archive,
+/// as lint reads a commit: a line rewritten to say the same is no change.
 fn rows_changed(old: [&str; 2], new: [&str; 2]) -> Vec<u64> {
-    let rows = |texts: [&str; 2]| {
-        let mut m: HashMap<u64, Vec<String>> = HashMap::new();
-        for text in texts {
-            let d = Doc::new(text);
-            for t in queue::parse(text) {
-                if let Some((at, len)) = d.block(t.id) {
-                    m.insert(t.id, d.lines[at..at + len].to_vec());
-                }
-            }
-        }
-        m
-    };
-    let (old, new) = (rows(old), rows(new));
-    let mut ids: Vec<u64> = new
-        .iter()
-        .filter(|(id, lines)| old.get(id) != Some(lines))
-        .map(|(id, _)| *id)
-        .chain(old.keys().filter(|id| !new.contains_key(id)).copied())
-        .collect();
-    ids.sort_unstable();
-    ids
+    let (old, new) = (queue::parse_all(old), queue::parse_all(new));
+    queue::changed_ids(&queue::by_id(&old), &queue::by_id(&new))
+        .into_iter()
+        .collect()
 }
 
 /// Refuse to pull a named row from the working copy into a commit when its id is

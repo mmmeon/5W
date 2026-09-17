@@ -2116,6 +2116,54 @@ fn lint_flags_rework_gained_outside_a_reject() {
 }
 
 #[test]
+fn a_single_edit_subject_may_rewrite_its_own_row_but_changes_no_other() {
+    let r = Repo::new("lint-single-subject");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second", "area:core"]);
+    r.ok(&r.main, &["set", "2", "needs", "1"]);
+
+    hand_edit(&r, "@core needs:1", "needs:#1 @core");
+    r.git(&r.main, &["commit", "-qm", "tidy the queue by hand"]);
+
+    // `set` to the value a row has commits nothing, and says so — alone or in
+    // a batch, though it would spell the line differently.
+    let tip = r.git(&r.main, &["rev-parse", "main"]);
+    let out = r.ok(&r.main, &["set", "2", "needs", "#1"]);
+    assert!(out.contains("nothing to commit"), "{out}");
+    let (ok, out) = r.batch("set 2 needs 1\n");
+    assert!(ok && out.contains("nothing to commit"), "{out}");
+    assert_eq!(r.git(&r.main, &["rev-parse", "main"]), tip);
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    assert!(r.line(2).contains("needs:#1 @core"));
+
+    // Releases through 0.1.3 committed it as a rewrite of the row's line that
+    // reads the same: that history lints, and audit counts it as 5w's.
+    hand_edit(&r, "needs:#1 @core", "@core needs:1");
+    r.git(&r.main, &["commit", "-qm", "chore(tasks): set #2 needs 1"]);
+    r.lint_history();
+    let out = r.ok(&r.main, &["audit"]);
+    assert!(out.contains("outside 1 queue commits"), "{out}");
+
+    // A subject naming one row on a commit that changes another is a hand edit.
+    hand_edit(&r, "- [ ] #1 first", "- [ ] #1 first !1");
+    r.git(
+        &r.main,
+        &["commit", "-qm", "chore(tasks): set #100 level 1"],
+    );
+    let out = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(
+        out.contains("its subject names #100, but it changes #1"),
+        "{out}"
+    );
+    let out = r.ok(&r.main, &["audit"]);
+    assert!(out.contains("outside 2 queue commits"), "{out}");
+    assert!(
+        out.contains("set #100 level 1 — its subject and the rows it changes disagree"),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_closed_row_is_immutable_but_may_be_reflowed_or_archived() {
     let r = Repo::new("immutable");
     r.ok(&r.main, &["add", "One sentence here. And a second sentence that is long enough to push well past the title limit of the queue for sure."]);

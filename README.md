@@ -195,11 +195,12 @@ Hand edits are checked, not trusted:
   every row that changed by its transition: `[ ]→[~]` carries `branch:` and `submitted:`,
   `[~]→[x]` carries `via:review` and `reviewed:`, a close carries its lane's `via:`, a reject its
   `rework:`, and nothing else gains one. Closed rows are immutable except to reopen, reflow (`split`)
-  or archive; no row is deleted and no id reused; a queue edit is its own commit on the trunk, and a
-  subject that names rows (`chore(tasks): set #4 level 1`, or a batch's list) names exactly the rows
-  the commit changes. Every
+  or archive; no row is deleted and no id reused; a queue edit is its own commit on the trunk. A
+  single edit's subject (`chore(tasks): set #4 level 1`) names the only row its commit may change, and
+  a batch's names exactly the rows it changes; a line rewritten to read the same is no change. Every
   commit `5w` itself makes passes it — a `reject` commit may gain `rework:` from any state, as
-  releases through 0.1.3 rejected unsubmitted tasks — and the test suite lints its own history.
+  releases through 0.1.3 rejected unsubmitted tasks, and a `set` to the value a row has (which now
+  commits nothing, and says so) may rewrite its row's line — and the test suite lints its own history.
 - **`5w hook install`** (also run by `5w wt setup`) adds a pre-commit hook running `5w lint --staged`.
   Where `5w` is not installed the hook lets the commit through with a warning to follow
   PROTOCOL.md; `5w lint <range>` catches what that let through, later.
@@ -397,7 +398,7 @@ lists; `--full` lists more, `--json` everything.
 | `rework` | rejections, how many tasks were sent back once, twice, three or more times, and the reasons | a reason that repeats points at a brief, a convention or a level that is wrong |
 | `reopened` | closed tasks opened again, and how often | work that was closed too early |
 | `blocked` | time open tasks waited on `needs:`, the longest waits and what held them | dependencies that stall delegable work |
-| `outside` | queue commits 5W does not make — a message it never writes, or other files in the same commit — with lint's findings on them | hand edits, each judged against PROTOCOL.md. 5W's own commits pass lint by construction and are not linted again |
+| `outside` | queue commits 5W does not make — a message it never writes, a subject naming other rows than it changes, or other files in the same commit — with lint's findings on them | hand edits, each judged against PROTOCOL.md. 5W's own commits pass lint by construction and are not linted again |
 | `doctor` | `5w doctor`'s findings on the queue as it is now | a problem in the file now, beside the history that made it |
 | `failures` | the last failure 5W recorded (`.git/5w/last-failure.md`) and the saved reports, sent or not | refusals and crashes agents met. Only the last failure is kept, so this is a pointer, not a rate |
 | `briefs` | the `delegate` brief of every open delegable task, in bytes and estimated tokens, largest first | a worker's context starts with its brief; the estimator is the benchmark's |

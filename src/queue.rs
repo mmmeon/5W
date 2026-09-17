@@ -633,6 +633,43 @@ impl Doc {
     }
 }
 
+/// The same row, byte for byte in every part that is read (its state aside).
+pub fn identical(o: &Task, n: &Task) -> bool {
+    o.text == n.text
+        && o.body == n.body
+        && (&o.area, o.level, &o.lane, &o.needs, &o.branch)
+            == (&n.area, n.level, &n.lane, &n.needs, &n.branch)
+        && (&o.rework, &o.via, &o.submitted, &o.reviewed)
+            == (&n.rework, &n.via, &n.submitted, &n.reviewed)
+}
+
+/// Every row of a queue and its archive, the queue's first.
+pub fn parse_all(texts: [&str; 2]) -> Vec<Task> {
+    texts.into_iter().flat_map(parse).collect()
+}
+
+/// Rows by id; a later one wins.
+pub fn by_id(v: &[Task]) -> std::collections::HashMap<u64, &Task> {
+    v.iter().map(|t| (t.id, t)).collect()
+}
+
+/// The rows that differ between two readings of a queue and its archive —
+/// added, removed, or with a different state or any part that is read. A row
+/// moved, or a line rewritten to say the same, is not changed.
+pub fn changed_ids(
+    old: &std::collections::HashMap<u64, &Task>,
+    new: &std::collections::HashMap<u64, &Task>,
+) -> std::collections::BTreeSet<u64> {
+    new.iter()
+        .filter(|(id, n)| {
+            old.get(id)
+                .is_none_or(|o| o.state != n.state || !identical(o, n))
+        })
+        .map(|(id, _)| *id)
+        .chain(old.keys().filter(|id| !new.contains_key(id)).copied())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
