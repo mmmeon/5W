@@ -29,7 +29,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Each queue edit is its own signed commit; with a hardware key that is a touch per edit. Design how a batch (accepts, adds) commits once while keeping the private-index, compare-and-swap update-ref guarantee and one-line commit subjects that still name each edit.
 - [ ] #21 Decide on a version-control shim over the git operations from #16 @vcs !4 >owner needs:#16
   Whether to put an interface over #16's named operations (trunk tip, queue commit + CAS ref update, worktree add/rm/ls, rebase onto, diff fingerprint, parent record, dirty, ref validation, signing), which system is second (jj the obvious candidate), and whether git-town's config keys stay the parent record.
-- [ ] #22 JSON list rows: trim to id, state, level, area, title, branch by default; --full for the rest @output !2 needs:#13
+- [~] #22 JSON list rows: trim to id, state, level, area, title, branch by default; --full for the rest @output !2 needs:#13 branch:output/task-22 submitted:0fab7a0ea2fd
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 2: rows carry 11 fields today.
 - [~] #27 Color: disable for TERM=dumb and add an explicit --no-color flag @output !1 needs:#13 branch:output/task-27 submitted:3f91c12af32e
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. Sty::new() checks only isatty and NO_COLOR; --no-color is swallowed today by the opts() unknown-flag bug.
