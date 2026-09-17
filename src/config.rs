@@ -16,10 +16,25 @@ pub enum Val {
 }
 
 pub fn parse_toml(src: &str) -> Res<Vec<(String, Val)>> {
-    Ok(parse_lines(src)?
+    Ok(parse_lines(src)
+        .map_err(one_line)?
         .into_iter()
         .map(|(k, v, _)| (k, v))
         .collect())
+}
+
+/// A refusal is one line: text the config supplies (a quoted key, a lane name)
+/// can carry a newline, which is written as its escape.
+fn one_line(e: String) -> String {
+    e.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_default().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 /// `parse_toml`, keeping the line each key is on, for errors that name it.
@@ -35,7 +50,9 @@ fn parse_lines(src: &str) -> Res<Vec<(String, Val, usize)>> {
             break;
         }
         if b[i] == b'[' {
-            let Some(end) = src[i..].find(']') else {
+            // The ] closes the header on its own line, never a later header's.
+            let row = src[i..].split('\n').next().unwrap_or_default();
+            let Some(end) = row.find(']') else {
                 bail!("config line {}: unclosed [", line(i))
             };
             table = src[i + 1..i + end].trim().to_string();
@@ -143,9 +160,13 @@ fn parse_val(b: &[u8], i: &mut usize) -> Res<Val> {
             let mut v = Vec::new();
             loop {
                 skip_blank(b, i);
-                if b.get(*i) == Some(&b']') {
-                    *i += 1;
-                    return Ok(Val::Arr(v));
+                match b.get(*i) {
+                    None => bail!("unterminated array"),
+                    Some(b']') => {
+                        *i += 1;
+                        return Ok(Val::Arr(v));
+                    }
+                    _ => {}
                 }
                 v.push(parse_val(b, i)?);
                 skip_blank(b, i);
@@ -485,6 +506,10 @@ impl Default for Config {
 
 impl Config {
     pub fn from_toml(src: &str) -> Res<Config> {
+        Self::read(src).map_err(one_line)
+    }
+
+    fn read(src: &str) -> Res<Config> {
         let kv = parse_lines(src)?;
         // An error about a key names its line: `config: x` becomes `config line N: x`.
         let at = |n: usize| {

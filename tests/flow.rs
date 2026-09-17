@@ -1238,6 +1238,58 @@ fn a_refusal_that_once_appended_a_usage_block_is_one_line() {
 }
 
 #[test]
+fn a_config_syntax_error_is_a_one_line_refusal_naming_its_line() {
+    let r = Repo::new("config-syntax-one-line");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let at = |header: &str| cfg.lines().position(|l| l == header).unwrap() + 1;
+    let first = cfg.lines().count() + 1;
+    for (text, want) in [
+        // A header's ] belongs on its line, not on some later header's.
+        (
+            cfg.replace("[sections]\n", "[sections\n"),
+            format!("config line {}: unclosed [", at("[sections]")),
+        ),
+        (
+            cfg.replace("[levels]\n", "[levels\n"),
+            format!("config line {}: unclosed [", at("[levels]")),
+        ),
+        (
+            format!("{cfg}archive = \"DONE.md\n"),
+            format!("config line {first}: newline in string"),
+        ),
+        (
+            format!("{cfg}archive = \"\"\"DONE.md\n"),
+            "unterminated string".into(),
+        ),
+        (
+            format!("{cfg}archive = '''DONE.md\n"),
+            "unterminated string".into(),
+        ),
+        (
+            format!("{cfg}perennial = [\"a\",\n"),
+            "unterminated array".into(),
+        ),
+        (
+            format!("{cfg}perennial = [\"a\"\nfile = \"x\"\n"),
+            "array".into(),
+        ),
+        // Text the config supplies is folded into the line.
+        (
+            format!("{cfg}\"x\\ny\" = 1\n"),
+            format!("config line {first}: unknown key review.x\\ny ("),
+        ),
+        (
+            cfg.replace("default_lane = \"agent\"", "default_lane = \"a\\nb\""),
+            "default_lane a\\nb is not a configured lane".into(),
+        ),
+    ] {
+        std::fs::write(r.main.join(".5w.toml"), &text).unwrap();
+        let err = r.refuses(&r.main, &["ready"]);
+        assert!(err.contains(&want), "{want:?} in {err:?}");
+    }
+}
+
+#[test]
 fn lint_refuses_a_dash_flag_or_a_second_argument_in_one_line() {
     let r = Repo::new("lint-args");
     r.ok(&r.main, &["add", "x"]);
