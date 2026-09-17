@@ -35,6 +35,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   src/main.rs init_trunk counts FIVEW_TRUNK as naming the trunk with env::var("FIVEW_TRUNK").is_ok(), so an exported empty FIVEW_TRUNK counts; store.rs treats an empty one as unset. An empty FIVEW_TRUNK therefore skips init's "not the trunk" refusal on a feature branch. Treat empty as unset. Found in review of #96.
 - [ ] #102 A push that turns the trunk gate on then off refuses the recorded landing of the gate-off commit
   src/ci.rs trunk_gate: in one push where the gate goes off→on→off (main→a/on sets gate_trunk = true, a/on→b/off sets it false, plus c/code), the gate-off commit is judged (its first parent gates) but its landing record is never read (the record's own first parent has the gate off), so the push is refused with "no landing record covers" although 5w recorded the landing. Read landing records whenever the commit they cover is judged. Found in review of #95.
+- [ ] #103 Queue writes still validate lanes, kinds and names against the uncommitted config
+  After #94/#99 the hook, ci, lint ranges and done's close rules judge under the trunk's committed .5w.toml, but other queue writes still read the checkout copy: add/set validate >lane against it (tasks.rs validate_field), submit/delegate decide delegable lanes from it (tasks.rs ~443, ~859), done/other writes take commit_prefix, section names and queue file names from it, and audit uses its default lane (audit.rs:489). An uncommitted edit therefore commits rows or commits the hook/ci read differently. Use the committed trunk config (lint::committed_rules, with its adoption/broken fallbacks) for these. Found in review of #99.
 
 ## Done
 
