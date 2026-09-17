@@ -37,6 +37,8 @@ protocol (PROTOCOL.md — the rules, for editing without the tool)
   lint [--staged | <rev> | <a>..<b>]   check queue edits follow it
   hook install | uninstall [pre-commit | pre-receive]   `lint --staged` hook, or the pre-receive check
   update-files [--pin]                 refresh PROTOCOL.md and hooks to this 5w; --pin sets requires
+  version [--latest]                   this 5w; --latest also the newest release (changes nothing)
+  self-update [--latest]               install the 5w requires pins, signature and sum checked; or the newest
   ci --base --head --ref|--branch      the forge-neutral check for CI and pre-receive
 
 feedback about 5W itself

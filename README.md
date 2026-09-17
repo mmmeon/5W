@@ -481,7 +481,25 @@ A project using 5W drifts in three places, and each is covered:
   `requires` — left uncommitted, to review like any change.
 
 Nothing checks for new releases in the background: agents often run offline, and a private
-repository should not call out on its own.
+repository should not call out on its own. Asking is explicit:
+
+- **`5w version --latest`** prints this binary's version and the newest release's, and changes
+  nothing (`5w version` alone is `5w --version`).
+- **`5w self-update`** installs the version the project pins (`requires` in the `.5w.toml` of the
+  worktree you stand in) when this binary is older — it runs even where that pin makes every other
+  command refuse. `--latest` takes the newest release instead. It downloads the binary for this
+  machine, `SHA256SUMS` and `SHA256SUMS.asc`, checks with `gpg`, in a keyring holding nothing else,
+  that the sums are signed by the release key built into the binary
+  ([SIGNING_KEY.asc](SIGNING_KEY.asc)), and that the binary's SHA-256 matches them. A release not
+  signed yet is not installed. Only then is the running binary replaced: written beside it,
+  synced, and renamed over it, so an interrupted update leaves the old binary whole. Any failed
+  check writes nothing.
+
+  It needs `curl` and `gpg` on PATH and refuses in one line naming the one missing. Releases are
+  read from the repository's `/releases` (`Cargo.toml`'s `repository`); `FIVEW_RELEASES_URL` points
+  at a mirror laid out the same way (`latest/download/SHA256SUMS`, `download/v<version>/…`,
+  `https://` or `file://`), and `FIVEW_RELEASE_KEY` names another armored public key to trust — for
+  a fork's releases or a test, since whoever sets it chooses what is trusted.
 
 ## Reporting problems with 5W
 

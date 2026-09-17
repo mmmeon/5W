@@ -109,10 +109,7 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         return Ok(());
     }
     if cmd == "--version" || cmd == "-V" {
-        match option_env!("FIVEW_COMMIT") {
-            Some(c) => println!("5w {} ({c})", env!("CARGO_PKG_VERSION")),
-            None => println!("5w {}", env!("CARGO_PKG_VERSION")),
-        }
+        println!("{}", upkeep::own_version_line());
         return Ok(());
     }
     // A help flag where an argument belongs is a request for help. Without this
@@ -136,6 +133,13 @@ fn dispatch(args: Vec<String>) -> Res<()> {
     }
     if cmd == "report" {
         return report::run(rest);
+    }
+    // Neither needs the project: self-update is for when its pin refuses this binary.
+    if cmd == "version" {
+        return upkeep::version(rest);
+    }
+    if cmd == "self-update" {
+        return upkeep::self_update(rest);
     }
     let repo = Repo::open()?;
     match cmd.as_str() {

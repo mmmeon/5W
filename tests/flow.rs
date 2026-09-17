@@ -2206,6 +2206,248 @@ fn doctor_finds_stale_installed_files_and_update_files_refreshes_them() {
     assert!(r.ok(&r.main, &["update-files"]).contains("up to date"));
 }
 
+/// A copy of the binary under test in a scratch `bin/`, so self-update replaces
+/// the copy and never the binary the suite runs; and a release server under
+/// `releases/` laid out as GitHub serves one, reached through file://.
+struct Releases {
+    root: PathBuf,
+    exe: PathBuf,
+}
+
+const FAKE: &str = "9.9.9";
+
+impl Releases {
+    fn new(name: &str) -> Releases {
+        let root = std::env::temp_dir().join(format!(
+            "5w-test-{name}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let exe = root.join("bin/5w");
+        std::fs::copy(bin5w(), &exe).unwrap();
+        let dir = root.join(format!("releases/download/v{FAKE}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Over one SHA-256 block, so the hash is exercised past its padding.
+        let script = format!("#!/bin/sh\necho \"5w {FAKE}\"\n# {}\n", "x".repeat(200));
+        std::fs::write(dir.join(Self::asset()), script).unwrap();
+        Releases { root, exe }
+    }
+
+    fn asset() -> String {
+        format!("5w-{FAKE}-{}-unknown-linux-musl", std::env::consts::ARCH)
+    }
+
+    fn dir(&self) -> PathBuf {
+        self.root.join(format!("releases/download/v{FAKE}"))
+    }
+
+    /// SHA256SUMS as sha256sum writes it, published as the latest too.
+    fn write_sums(&self) {
+        let o = Command::new("sha256sum")
+            .arg(Self::asset())
+            .current_dir(self.dir())
+            .output()
+            .unwrap();
+        assert!(o.status.success());
+        std::fs::write(self.dir().join("SHA256SUMS"), &o.stdout).unwrap();
+        let latest = self.root.join("releases/latest/download");
+        std::fs::create_dir_all(&latest).unwrap();
+        std::fs::write(latest.join("SHA256SUMS"), &o.stdout).unwrap();
+    }
+
+    fn run(&self, cwd: &Path, path: &str, args: &[&str]) -> (bool, String) {
+        let o = Command::new(&self.exe)
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("NO_COLOR", "1")
+            .env("PATH", path)
+            .env(
+                "FIVEW_RELEASES_URL",
+                format!("file://{}", self.root.join("releases").display()),
+            )
+            .env("FIVEW_RELEASE_KEY", self.root.join("key.asc"))
+            .output()
+            .unwrap();
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        (o.status.success(), out)
+    }
+}
+
+/// A throwaway gpg home with one signing key, exported to `<root>/<name>.asc`.
+fn gpg_key(root: &Path, name: &str) -> impl Fn(&[&str]) -> Output {
+    let home = root.join(format!("gnupg-{name}"));
+    std::fs::create_dir_all(&home).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let gpg = move |args: &[&str]| {
+        Command::new("gpg")
+            .env("GNUPGHOME", &home)
+            .args(["--batch", "--pinentry-mode", "loopback", "--passphrase", ""])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let uid = format!("{name} <{name}@example.com>");
+    assert!(
+        gpg(&["--quick-generate-key", &uid, "ed25519", "sign", "never"])
+            .status
+            .success()
+    );
+    let out = root.join(format!("{name}.asc"));
+    assert!(
+        gpg(&["--armor", "--export", "-o", out.to_str().unwrap()])
+            .status
+            .success()
+    );
+    gpg
+}
+
+#[test]
+fn version_latest_reports_the_newest_release_and_changes_nothing() {
+    let rel = Releases::new("latest");
+    let path = std::env::var("PATH").unwrap();
+    let before = std::fs::read(&rel.exe).unwrap();
+
+    let (ok, out) = rel.run(&rel.root, &path, &["version"]);
+    assert!(
+        ok && out.trim() == format!("5w {}", env!("CARGO_PKG_VERSION")),
+        "{out}"
+    );
+
+    // No release published yet: said so, in one line.
+    let (ok, out) = rel.run(&rel.root, &path, &["version", "--latest"]);
+    assert!(!ok && out.contains("no release found at file://"), "{out}");
+
+    let o = Command::new("sha256sum").arg("--version").output();
+    if o.is_err() {
+        eprintln!("skipped the rest: no sha256sum to write the fixture");
+        return;
+    }
+    rel.write_sums();
+    let (ok, out) = rel.run(&rel.root, &path, &["version", "--latest"]);
+    assert!(
+        ok && out.contains(&format!("newest release {FAKE}"))
+            && out.contains("5w self-update --latest")
+            && out.lines().count() == 1,
+        "{out}"
+    );
+    assert_eq!(std::fs::read(&rel.exe).unwrap(), before);
+
+    // A release with no SHA256SUMS.asc is not installed.
+    let (ok, out) = rel.run(&rel.root, &path, &["self-update", "--latest"]);
+    assert!(!ok && out.contains("no SHA256SUMS.asc"), "{out}");
+    assert_eq!(std::fs::read(&rel.exe).unwrap(), before);
+
+    // Without the tools it shells out to: one line naming the missing one.
+    let empty = rel.root.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let empty = empty.to_str().unwrap();
+    let (ok, out) = rel.run(&rel.root, empty, &["version", "--latest"]);
+    assert!(!ok && out.contains("needs curl on PATH"), "{out}");
+    let (ok, out) = rel.run(&rel.root, empty, &["self-update", "--latest"]);
+    assert!(
+        !ok && out.contains("needs curl on PATH") && out.lines().count() == 1,
+        "{out}"
+    );
+    // gpg missing while curl is there.
+    let only_curl = rel.root.join("only-curl");
+    std::fs::create_dir_all(&only_curl).unwrap();
+    let curl = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v curl"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(curl.trim(), only_curl.join("curl")).unwrap();
+    let (ok, out) = rel.run(
+        &rel.root,
+        only_curl.to_str().unwrap(),
+        &["self-update", "--latest"],
+    );
+    assert!(!ok && out.contains("needs gpg on PATH"), "{out}");
+    assert_eq!(std::fs::read(&rel.exe).unwrap(), before);
+}
+
+#[test]
+fn self_update_installs_only_a_signed_matching_release() {
+    for tool in ["gpg", "sha256sum", "curl"] {
+        if Command::new(tool).arg("--version").output().is_err() {
+            eprintln!("skipped: no {tool} in the test environment");
+            return;
+        }
+    }
+    let rel = Releases::new("selfupdate");
+    let path = std::env::var("PATH").unwrap();
+    let before = std::fs::read(&rel.exe).unwrap();
+    let release = gpg_key(&rel.root, "key");
+    let other = gpg_key(&rel.root, "other");
+    rel.write_sums();
+    let sums = rel.dir().join("SHA256SUMS");
+    let sign = |gpg: &dyn Fn(&[&str]) -> Output| {
+        let asc = rel.dir().join("SHA256SUMS.asc");
+        let o = gpg(&[
+            "--yes",
+            "--armor",
+            "--detach-sign",
+            "-o",
+            asc.to_str().unwrap(),
+            sums.to_str().unwrap(),
+        ]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    };
+    let untouched = |out: &str| {
+        assert_eq!(std::fs::read(&rel.exe).unwrap(), before, "{out}");
+        let left: Vec<_> = std::fs::read_dir(rel.root.join("bin")).unwrap().collect();
+        assert_eq!(left.len(), 1, "{out}");
+    };
+
+    // Signed by a key that is not the release key.
+    sign(&other);
+    let (ok, out) = rel.run(&rel.root, &path, &["self-update", "--latest"]);
+    assert!(
+        !ok && out.contains("not signed by the 5W release key"),
+        "{out}"
+    );
+    untouched(&out);
+
+    // Signed, but the binary is not the one the sums name.
+    sign(&release);
+    let asset = rel.dir().join(Releases::asset());
+    let good = std::fs::read(&asset).unwrap();
+    std::fs::write(&asset, b"#!/bin/sh\necho evil\n").unwrap();
+    let (ok, out) = rel.run(&rel.root, &path, &["self-update", "--latest"]);
+    assert!(!ok && out.contains("does not match SHA256SUMS"), "{out}");
+    untouched(&out);
+    std::fs::write(&asset, good).unwrap();
+
+    // By default, the version the project pins — even one this binary refuses.
+    let r = Repo::new("selfupdate-pin");
+    set_requires(&r, FAKE);
+    let (ok, out) = rel.run(&r.main, &path, &["ready"]);
+    assert!(!ok && out.contains(&format!("requires 5w {FAKE}")), "{out}");
+    let (ok, out) = rel.run(&r.main, &path, &["self-update"]);
+    assert!(
+        ok && out.contains(&format!("5w {} → {FAKE}", env!("CARGO_PKG_VERSION"))),
+        "{out}"
+    );
+    let o = Command::new(&rel.exe).arg("--version").output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout).trim(),
+        format!("5w {FAKE}")
+    );
+    assert_eq!(std::fs::read_dir(rel.root.join("bin")).unwrap().count(), 1);
+}
+
 #[test]
 fn queue_commits_are_signed_when_the_repository_signs() {
     if Command::new("gpg").arg("--version").output().is_err() {
