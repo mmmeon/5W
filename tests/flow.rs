@@ -108,7 +108,14 @@ impl Repo {
             !o.status.success(),
             "5w {args:?} should have failed:\n{out}"
         );
+        // A refusal exits 1; 101 is a panic, which a message check alone can miss.
+        assert_eq!(o.status.code(), Some(1), "5w {args:?}:\n{out}");
         out
+    }
+
+    /// A refusal: exit 1 and exactly one line on stderr, which is returned.
+    fn refuses(&self, cwd: &Path, args: &[&str]) -> String {
+        refusal(&self.cli(cwd, args), args)
     }
 
     fn git(&self, cwd: &Path, args: &[&str]) -> String {
@@ -151,6 +158,17 @@ impl Repo {
             .unwrap_or("")
             .to_string()
     }
+}
+
+/// Check `o` is a refusal — exit 1 and exactly one line on stderr — and return that line.
+fn refusal(o: &Output, args: &[&str]) -> String {
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert_eq!(o.status.code(), Some(1), "5w {args:?}: {err}");
+    assert!(
+        err.ends_with('\n') && err.matches('\n').count() == 1,
+        "5w {args:?}: a refusal is one line: {err:?}"
+    );
+    err
 }
 
 impl Drop for Repo {
@@ -538,7 +556,7 @@ fn a_flag_wt_report_init_lint_ship_ci_or_update_files_does_not_take_is_refused()
         (&["ci", "--bogus"], "ci"),
         (&["update-files", "--bogus"], "update-files"),
     ] {
-        let out = r.fails(&r.main, args);
+        let out = r.refuses(&r.main, args);
         assert_eq!(
             out,
             format!("5w: unknown flag --bogus for {cmd} (5w {cmd} --help)\n"),
@@ -605,7 +623,7 @@ fn a_refusal_that_once_appended_a_usage_block_is_one_line() {
             "text first, not a flag: -x (5w add --help)",
         ),
     ] {
-        assert_eq!(r.fails(cwd, args), format!("5w: {want}\n"), "{args:?}");
+        assert_eq!(r.refuses(cwd, args), format!("5w: {want}\n"), "{args:?}");
     }
     assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), before);
 }
@@ -998,7 +1016,7 @@ fn duplicate_ids_stop_every_command() {
         .replace("- [ ] #1 one", "- [ ] #1 one\n- [ ] #1 again");
     std::fs::write(r.main.join("TASKS.md"), t).unwrap();
     std::fs::write(r.main.join("DONE.md"), "- [x] #1 old\n").unwrap();
-    let out = r.fails(&r.main, &["ready"]);
+    let out = r.refuses(&r.main, &["ready"]);
     assert_eq!(
         out,
         "5w: duplicate ids — fix before anything else: #1 lines 17 and 18 of TASKS.md; \
@@ -1404,8 +1422,10 @@ fn a_rebase_that_changes_the_reviewed_context_is_rolled_back() {
     // but what lands is no longer exactly what was read.
     std::fs::write(r.main.join("c"), "1\n2\n3\n4\nFIVE\n6\n7\n8\n").unwrap();
     r.git(&r.main, &["commit", "-qam", "neighbour"]);
-    let out = r.fails(&r.main, &["ship", "f/a", "--sync"]);
-    assert!(out.contains("rebasing") && out.contains("back at"), "{out}");
+    let o = r.cli(&r.main, &["ship", "f/a", "--sync"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("rebasing"));
+    let err = refusal(&o, &["ship", "f/a", "--sync"]);
+    assert!(err.contains("; f/a is back at "), "{err}");
     assert_eq!(r.git(&r.main, &["rev-parse", "f/a"]), before);
 }
 
@@ -2181,7 +2201,7 @@ fn a_project_requiring_a_newer_5w_is_refused_clearly() {
     r.ok(&r.main, &["doctor"]);
 
     set_requires(&r, "99.0.0");
-    let out = r.fails(&r.main, &["ready"]);
+    let out = r.refuses(&r.main, &["ready"]);
     assert!(
         out.contains("requires 5w 99.0.0 or later") && out.contains("releases/tag/v99.0.0"),
         "{out}"
@@ -2844,7 +2864,7 @@ fn wt_rm_finds_force_anywhere_in_the_arguments() {
     r.ok(&r.main, &["wt", "new", "a/x"]);
     let wt = r.wt("a/x");
     std::fs::write(wt.join("scratch"), "dirty").unwrap();
-    assert!(r.fails(&r.main, &["wt", "rm", "a/x"]).contains("--force"));
+    assert!(r.refuses(&r.main, &["wt", "rm", "a/x"]).contains("--force"));
     r.ok(&r.main, &["wt", "rm", "--force", "a/x"]);
     assert!(!wt.exists());
     assert!(

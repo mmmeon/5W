@@ -665,7 +665,7 @@ pub fn remove(repo: &Repo, branch: &str, force: bool) -> Res<()> {
     // Ask before stripping links: a refused removal must leave a usable worktree.
     if !force && git::dirty(&dir)? {
         bail!(
-            "{} has uncommitted or untracked files.\n  Commit or clean them, or `5w wt rm {branch} --force` to discard them.",
+            "{} has uncommitted or untracked files; commit or clean them, or `5w wt rm {branch} --force` to discard them",
             dir.display()
         );
     }

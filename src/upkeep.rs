@@ -46,7 +46,7 @@ pub fn check_requires(required: &str) -> Res<()> {
     let have = parse_version(VERSION).expect("own version parses");
     if have < want {
         bail!(
-            "this project requires 5w {required} or later; this is {VERSION}.\n  Get it: {RELEASES}/tag/v{required}"
+            "this project requires 5w {required} or later; this is {VERSION}; get it: {RELEASES}/tag/v{required}"
         );
     }
     Ok(())

@@ -313,7 +313,7 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
             // The rebase bought nothing; do not leave the branch rewritten.
             let _ = git::raw(w, &["reset", "--hard", "--quiet", &before], &[], None);
             bail!(
-                "{e}\n  ({branch} is back at {} as it was before the rebase)",
+                "{e}; {branch} is back at {} as it was before the rebase",
                 short(&before)
             );
         }
