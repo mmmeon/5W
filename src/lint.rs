@@ -1266,18 +1266,22 @@ fn broken_note(repo: &Repo, trunk: &str) {
     }
 }
 
-/// The server's trunk, pinned from HEAD when nothing pins it (on every install, so a
-/// removed pin comes back): a guess that finds no such branch judges no push as landing
-/// on it. Returns the trunk the hook judges.
+/// The server's trunk, pinned when `5w.trunk` is unset or empty (on every install, so a
+/// removed pin comes back): from `FIVEW_TRUNK`, which outranks it, else from HEAD — a
+/// guess that finds no such branch judges no push as landing on it. Returns the trunk
+/// the hook judges.
 fn pin_trunk(repo: &Repo, kind: &str) -> Res<String> {
     if kind == "pre-receive"
         && repo.bare
-        && git::opt(&repo.primary, &["config", "5w.trunk"]).is_none()
-        && let Some(b) = crate::store::head_branch(&repo.primary)
+        && git::opt(&repo.primary, &["config", "5w.trunk"]).is_none_or(|s| s.is_empty())
     {
-        git::git(&repo.primary, &["config", "5w.trunk", &b])?;
-        println!("hook: 5w.trunk = {b} (the trunk pushes are judged against; from HEAD)");
-        return Ok(b);
+        let env = std::env::var("FIVEW_TRUNK").ok().filter(|s| !s.is_empty());
+        let from = if env.is_some() { "FIVEW_TRUNK" } else { "HEAD" };
+        if let Some(b) = env.or_else(|| crate::store::head_branch(&repo.primary)) {
+            git::git(&repo.primary, &["config", "5w.trunk", &b])?;
+            println!("hook: 5w.trunk = {b} (the trunk pushes are judged against; from {from})");
+            return Ok(b);
+        }
     }
     Ok(repo.trunk.clone())
 }

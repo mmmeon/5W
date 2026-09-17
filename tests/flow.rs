@@ -6071,6 +6071,39 @@ fn a_server_cloned_after_the_trunk_config_broke_installs_the_hook_that_takes_the
             "{again}"
         );
         assert_eq!(r.git(&server, &["config", "5w.trunk"]), "main");
+        // An empty pin is no pin, as the store reads it: re-install pins it again.
+        r.git(&server, &["config", "5w.trunk", ""]);
+        let again = r.ok(&server, &["hook", "install", "pre-receive"]);
+        assert!(
+            again.contains("hook: 5w.trunk = main") && again.contains("already installed"),
+            "{again}"
+        );
+        assert_eq!(r.git(&server, &["config", "5w.trunk"]), "main");
+        // FIVEW_TRUNK outranks HEAD: the install pins and names the trunk it names.
+        r.git(&server, &["branch", "release", "main"]);
+        r.git(&server, &["config", "--unset", "5w.trunk"]);
+        let mut c = Command::new(bin5w());
+        c.args(["hook", "install", "pre-receive"])
+            .current_dir(&server);
+        env(&mut c, &r.root);
+        let o = c.env("FIVEW_TRUNK", "release").output().unwrap();
+        let again = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(
+            o.status.success()
+                && again.contains("hook: 5w.trunk = release")
+                && again.contains(".5w.toml on release is broken")
+                && again.contains("accepts only a push to release that repairs it")
+                && !again.contains("= main")
+                && !again.contains("to main"),
+            "{again}"
+        );
+        assert_eq!(r.git(&server, &["config", "5w.trunk"]), "release");
+        r.git(&server, &["config", "5w.trunk", "main"]);
+        r.git(&server, &["branch", "-D", "release"]);
         r.git(
             &r.main,
             &["remote", "add", "origin", server.to_str().unwrap()],
