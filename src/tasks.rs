@@ -229,8 +229,14 @@ impl<'a> Q<'a> {
                 .map(|a| format!(" @{a}"))
                 .unwrap_or_default();
             let max = self.repo.cfg.title_max;
-            let title = if max > 0 {
-                truncate(&t.text, max)
+            let len = t.text.chars().count();
+            let title = if max > 0 && len > max {
+                format!(
+                    "{}(+{} chars: 5w show {})",
+                    truncate(&t.text, max),
+                    len - max,
+                    t.id
+                )
             } else {
                 t.text.clone()
             };

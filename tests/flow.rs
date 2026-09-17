@@ -727,6 +727,13 @@ fn over_long_text_becomes_title_and_body() {
     );
     std::fs::write(r.main.join("TASKS.md"), t).unwrap();
     r.git(&r.main, &["commit", "-qam", "old row"]);
+    // Until split, a listed row says how much it cut and where the rest is.
+    let out = r.ok(&r.main, &["ready"]);
+    let cut = long.chars().count() - 120;
+    assert!(
+        out.contains(&format!("…(+{cut} chars: 5w show 2)")),
+        "{out}"
+    );
     r.ok(&r.main, &["split"]);
     let t = r.tasks();
     assert!(t.contains("- [ ] #2 Build the thing on the site so that every reader sees it. @x !2\n  Then explain"), "{t}");

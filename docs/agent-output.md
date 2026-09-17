@@ -618,7 +618,7 @@ explicit send).
 
 - `--json list rows: trim to id/state/level/area/title/branch by default, --full for the rest @output !2`
 - `opts(): refuse a flag a command doesn't understand instead of silently accepting it @output !2`
-- `row(): append a size hint when a title is actually truncated, not just a bare … @output !1`
+- `row(): append a size hint when a title is actually truncated, not just a bare … @output !1` — done, #24
 - `per-subcommand --help: print the one-line usage instead of the full global listing @output !1`
 - `ready/review: append a → 5w delegate|accept next-step hint to the summary line, like next already does @output !1` — done, #26
 - `Sty::new(): also disable color for TERM=dumb, and wire up an explicit --no-color flag (currently swallowed by the opts() unknown-flag bug) @output !1`
