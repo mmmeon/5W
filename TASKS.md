@@ -35,6 +35,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   ship --accepted opens the repository once and keeps using that config after an earlier branch in the same run changes .5w.toml (queue file, archive, commit prefix, gate settings). Reopen the config after each landing that changes .5w.toml. Found in review of #86.
 - [ ] #96 hook install pins and names the wrong trunk with FIVEW_TRUNK set or an empty 5w.trunk
   hook install pre-receive on a bare server: with FIVEW_TRUNK set and 5w.trunk unset it pins HEAD's branch and the broken-config note names it instead of the FIVEW_TRUNK trunk that outranks it; and an empty 5w.trunk = "" counts as a pin for install (no re-pin) while store.rs treats it as unset, so the hook judges unpinned. Pin/name the trunk the store would resolve, and treat an empty pin as unset. Found in review of #91.
+- [ ] #97 A conflicting config repair is told to ship the repair instead of to rebase it
+  While the trunk .5w.toml is broken, ship of a real repair branch forked before the break usually conflicts in the merged-result check and refuses with "ship the repair", when the fix is to rebase the repair onto the trunk first. Name the rebase when the merge conflicts. Found in review of #86.
 
 ## Done
 
