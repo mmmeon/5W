@@ -38,8 +38,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 2: rows carry 11 fields today.
 - [ ] #23 opts(): refuse a flag a command does not understand instead of silently accepting it @output !2 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. 5w ready --bogus exits 0 because opts() pushes unknown flags into o.flags. Refusal one line naming the fix.
-- [~] #24 row(): append a size hint when a title is truncated, not a bare ellipsis @output !1 needs:#13 rework:"row hint hard-codes 5w: build it from cfg.cmd_tasks like the other hints, and test with a custom commands.tasks" branch:output/task-24 submitted:c80a4613f6c4
-  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 3.
 - [ ] #25 Per-subcommand --help prints that command's one-line usage, not the full global listing @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. add/submit/accept/reject --help print the ~40-line USAGE; wt/ship/lint/ci/report already have their own.
 - [ ] #27 Color: disable for TERM=dumb and add an explicit --no-color flag @output !1 needs:#13
@@ -88,3 +86,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   #6 canonicalizes only the printed 'cd' line. The 'already exists' refusals in wt new/add and 'wt: <cmd> (in <dir>)' still show '..'. Normalize lexically in Repo::wt_root() instead; fs::canonicalize also follows symlinks (/tmp to /private/tmp on macOS).
 - [x] #26 ready and review: end the summary line with a next-step hint (5w delegate / 5w accept), as next does @output !1 needs:#13 branch:output/task-26 submitted:86a8037ecb11 via:review reviewed:86a8037ecb11
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 9.
+- [x] #24 row(): append a size hint when a title is truncated, not a bare ellipsis @output !1 needs:#13 branch:output/task-24 submitted:c80a4613f6c4 via:review reviewed:c80a4613f6c4
+  From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. AXI principle 3.
