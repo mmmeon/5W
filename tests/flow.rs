@@ -4111,6 +4111,27 @@ fn pre_receive_checks_pushes_to(name: &str) {
     );
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("not installed on the server"));
+
+    // A branch that merged the trunk brings its queue commits along: those are the
+    // trunk's, not the branch's. Its own queue edit after the merge is still refused.
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    r.git(&r.main, &["checkout", "-q", "main"]);
+    r.ok(&r.main, &["add", "two"]);
+    assert!(push(&["main"]).status.success());
+    r.git(&r.main, &["checkout", "-q", "f/a"]);
+    r.git(&r.main, &["merge", "-q", "--no-edit", "main"]);
+    let out = push(&["f/a"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let t = r.tasks().replace("#2 two", "#2 two sneaked");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    r.git(&r.main, &["commit", "-qam", "queue on a branch"]);
+    let out = push(&["f/a"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("queue edits go on main"));
+    assert!(!out.status.success());
 }
 
 #[test]
@@ -4220,6 +4241,45 @@ fn ci_refuses_a_revision_that_is_not_a_commit_in_one_line() {
         &r.main,
         &[&["ci", "--base", &"0".repeat(40)][..], &push].concat(),
     );
+}
+
+#[test]
+fn ci_push_of_a_branch_that_merged_the_trunk_judges_only_its_own_commits() {
+    let r = Repo::new("ci-merged-trunk");
+    r.ok(&r.main, &["add", "x"]);
+    r.git(&r.main, &["branch", "f/a"]);
+    let old = r.git(&r.main, &["rev-parse", "f/a"]);
+    r.ok(&r.main, &["add", "y"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.git(&r.main, &["checkout", "-q", "f/a"]);
+    std::fs::write(r.main.join("code"), "x\n").unwrap();
+    r.git(&r.main, &["add", "code"]);
+    r.git(&r.main, &["commit", "-qm", "code"]);
+    r.git(&r.main, &["merge", "-q", "--no-edit", "main"]);
+    let push = |r: &Repo| {
+        r.cli(
+            &r.main,
+            &[
+                "ci",
+                "--base",
+                &old,
+                "--head",
+                "f/a",
+                "--ref",
+                "refs/heads/f/a",
+            ],
+        )
+    };
+    let o = push(&r);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("2 commit(s)"));
+
+    hand_edit(&r, "- [ ] #2 y", "- [ ] #2 y sneaked");
+    r.git(&r.main, &["commit", "-qm", "queue on a branch"]);
+    let o = push(&r);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(err.matches("queue edits go on main").count(), 1, "{err}");
 }
 
 #[test]

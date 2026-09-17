@@ -20,6 +20,7 @@ usage: 5w ci [--base <rev>] [--head <rev>] [--ref <refname> | --branch <name>] [
                      all zeros (a new ref): the merge-base with the trunk
   --ref <refname>    a push to this ref. refs/heads/<trunk>: the commits land on
                      the trunk. Any other branch: they carry no queue edits
+                     (commits the trunk holds are not judged)
   --branch <name>    a change request from this branch into the trunk: no queue
                      edits, and the ship check — an accepted task names the
                      branch and what it adds is what was reviewed
@@ -120,19 +121,21 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             .as_ref()
             .and_then(|t| git::opt(p, &["merge-base", t, &head])),
     };
-    let range = match &base {
+    let onto_trunk = refname.as_deref() == Some(format!("refs/heads/{}", repo.trunk).as_str());
+    // Off the trunk, what the trunk already holds (merged in) is the trunk's, not the branch's.
+    let span = match &base {
+        Some(b) => format!("{b}..{head}"),
+        None => head.clone(),
+    };
+    let mut rev_list = vec!["rev-list", "--reverse", &span];
+    if let Some(t) = trunk_ref.as_deref().filter(|_| !onto_trunk) {
+        rev_list.extend(["--not", t]);
+    }
+    let range: Vec<String> = match &base {
         Some(b) if *b == head => vec![],
-        Some(b) => git::git(p, &["rev-list", "--reverse", &format!("{b}..{head}")])?
-            .lines()
-            .map(String::from)
-            .collect(),
-        None => git::git(p, &["rev-list", "--reverse", &head])?
-            .lines()
-            .map(String::from)
-            .collect(),
+        _ => git::git(p, &rev_list)?.lines().map(String::from).collect(),
     };
 
-    let onto_trunk = refname.as_deref() == Some(format!("refs/heads/{}", repo.trunk).as_str());
     let mut problems = Vec::new();
     lint::commits_on(repo, &range, &|_| onto_trunk, &mut problems)?;
 
