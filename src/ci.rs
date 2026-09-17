@@ -70,6 +70,9 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         i += 2;
     }
     if let Some(e) = event {
+        if let Some(err) = &repo.broken {
+            return Err(unreadable(repo, err));
+        }
         if base.is_some() || refname.is_some() || trunk_ref.is_some() {
             bail!("--event takes --branch, --head, --at and --task, not --base, --ref or --trunk");
         }
@@ -111,6 +114,45 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             Some(r)
         }
         None => None,
+    };
+    // A trunk whose config does not parse would refuse every push, the fix too:
+    // judge a trunk push whose tip commits a config that parses under that config
+    // (the gate reads each commit's own, unreadable as on); refuse the rest.
+    let zeros = |r: &Option<String>| r.as_ref().is_some_and(|r| r.bytes().all(|c| c == b'0'));
+    let repaired;
+    let repo = match &repo.broken {
+        Some(err) if !zeros(&head) => {
+            let onto = refname.as_deref() == Some(format!("refs/heads/{}", repo.trunk).as_str());
+            let tip = git::rev(p, head.as_deref().unwrap_or("HEAD"));
+            let cfg = match tip.filter(|_| onto) {
+                Some(t) => {
+                    match git::opt(p, &["show", &format!("{t}:{}", crate::store::CONFIG_FILE)]) {
+                        Some(text) => crate::config::Config::from_toml(&text).ok(),
+                        None => Some(crate::config::Config::default()),
+                    }
+                }
+                None => None,
+            };
+            let Some(cfg) = cfg else {
+                return Err(unreadable(repo, err));
+            };
+            eprintln!(
+                "5w ci: {}'s .5w.toml is unreadable; this push repairs it and is judged under the one it commits",
+                repo.trunk
+            );
+            repaired = Repo {
+                cwd: repo.cwd.clone(),
+                primary: repo.primary.clone(),
+                common: repo.common.clone(),
+                cfg,
+                trunk: repo.trunk.clone(),
+                bare: repo.bare,
+                pin: repo.pin.clone(),
+                broken: None,
+            };
+            &repaired
+        }
+        _ => repo,
     };
     // On a server, a trunk that is not there while other branches are means the
     // trunk was guessed wrong: nothing would be judged as landing on it.
@@ -159,7 +201,6 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         .into_iter()
         .find_map(|r| git::rev(p, &r)),
     };
-    let zeros = |r: &Option<String>| r.as_ref().is_some_and(|r| r.bytes().all(|c| c == b'0'));
     if zeros(&head) {
         // A deletion carries no commits. Under the gate the trunk's is refused: a
         // push re-creating it has no trunk to judge against, and would land anything.
@@ -224,6 +265,35 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
 
     let mut problems = Vec::new();
     lint::commits_on(repo, &range, &|_| onto_trunk, &mut problems)?;
+    // A trunk tip whose config does not parse would refuse every later push.
+    if onto_trunk
+        && !range.is_empty()
+        && let Some(text) = git::opt(
+            p,
+            &["show", &format!("{head}:{}", crate::store::CONFIG_FILE)],
+        )
+        && let Err(e) = crate::config::Config::from_toml(&text)
+    {
+        let why = match crate::config::requires_newer(&text) {
+            Some(v) if repo.bare => format!(
+                "requires 5w {v}, newer than this server's 5w {} — upgrade 5w on the server before pushing it",
+                crate::upkeep::VERSION
+            ),
+            Some(v) => format!(
+                "requires 5w {v}, newer than the 5w {} running this check — upgrade it before pushing",
+                crate::upkeep::VERSION
+            ),
+            None => format!(
+                "{} — fix it: landed, it would refuse every push to {}",
+                e.strip_prefix("config")
+                    .unwrap_or(&e)
+                    .trim_start_matches(':')
+                    .trim_start(),
+                repo.trunk
+            ),
+        };
+        problems.push(format!("{}: .5w.toml {why}", short(&head)));
+    }
     // A server's pinned trunk stays the trunk (store: `Repo::open`); a push that
     // leaves it committing another name is refused rather than let the two part.
     if let Some((pinned, how)) = repo
@@ -299,6 +369,19 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         );
     }
     bail!("{} finding(s) — {what}", problems.len())
+}
+
+/// The refusal on a repository whose trunk config does not parse, naming the fix.
+fn unreadable(repo: &Repo, err: &str) -> String {
+    let fix = if err.contains("requires 5w") {
+        format!(
+            "upgrade 5w{}",
+            if repo.bare { " on the server" } else { "" }
+        )
+    } else {
+        format!("push a commit that fixes .5w.toml to {}", repo.trunk)
+    };
+    format!("{}'s .5w.toml is unreadable — {err} — {fix}", repo.trunk)
 }
 
 /// A commit of the pushed span: its tree, parents and subject.
@@ -425,7 +508,8 @@ fn trunk_gate(
 }
 
 /// Whether `gate_trunk` is on in each commit's `.5w.toml`. A config that does not
-/// parse counts as on: a gate is not lifted by breaking its file.
+/// parse counts as on: a gate is not lifted by breaking its file. Nor by a key the
+/// config rejects: then only a written `gate_trunk = false` is off.
 fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> {
     let p = &repo.primary;
     let mut on = HashMap::new();
@@ -450,8 +534,13 @@ fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> 
                 None => {
                     let text = git::git(p, &["cat-file", "blob", oid]).unwrap_or_default();
                     let b = match crate::config::parse_toml(&text) {
-                        Ok(kv) => kv.iter().any(|(k, v)| {
-                            k == "gate_trunk" && matches!(v, crate::config::Val::Bool(true))
+                        Ok(kv) if crate::config::Config::from_toml(&text).is_ok() => {
+                            kv.iter().any(|(k, v)| {
+                                k == "gate_trunk" && matches!(v, crate::config::Val::Bool(true))
+                            })
+                        }
+                        Ok(kv) => !kv.iter().any(|(k, v)| {
+                            k == "gate_trunk" && matches!(v, crate::config::Val::Bool(false))
                         }),
                         Err(_) => true,
                     };

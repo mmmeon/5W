@@ -37,6 +37,9 @@ pub struct Repo {
     /// On a server, the trunk its admin names (`FIVEW_TRUNK` or `5w.trunk`) and
     /// how: it wins over a committed `trunk`, which `ci` refuses to disagree with.
     pub pin: Option<(String, String)>,
+    /// Opened for `ci` over a trunk config that does not parse: its error. The
+    /// config is then the default, and `ci` judges only a push that repairs it.
+    pub broken: Option<String>,
 }
 
 pub const CONFIG_FILE: &str = ".5w.toml";
@@ -71,6 +74,16 @@ fn normalize(p: &Path) -> PathBuf {
 
 impl Repo {
     pub fn open() -> Res<Repo> {
+        Repo::open_with(false)
+    }
+
+    /// Open even when the trunk's config does not parse, noting its error: a
+    /// server must still judge the push that fixes it (`ci`).
+    pub fn open_lenient() -> Res<Repo> {
+        Repo::open_with(true)
+    }
+
+    fn open_with(lenient: bool) -> Res<Repo> {
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
         let common = git::git(
             &cwd,
@@ -134,8 +147,26 @@ impl Repo {
                 )
             })
             .or_else(|| fs::read_to_string(primary.join(CONFIG_FILE)).ok());
+        let mut broken = None;
         let cfg = match src {
-            Some(s) => Config::from_toml(&s)?,
+            Some(s) => match Config::from_toml(&s) {
+                Ok(c) => c,
+                Err(e) if lenient => {
+                    broken = Some(e);
+                    // The trunk it names, where the text says, as the config reads it.
+                    let named = crate::config::parse_toml(&s).ok().and_then(|kv| {
+                        kv.into_iter().rev().find_map(|(k, v)| match v {
+                            crate::config::Val::Str(t) if k == "trunk" => Some(t),
+                            _ => None,
+                        })
+                    });
+                    Config {
+                        trunk: named,
+                        ..Config::default()
+                    }
+                }
+                Err(e) => return Err(e),
+            },
             None => Config::default(),
         };
         // A committed rename must not move a server's gate off the branch its
@@ -153,6 +184,7 @@ impl Repo {
             trunk,
             bare,
             pin,
+            broken,
         })
     }
 

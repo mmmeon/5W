@@ -16,6 +16,14 @@ pub enum Val {
 }
 
 pub fn parse_toml(src: &str) -> Res<Vec<(String, Val)>> {
+    Ok(parse_lines(src)?
+        .into_iter()
+        .map(|(k, v, _)| (k, v))
+        .collect())
+}
+
+/// `parse_toml`, keeping the line each key is on, for errors that name it.
+fn parse_lines(src: &str) -> Res<Vec<(String, Val, usize)>> {
     let b = src.as_bytes();
     let mut i = 0;
     let mut table = String::new();
@@ -35,6 +43,7 @@ pub fn parse_toml(src: &str) -> Res<Vec<(String, Val)>> {
             eol(b, &mut i).map_err(|e| format!("config line {}: {e}", line(i)))?;
             continue;
         }
+        let at = line(i);
         let r = (|| -> Res<(String, Val)> {
             let key = parse_key(b, &mut i)?;
             skip_sp(b, &mut i);
@@ -55,6 +64,7 @@ pub fn parse_toml(src: &str) -> Res<Vec<(String, Val)>> {
                 format!("{table}.{key}")
             },
             v,
+            at,
         ));
     }
     Ok(out)
@@ -255,6 +265,19 @@ fn literal(b: &[u8], i: &mut usize) -> Res<String> {
     }
 }
 
+/// The version a `.5w.toml` requires when this 5w is older than that.
+pub fn requires_newer(src: &str) -> Option<String> {
+    // The one `from_toml` checks.
+    match parse_toml(src)
+        .ok()?
+        .into_iter()
+        .find(|(k, _)| k == "requires")?
+    {
+        (_, Val::Str(r)) if crate::upkeep::newer_than_this(&r) => Some(r),
+        _ => None,
+    }
+}
+
 // --- typed config ---------------------------------------------------------------
 
 /// What a lane's work needs, whatever the project calls the lane. Behaviour
@@ -433,13 +456,20 @@ impl Default for Config {
 
 impl Config {
     pub fn from_toml(src: &str) -> Res<Config> {
-        let kv = parse_toml(src)?;
+        let kv = parse_lines(src)?;
+        // An error about a key names its line: `config: x` becomes `config line N: x`.
+        let at = |n: usize| {
+            move |e: String| match e.strip_prefix("config: ") {
+                Some(rest) => format!("config line {n}: {rest}"),
+                None => e,
+            }
+        };
         // The pin first: a project written for a newer 5w may use keys this one
         // does not know, and "unknown key" would hide the real problem.
-        if let Some((_, v)) = kv.iter().find(|(k, _)| k == "requires") {
+        if let Some((_, v, n)) = kv.iter().find(|(k, _, _)| k == "requires") {
             match v {
-                Val::Str(r) => crate::upkeep::check_requires(r)?,
-                _ => bail!("config: requires must be a version string"),
+                Val::Str(r) => crate::upkeep::check_requires(r).map_err(at(*n))?,
+                _ => return Err(at(*n)("config: requires must be a version string".into())),
             }
         }
         let mut c = Config::default();
@@ -465,7 +495,7 @@ impl Config {
         // kind decides the defaults and may be written after the fields.
         #[derive(Default)]
         struct RawLane {
-            kind: Option<String>,
+            kind: Option<(String, usize)>,
             delegable: Option<bool>,
             close: Option<String>,
             section: Option<String>,
@@ -473,76 +503,84 @@ impl Config {
             refuse: Option<String>,
         }
         let mut raw: Vec<(String, RawLane)> = Vec::new();
-        for (k, v) in &kv {
-            match k.as_str() {
-                "requires" => c.requires = Some(s(v, k)?),
-                "file" => c.file = s(v, k)?,
-                "archive" => c.archive = s(v, k)?,
-                "title_max" => match v {
-                    Val::Int(n) if *n >= 0 => c.title_max = *n as usize,
-                    _ => bail!("config: title_max must be a non-negative integer"),
-                },
-                "trunk" => c.trunk = Some(s(v, k)?),
-                "perennial" => c.perennial = arr(v, k)?,
-                "commit_prefix" => c.commit_prefix = s(v, k)?,
-                "default_lane" => c.default_lane = s(v, k)?,
-                "require_task" => c.require_task = boolean(v, k)?,
-                "gate_trunk" => c.gate_trunk = boolean(v, k)?,
-                "sections.open" => c.open_section = s(v, k)?,
-                "sections.done" => c.done_section = s(v, k)?,
-                "worktrees.root" => c.wt_root = Some(s(v, k)?),
-                "worktrees.links_file" => c.links_file = s(v, k)?,
-                "worktrees.install" => c.install = Some(s(v, k)?),
-                "worktrees.install_marker" => c.install_marker = Some(s(v, k)?),
-                "worktrees.disposable" => c.disposable = arr(v, k)?,
-                "delegate.context" => c.context_docs = arr(v, k)?,
-                "delegate.area_docs" => c.area_docs = arr(v, k)?,
-                "delegate.conventions" => c.conventions = arr(v, k)?,
-                "delegate.footer" => c.brief_footer = Some(s(v, k)?),
-                "review.checklist" => c.checklist = arr(v, k)?,
-                "commands.tasks" => c.cmd_tasks = s(v, k)?,
-                "commands.wt" => c.cmd_wt = s(v, k)?,
-                "commands.ship" => c.cmd_ship = s(v, k)?,
-                _ if k.starts_with("levels.") => {
-                    let n: u8 = k[7..]
-                        .parse()
-                        .map_err(|_| format!("config: bad level key {k}"))?;
-                    if !(1..=4).contains(&n) {
-                        bail!("config: levels run 1 to 4, not {n}");
+        let mut default_at = 0;
+        for (k, v, n) in &kv {
+            let mut one = || -> Res<()> {
+                match k.as_str() {
+                    "requires" => c.requires = Some(s(v, k)?),
+                    "file" => c.file = s(v, k)?,
+                    "archive" => c.archive = s(v, k)?,
+                    "title_max" => match v {
+                        Val::Int(n) if *n >= 0 => c.title_max = *n as usize,
+                        _ => bail!("config: title_max must be a non-negative integer"),
+                    },
+                    "trunk" => c.trunk = Some(s(v, k)?),
+                    "perennial" => c.perennial = arr(v, k)?,
+                    "commit_prefix" => c.commit_prefix = s(v, k)?,
+                    "default_lane" => {
+                        c.default_lane = s(v, k)?;
+                        default_at = *n;
                     }
-                    c.levels.insert(n, s(v, k)?);
-                }
-                _ if k.starts_with("lanes.") => {
-                    let rest = &k[6..];
-                    let Some((name, field)) = rest.split_once('.') else {
-                        bail!("config: bad lane key {k}")
-                    };
-                    if !name.bytes().all(|b| b.is_ascii_lowercase()) {
-                        bail!("config: lane names are lowercase letters: {name}");
-                    }
-                    let idx = match raw.iter().position(|(n, _)| n == name) {
-                        Some(i) => i,
-                        None => {
-                            raw.push((name.to_string(), RawLane::default()));
-                            raw.len() - 1
+                    "require_task" => c.require_task = boolean(v, k)?,
+                    "gate_trunk" => c.gate_trunk = boolean(v, k)?,
+                    "sections.open" => c.open_section = s(v, k)?,
+                    "sections.done" => c.done_section = s(v, k)?,
+                    "worktrees.root" => c.wt_root = Some(s(v, k)?),
+                    "worktrees.links_file" => c.links_file = s(v, k)?,
+                    "worktrees.install" => c.install = Some(s(v, k)?),
+                    "worktrees.install_marker" => c.install_marker = Some(s(v, k)?),
+                    "worktrees.disposable" => c.disposable = arr(v, k)?,
+                    "delegate.context" => c.context_docs = arr(v, k)?,
+                    "delegate.area_docs" => c.area_docs = arr(v, k)?,
+                    "delegate.conventions" => c.conventions = arr(v, k)?,
+                    "delegate.footer" => c.brief_footer = Some(s(v, k)?),
+                    "review.checklist" => c.checklist = arr(v, k)?,
+                    "commands.tasks" => c.cmd_tasks = s(v, k)?,
+                    "commands.wt" => c.cmd_wt = s(v, k)?,
+                    "commands.ship" => c.cmd_ship = s(v, k)?,
+                    _ if k.starts_with("levels.") => {
+                        let n: u8 = k[7..]
+                            .parse()
+                            .map_err(|_| format!("config: bad level key {k}"))?;
+                        if !(1..=4).contains(&n) {
+                            bail!("config: levels run 1 to 4, not {n}");
                         }
-                    };
-                    let l = &mut raw[idx].1;
-                    match field {
-                        "kind" => l.kind = Some(s(v, k)?),
-                        "delegable" => l.delegable = Some(boolean(v, k)?),
-                        "close" => l.close = Some(s(v, k)?),
-                        "section" => l.section = Some(s(v, k)?),
-                        "note" => l.note = Some(s(v, k)?),
-                        "refuse" => l.refuse = Some(s(v, k)?),
-                        _ => bail!("config: unknown lane field {k}"),
+                        c.levels.insert(n, s(v, k)?);
                     }
+                    _ if k.starts_with("lanes.") => {
+                        let rest = &k[6..];
+                        let Some((name, field)) = rest.split_once('.') else {
+                            bail!("config: bad lane key {k}")
+                        };
+                        if !name.bytes().all(|b| b.is_ascii_lowercase()) {
+                            bail!("config: lane names are lowercase letters: {name}");
+                        }
+                        let idx = match raw.iter().position(|(n, _)| n == name) {
+                            Some(i) => i,
+                            None => {
+                                raw.push((name.to_string(), RawLane::default()));
+                                raw.len() - 1
+                            }
+                        };
+                        let l = &mut raw[idx].1;
+                        match field {
+                            "kind" => l.kind = Some((s(v, k)?, *n)),
+                            "delegable" => l.delegable = Some(boolean(v, k)?),
+                            "close" => l.close = Some(s(v, k)?),
+                            "section" => l.section = Some(s(v, k)?),
+                            "note" => l.note = Some(s(v, k)?),
+                            "refuse" => l.refuse = Some(s(v, k)?),
+                            _ => bail!("config: unknown lane field {k}"),
+                        }
+                    }
+                    _ => bail!(
+                        "config: unknown key {k} (this is 5w {}; a newer one may know it — set `requires` to say which)",
+                        crate::upkeep::VERSION
+                    ),
                 }
-                _ => bail!(
-                    "config: unknown key {k} (this is 5w {}; a newer one may know it — set `requires` to say which)",
-                    crate::upkeep::VERSION
-                ),
-            }
+                Ok(())
+            };
+            one().map_err(at(*n))?;
         }
         // A config that names lanes replaces the defaults wholesale.
         if !raw.is_empty() {
@@ -552,8 +590,8 @@ impl Config {
                     // Without `kind`, infer it from the older flags, so existing
                     // configs keep their meaning.
                     let kind = match &r.kind {
-                        Some(k) => LaneKind::parse(k).ok_or_else(|| {
-                            format!("config: lanes.{name}.kind must be agent, restricted, manual or decision, not {k:?}")
+                        Some((k, n)) => LaneKind::parse(k).ok_or_else(|| {
+                            at(*n)(format!("config: lanes.{name}.kind must be agent, restricted, manual or decision, not {k:?}"))
                         })?,
                         None if r.close.as_deref() == Some("decided") => LaneKind::Decision,
                         None if r.delegable == Some(false) => LaneKind::Manual,
@@ -578,10 +616,11 @@ impl Config {
                 .collect::<Res<Vec<Lane>>>()?;
         }
         if !c.lanes.iter().any(|l| l.name == c.default_lane) {
-            bail!(
+            let e = format!(
                 "config: default_lane {} is not a configured lane",
                 c.default_lane
             );
+            return Err(if default_at > 0 { at(default_at)(e) } else { e });
         }
         Ok(c)
     }

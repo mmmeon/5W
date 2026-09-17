@@ -143,7 +143,13 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         return upkeep::self_update(rest);
     }
     git::check_env()?;
-    let repo = Repo::open()?;
+    // `ci` judges pushes on a server: one whose trunk config broke must still
+    // take the push that repairs it.
+    let repo = if cmd == "ci" {
+        Repo::open_lenient()?
+    } else {
+        Repo::open()?
+    };
     match cmd.as_str() {
         "wt" => wt::run(&repo, rest),
         "ship" => ship::run(&repo, rest),

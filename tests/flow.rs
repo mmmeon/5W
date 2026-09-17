@@ -5524,6 +5524,158 @@ fn an_unpinned_gated_server_warns_and_refuses_a_trunk_rename() {
     assert_eq!(r.git(&server, &["rev-parse", "master"]), before);
 }
 
+/// A bare server cloned from the test repository, its pre-receive installed and
+/// `origin` in the main checkout.
+fn server_of(r: &Repo) -> PathBuf {
+    let server = r.root.join("server.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            server.to_str().unwrap(),
+        ],
+    );
+    r.ok(&server, &["hook", "install", "pre-receive"]);
+    r.git(
+        &r.main,
+        &["remote", "add", "origin", server.to_str().unwrap()],
+    );
+    server
+}
+
+fn push_to(r: &Repo, args: &[&str]) -> (bool, String) {
+    let o = r.git_path(
+        &r.main,
+        &path_with_5w(),
+        &[&["push", "-q", "origin"], args].concat(),
+    );
+    (
+        o.status.success(),
+        String::from_utf8_lossy(&o.stderr).to_string(),
+    )
+}
+
+#[test]
+fn a_trunk_push_whose_config_does_not_parse_is_refused_naming_the_line() {
+    let r = Repo::new("config-brick");
+    let server = server_of(&r);
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let before = r.git(&server, &["rev-parse", "main"]);
+    let line = cfg.lines().position(|l| l == "[sections]").unwrap() + 2;
+
+    // An unknown key: landed, every later push would fail to open the config.
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n"),
+    )
+    .unwrap();
+    r.git(&r.main, &["commit", "-qam", "trunk under sections"]);
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(
+        !ok && err.contains(&format!(".5w.toml line {line}: unknown key sections.trunk"))
+            && err.contains("would refuse every push to main"),
+        "{err}"
+    );
+    assert_eq!(r.git(&server, &["rev-parse", "main"]), before);
+
+    // A branch may carry it: only the trunk's config is read.
+    let (ok, err) = push_to(&r, &["main:side"]);
+    assert!(ok, "{err}");
+
+    // A requires newer than the server's 5w names upgrading it.
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    set_requires(&r, "99.0.0");
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(
+        !ok && err.contains("requires 5w 99.0.0")
+            && err.contains("upgrade 5w on the server before pushing it"),
+        "{err}"
+    );
+    assert_eq!(r.git(&server, &["rev-parse", "main"]), before);
+}
+
+#[test]
+fn a_server_whose_trunk_config_broke_takes_only_the_push_that_repairs_it() {
+    let r = Repo::new("config-bricked");
+    let server = server_of(&r);
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let hook = server.join("hooks/pre-receive");
+    let unhooked = |f: &dyn Fn()| {
+        std::fs::rename(&hook, server.join("hook-off")).unwrap();
+        f();
+        std::fs::rename(server.join("hook-off"), &hook).unwrap();
+    };
+    let commit = |file: &str, text: &str, msg: &str| {
+        std::fs::write(r.main.join(file), text).unwrap();
+        r.git(&r.main, &["add", file]);
+        r.git(&r.main, &["commit", "-qm", msg]);
+    };
+
+    // The broken config lands with the hook off (or from before it).
+    commit(
+        ".5w.toml",
+        &cfg.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n"),
+        "break the config",
+    );
+    unhooked(&|| assert!(push_to(&r, &["main"]).0));
+    let broken = r.git(&server, &["rev-parse", "main"]);
+
+    // Any other push is refused, naming the fix.
+    commit("code.txt", "x\n", "code");
+    for to in ["main", "main:side"] {
+        let (ok, err) = push_to(&r, &[to]);
+        assert!(
+            !ok && err.contains("unknown key sections.trunk")
+                && err.contains("push a commit that fixes .5w.toml to main"),
+            "{err}"
+        );
+    }
+    assert_eq!(r.git(&server, &["rev-parse", "main"]), broken);
+
+    // The repair is judged under the config it commits, and lands.
+    commit(".5w.toml", &cfg, "repair the config");
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        r.git(&server, &["rev-parse", "main"]),
+        r.git(&r.main, &["rev-parse", "HEAD"])
+    );
+    commit("more.txt", "x\n", "more code");
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(ok, "{err}");
+
+    // A gated trunk stays gated while its config is broken: the repair needs a landing.
+    let gated = cfg.replace("gate_trunk = false", "gate_trunk = true");
+    commit(".5w.toml", &gated, "gate");
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(ok, "{err}");
+    commit(
+        ".5w.toml",
+        &gated.replace("gate_trunk = true", "gate_trunk = \"yes\""),
+        "break the gate",
+    );
+    unhooked(&|| assert!(push_to(&r, &["main"]).0));
+    commit(".5w.toml", &cfg, "repair and ungate");
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+
+    // A requires newer than the server's 5w names upgrading it.
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    unhooked(&|| {
+        set_requires(&r, "99.0.0");
+        assert!(push_to(&r, &["main"]).0);
+    });
+    commit("code2.txt", "x\n", "code");
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(
+        !ok && err.contains("requires 5w 99.0.0") && err.contains("upgrade 5w on the server"),
+        "{err}"
+    );
+}
+
 #[test]
 fn gate_trunk_refuses_a_landing_that_put_the_reviewed_hunk_in_an_identical_copy() {
     let r = Repo::new("gate-twins");

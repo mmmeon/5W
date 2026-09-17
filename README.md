@@ -254,7 +254,7 @@ commits; merge instead, or ship again.
   commits a merge brings in are judged themselves, under the merge's setting.
 - **Which commits:** every one a push brings when the trunk it moves has `gate_trunk = true`, and
   in a push that enables it, those whose first parent's `.5w.toml` has it (a config that does not
-  parse counts as on). History from before the enabling commit, and that commit, pass as they are;
+  parse counts as on, and so does one the config rejects unless it says `gate_trunk = false`). History from before the enabling commit, and that commit, pass as they are;
   a branch from before it is still new to the trunk, and turning the gate off is a gated change.
 - **The reviewed commit must be on the server.** Shipped as reviewed, it is what landed. After
   `--sync` or `--squash` it is not on the trunk: keep its branch pushed, or push it with the trunk
@@ -365,6 +365,8 @@ the same command runs under any CI, in a server hook, and by hand:
 
 - **A push to the trunk:** every commit in the range is linted as landing on the trunk, and under
   `gate_trunk` each one that adds code is covered by a landing record (*What the gate guarantees*).
+  A new tip whose `.5w.toml` the config rejects is refused, naming its line and error (a `requires`
+  newer than the checking 5w: upgrade that 5w): landed, it would make every later push fail.
 - **A push to any other branch:** its commits carry no queue edits. Commits the trunk already holds —
   brought in by `git merge <trunk>` — are the trunk's and are not judged again. The trunk they are
   judged against is the server's before the push: a hook cannot know whether git will apply a trunk
@@ -406,6 +408,13 @@ refused, landed or not. A server with branches but no
 branch of that name refuses every push to another branch, naming `git config 5w.trunk <name>`: a
 wrong guess would judge no push as landing on the trunk. A pushed ref that is a symbolic ref (an
 alias left by a rename) is judged as the branch it points at.
+
+**A trunk whose `.5w.toml` broke** (landed with the hook off, or from before this check) does not
+lock the server: `5w ci` refuses every push naming the error and the fix — push a commit that fixes
+`.5w.toml` to the trunk, or upgrade the server's 5w when the config `requires` a newer one. A push to
+the trunk whose new tip commits a config that parses (or none) is the repair, judged under that
+config; the gate reads the broken one as on unless it says `gate_trunk = false`, so under the gate
+the repair needs a landing record like any code.
 
 The wrappers install exactly the version the project pins (see *Staying current*), verified —
 [ci/install-5w.sh](ci/install-5w.sh), inlined.

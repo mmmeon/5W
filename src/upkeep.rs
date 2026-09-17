@@ -38,6 +38,11 @@ pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     it.next().is_none().then_some(v)
 }
 
+/// A `requires` this 5w is too old for.
+pub fn newer_than_this(required: &str) -> bool {
+    parse_version(required).is_some_and(|want| parse_version(VERSION) < Some(want))
+}
+
 /// Refuse to run against a project that needs a newer 5w.
 pub fn check_requires(required: &str) -> Res<()> {
     let Some(want) = parse_version(required) else {
