@@ -60,6 +60,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   #6 canonicalizes only the printed 'cd' line. The 'already exists' refusals in wt new/add and 'wt: <cmd> (in <dir>)' still show '..'. Normalize lexically in Repo::wt_root() instead; fs::canonicalize also follows symlinks (/tmp to /private/tmp on macOS).
 - [ ] #34 USAGE: one example invocation under the usage line, e.g. 5w ready area:output @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig 'lead with examples', adopted narrowly; missing from the doc's own follow-up list. No longer worked sequence.
+- [ ] #35 Stacked branches recorded with the trunk as parent: ship re-review and --sync conflicts on work already landed @wt !3
+  Found 2026-09-16 shipping #12-#15. output/task-13 held #12's commit but recorded parent main: once #12 landed as a new commit, ship refused #13 (reviewed diff included #12) and needed open/submit/accept by hand. audit/task-15 (parent bench/task-14, correct) still hit a --sync conflict in tests/flow.rs replaying #14's commit. Fix both: (1) wt new records the branch actually stood on, and doctor/wt ls flag a branch whose commits include another unshipped branch's tip while its recorded parent is the trunk; (2) ship --sync rebases only the branch's own commits (git rebase --onto trunk <old parent tip>), and the gate compares the branch's own diff, so a landed parent does not force a re-review. Test: stack B on A, ship A --sync after trunk moves, ship B --sync lands without re-review.
 
 ## Done
 
