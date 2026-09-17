@@ -33,6 +33,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   While the trunk .5w.toml is broken, 5w ci --branch/--head (and the pushed-trunk path from #83) with a tip that does not resolve refuses with the broken-config message ("fix .5w.toml on <b>...") instead of naming the unresolvable --head/--branch. Resolve the tip first and refuse naming it. Found in review of #85.
 - [ ] #93 A config value with a newline in trunk or file crashes 5w (exit 101)
   A config that parses but whose trunk, file, archive or lane names contain control characters (e.g. trunk = "ma\nin", file = "TAS\nKS.md") crashes ready/ls/doctor/review/show/delegate/add/archive/submit/ship/ci --branch with exit 101: the refusal naming the value is multi-line and trips the one-line check. lint HEAD and ci --ref print findings split across lines. Config::read should reject control characters in names used as refs or paths (one-line refusal naming the key). Found in review of #89.
+- [ ] #94 The pre-commit hook judges queue commits under an uncommitted trunk config
+  lint --staged (the pre-commit hook) judges queue commits under the trunk checkout's working-tree .5w.toml, uncommitted edits included: editing default_lane or lanes locally lets a queue commit that skips review (e.g. close via:self) pass the hook. It should judge under the committed trunk config (as ci does), or at least the staged one only on the repair path. Found in review of #90.
 
 ## Done
 
