@@ -22,7 +22,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4
 - [ ] #16 Move git calls behind named operations in src/git.rs: no raw git argv outside it, output unchanged @vcs !3
   About 50 call sites in 10 modules pass raw git arguments (ship 12, wt 11, lint 5, queue 4, store 3). Move each into a named function in src/git.rs. No behaviour change: tests/flow.rs and the #14 bench baseline prove it. Groundwork for the admin commands and a version-control shim.
-- [~] #19 Batch accept (accept 4 5 6) and ship --accepted: land every accepted branch bottom of stack first @queue !2 branch:queue/task-19 submitted:59a18bf7600c
+- [ ] #19 Batch accept (accept 4 5 6) and ship --accepted: land every accepted branch bottom of stack first @queue !2 branch:queue/task-19 rework:"gate bypass: landed_under passes git's quoted/colon-prefixed path names back as pathspecs, so a parent adding a non-ASCII or ':' file counts as landed when it never did; use -z --no-renames and literal pathspecs, and test an accepted parent deleted without shipping"
   stop at the first refusal
   A supervisor round of 8 accepted tasks meant 8 accepts and 8 ships with the stack order (#12 before #13, #14 before #15) worked out by hand. Each accept keeps its own checks; ship --accepted keeps every ship refusal.
 - [ ] #20 Several queue edits in one signed commit: one signature per supervisor round @queue !2
