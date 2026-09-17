@@ -523,6 +523,13 @@ fn a_subcommand_help_prints_only_that_command() {
         "{full}"
     );
     assert_eq!(r.ok(&r.main, &["branch", "--help"]), full);
+    // The full listing links the README on the web; a command's help does not.
+    assert!(
+        full.contains(&format!("docs     {}#readme", env!("CARGO_PKG_REPOSITORY"))),
+        "{full}"
+    );
+    assert!(!r.ok(&r.main, &["ready", "-h"]).contains("docs "));
+    assert!(!r.ok(&r.main, &["show", "-h"]).contains("http"));
 }
 
 #[test]

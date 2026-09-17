@@ -240,7 +240,8 @@ The queue is read by agents, so every read is priced in tokens.
   `--checklist`.
 - **Help is per command.** `5w <command> --help` prints that command's entry from the listing (and
   the `filters`, `out` or `ids` line it refers to), not the whole listing; bare `5w --help` prints
-  all of it. `wt`, `ship`, `lint`, `ci`, `report` and `audit` print their own usage.
+  all of it, ending with a `docs` line linking this README on the web (the `repository` field in
+  `Cargo.toml`, so a fork's build links the fork). `wt`, `ship`, `lint`, `ci`, `report` and `audit` print their own usage.
 
 ### Measuring output
 

@@ -335,7 +335,8 @@ a bug," also already met.
 
 **Link to web docs in help text — adopt.** `tasks::USAGE` never prints a URL. README.md is the
 web-readable doc (per CLAUDE.md: "README.md is the user's view") but nothing in `--help` points at
-it. Cheap, one line.
+it. Cheap, one line. **Done (#29):** the full listing ends with `docs <repository>#readme`, taken from
+`Cargo.toml`'s `repository`; per-command help leaves it out.
 
 **Suggest corrections when the user got it wrong — reject, a stronger fix already exists.**
 `validate_field()` (`src/tasks.rs` line 933) doesn't guess at a typo; it states the grammar
@@ -623,7 +624,7 @@ explicit send).
 - `ready/review: append a → 5w delegate|accept next-step hint to the summary line, like next already does @output !1` — done, #26
 - `Sty::new(): also disable color for TERM=dumb, and wire up an explicit --no-color flag (currently swallowed by the opts() unknown-flag bug) @output !1`
 - `main.rs: color the "5w: {e}" refusal red when stderr is a terminal and NO_COLOR is unset @output !1`
-- `tasks::USAGE: add one line pointing at the web docs (README.md's URL), per clig's "link to web docs in help text" @output !1`
+- `tasks::USAGE: add one line pointing at the web docs (README.md's URL), per clig's "link to web docs in help text" @output !1` — done, #29
 - `wt rm: parse --force by scanning args like tasks::opts() does, instead of a positional rest.get(1) check @output !1`
 - `README: add a one-line uninstall note (cargo uninstall 5w) near the install instructions @output !1`
 

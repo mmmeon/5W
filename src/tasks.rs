@@ -6,7 +6,8 @@ use crate::util::{Res, Sty, parse_id, short, truncate};
 use std::collections::HashSet;
 use std::io::{IsTerminal, Read};
 
-pub const USAGE: &str = "\
+pub const USAGE: &str = concat!(
+    "\
 usage: 5w <command> [args]
 
 read
@@ -48,7 +49,11 @@ branches
 
 filters  @area !level >lane — or area:x level:n lane:x (no quoting)
 out      --json  --ids  --limit N  --full
-ids      14 or #14. Output is compact when not on a terminal or FIVEW_AGENT=1.";
+ids      14 or #14. Output is compact when not on a terminal or FIVEW_AGENT=1.
+docs     ",
+    env!("CARGO_PKG_REPOSITORY"),
+    "#readme"
+);
 
 /// One command's help: its entry from `USAGE`, and the footer lines that entry
 /// refers to (filters, out, ids), so the two can never drift. `None` for a
