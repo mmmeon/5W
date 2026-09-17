@@ -230,13 +230,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         .pin
         .as_ref()
         .filter(|_| onto_trunk && !range.is_empty())
-        && let Some(named) = git::opt(
-            p,
-            &["show", &format!("{head}:{}", crate::store::CONFIG_FILE)],
-        )
-        .and_then(|s| crate::config::Config::from_toml(&s).ok())
-        .and_then(|c| c.trunk)
-        .filter(|t| t != pinned)
+        && let Some(named) = committed_trunk(p, Some(&head)).filter(|t| t != pinned)
     {
         // The fix is where the pin came from: git config does not outrank the variable.
         let fix = if how.starts_with("FIVEW_TRUNK=") {
@@ -456,7 +450,7 @@ fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> 
     Ok(on)
 }
 
-/// The `trunk` a commit's `.5w.toml` names, if it names one.
+/// The `trunk` a commit's `.5w.toml` names, read as the config reads it.
 fn committed_trunk(p: &std::path::Path, commit: Option<&str>) -> Option<String> {
     let text = git::opt(
         p,
@@ -465,13 +459,7 @@ fn committed_trunk(p: &std::path::Path, commit: Option<&str>) -> Option<String> 
             &format!("{}:{}", commit?, crate::store::CONFIG_FILE),
         ],
     )?;
-    crate::config::parse_toml(&text)
-        .ok()?
-        .into_iter()
-        .find_map(|(k, v)| match v {
-            crate::config::Val::Str(t) if k == "trunk" => Some(t),
-            _ => None,
-        })
+    crate::config::Config::from_toml(&text).ok()?.trunk
 }
 
 /// The commits a landing record covers, when it holds: see `trunk_gate`.

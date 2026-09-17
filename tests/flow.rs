@@ -5361,6 +5361,18 @@ fn an_unpinned_gated_server_warns_and_refuses_a_trunk_rename() {
     assert!(err.contains("`git config 5w.trunk x` first"), "{err}");
     assert_eq!(r.git(&server, &["rev-parse", "master"]), before);
 
+    // A duplicate key is read as the config reads it, the last one winning.
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    let doubled = gated.replace("trunk = \"master\"", "trunk = \"master\"\ntrunk = \"x\"");
+    std::fs::write(r.main.join(".5w.toml"), doubled).unwrap();
+    r.git(&r.main, &["commit", "-qam", "trunk is x, twice"]);
+    let (ok, err) = push(None, &["master"]);
+    assert!(
+        !ok && err.contains("renames the trunk master to \"x\""),
+        "{err}"
+    );
+    assert_eq!(r.git(&server, &["rev-parse", "master"]), before);
+
     // Pinned by git config: no warning, and the #79 mismatch names git config.
     r.git(&server, &["config", "5w.trunk", "master"]);
     let (ok, err) = push(None, &["master"]);
