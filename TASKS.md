@@ -38,6 +38,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #68 Queue symlink leftovers: a working-tree-only link redirects queue writes outside the repo @queue !1
   ci ship_check reads a trunk link as an empty queue; the refusal suggests copying a non-queue target
   Found reviewing #65 (pre-existing): (1) TASKS.md replaced locally (untracked) by a symlink → 5w add writes through it, possibly to a file outside the repository, and leaves ' T TASKS.md'; refuse queue writes when the checkout's queue file is a symlink, one line. (2) ci ship_check reads <trunk>:TASKS.md without checking the mode, so a link already on trunk reads as an empty queue ('no task names X … ok'): refuse/flag it. (3) When the trunk link points at a non-.md file, #65's refusal suggests 'cp src/main.rs TASKS.md'; name reverting the commit that re-pointed it instead. Tests for each.
+- [ ] #65 5w commits a symlinked TASKS.md as a regular 100644 blob, turning the trunk entry into a file (' T TASKS.md') @queue !1 branch:queue/task-65
+  Found reviewing #62 (pre-existing): when TASKS.md (or the archive) is tracked as a symlink (mode 120000), 5w's queue commit writes the target's content as a 100644 blob at that path, so main's entry changes type and the checkout shows ' T TASKS.md'. Either commit to the symlink's target path, or refuse in one line naming it; test it.
 
 ## Done
 
@@ -153,5 +155,3 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [x] #51 Record full commit shas for submitted: and reviewed: @queue !2 branch:queue/task-51 submitted:a523cb50f654 via:review reviewed:a523cb50f654
   and clear inherited GIT_DIR/GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY-style env in git::raw
   Found reviewing #19. (1) submitted:/reviewed: hold 12-hex short shas; a colliding prefix makes rev-parse ambiguous (refusal) and could stand in for a garbage-collected reviewed commit (~2^48 work). Record full shas going forward; keep reading short ones in existing rows; check lint and PROTOCOL.md's field description. (2) git::raw inherits GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES from the caller (or from git when a hook runs 5w); decide which 5w must clear so its checks read the repository it resolved, and test a hook-invoked 5w still works.
-- [x] #65 5w commits a symlinked TASKS.md as a regular 100644 blob, turning the trunk entry into a file (' T TASKS.md') @queue !1 branch:queue/task-65 submitted:7d18929ec586efc005ed1e116c1a3b6f896b86c9 via:review reviewed:7d18929ec586efc005ed1e116c1a3b6f896b86c9
-  Found reviewing #62 (pre-existing): when TASKS.md (or the archive) is tracked as a symlink (mode 120000), 5w's queue commit writes the target's content as a 100644 blob at that path, so main's entry changes type and the checkout shows ' T TASKS.md'. Either commit to the symlink's target path, or refuse in one line naming it; test it.
