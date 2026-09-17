@@ -1744,21 +1744,30 @@ pub const ARCHIVE_HEADER: &str = "# Archive\n\nClosed tasks moved out of the que
 /// the checkout moves there, and with none closed on the trunk nothing is committed.
 fn archive(repo: &Repo) -> Res<()> {
     let q = Q::load(repo)?;
-    let closed = |tasks: &[queue::Task]| tasks.iter().filter(|t| t.state == State::Done).count();
-    if closed(&q.tasks) == 0 {
+    if !q.tasks.iter().any(|t| t.state == State::Done) {
         println!("  nothing closed to archive");
         return Ok(());
     }
-    let n = closed(&queue::parse(&repo.committed()?.unwrap_or_default()));
-    let msg = format!("{}: archive {n} closed tasks", repo.cfg.commit_prefix);
+    // Counted where the op first runs, on the committed copy under the lock:
+    // a row closed on the trunk after any earlier read is still counted.
+    let moved = std::cell::Cell::new(None);
     let done = repo.cfg.done_section.clone();
     store::transact(
         repo,
-        |_| msg.clone(),
+        |_| {
+            format!(
+                "{}: archive {} closed tasks",
+                repo.cfg.commit_prefix,
+                moved.get().unwrap_or(0)
+            )
+        },
         &[],
         |_| Ok(()),
         |f, _| {
             let blocks = f.queue.take(|t| t.state == State::Done);
+            if moved.get().is_none() {
+                moved.set(Some(blocks.len()));
+            }
             if !blocks.is_empty() && f.archive.lines.iter().all(|l| l.trim().is_empty()) {
                 f.archive = queue::Doc::new(ARCHIVE_HEADER);
             }
@@ -1768,7 +1777,7 @@ fn archive(repo: &Repo) -> Res<()> {
             Ok(())
         },
     )?;
-    match n {
+    match moved.get().unwrap_or(0) {
         0 => println!("  nothing closed on {} to archive", repo.trunk),
         n => println!("  archived {n} → {}", repo.cfg.archive),
     }
