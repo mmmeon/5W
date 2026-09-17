@@ -478,9 +478,10 @@ the server wants the landing record in a file the trunk lacks. Queue commands th
 the broken config and both names; the repair is a `.5w.toml` that parses with the old `file`,
 committed on the trunk and pushed — under the gate by an admin, past the server's hook, which
 refuses that push naming this step, since no landing record can cover it. A break
-that renames the archive while the file stays put is refused the same way, by queue commands and
-ship alike, with the old `archive` as the repair: read as empty, its closed tasks would drop out,
-their ids be reused and their accepted rows stop authorising a ship. The pre-commit hook takes
+that renames the archive while the file stays put is refused the same way, by queue commands, ship,
+the server's landing check and a forge's `5w ci --branch` alike (not blamed on the task), with the
+old `archive` as the repair: read as empty, its closed tasks would drop out, their ids be reused and
+their accepted rows stop authorising a ship. The pre-commit hook takes
 either repair: it may restore the `file`, `archive` and `commit_prefix` of the trunk's last config
 that parsed while the trunk holds the queue or archive under a name it restores and nothing under a
 broken name it drops.

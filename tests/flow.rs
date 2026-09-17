@@ -7379,6 +7379,91 @@ fn a_break_that_renames_the_archive_in_place_refuses_rather_than_reading_it_empt
 }
 
 #[test]
+fn the_server_names_an_archive_renamed_in_place_not_the_task() {
+    let r = Repo::new("config-archive-in-place-server");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+        .unwrap()
+        .replace("gate_trunk = false", "gate_trunk = true");
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+    let server = server_of(&r);
+    // #1 accepted and archived, not shipped yet.
+    r.ok(&r.main, &["add", "first"]);
+    assert!(push_to(&r, &["main"]).0);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    let reviewed = r.git(&wt, &["rev-parse", "HEAD"]);
+    r.ok(&r.main, &["submit", "1", "a/x"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.ok(&r.main, &["archive"]);
+    let (ok, err) = push_to(
+        &r,
+        &["main", "a/x", &format!("{reviewed}:refs/5w/reviewed/1")],
+    );
+    assert!(ok, "{err}");
+    // One break renames the archive, and the archive file stays where it was.
+    let broken = cfg
+        .replace("archive = \"DONE.md\"", "archive = \"DONE2.md\"")
+        .replace("[sections]\n", "[sections]\ntrunk = \"main\"\n");
+    assert!(broken.contains("DONE2.md") && broken.contains("[sections]\ntrunk"));
+    std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+    r.git(
+        &r.main,
+        &["commit", "-qam", "break the config, rename the archive"],
+    );
+    let hook = server.join("hooks/pre-receive");
+    std::fs::rename(&hook, server.join("hook-off")).unwrap();
+    assert!(push_to(&r, &["main"]).0);
+    std::fs::rename(server.join("hook-off"), &hook).unwrap();
+    let blames_the_config = |out: &str| {
+        out.contains(".5w.toml on main is broken")
+            && out.contains("names the archive DONE2.md, not DONE.md")
+            && out.contains("archive = \"DONE.md\"")
+            && out.contains("an admin")
+            && !out.contains("not in the queue")
+            && !out.contains("no task names it")
+    };
+
+    // The forge's check of the branch: #1's row is in the archive the break left.
+    let o = r.cli(
+        &r.main,
+        &["ci", "--branch", "a/x", "--head", "a/x", "--trunk", "main"],
+    );
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(!o.status.success() && blames_the_config(&out), "{out}");
+
+    // A landing of #1, pushed with a config that parses: the record cannot be
+    // judged, and is refused naming the config, not the task.
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "repair the config"]);
+    let base = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(&r.main, &["cherry-pick", &reviewed]);
+    let tip = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(
+        &r.main,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("chore(tasks): land #1\n\nLanded: {base}..{tip}"),
+        ],
+    );
+    let before = r.git(&server, &["rev-parse", "main"]);
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(
+        !ok && err.contains("land #1 covers nothing") && blames_the_config(&err),
+        "{err}"
+    );
+    assert_eq!(r.git(&server, &["rev-parse", "main"]), before);
+}
+
+#[test]
 fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
     let r = Repo::new("config-bricked-x");
     let server = server_of(&r);

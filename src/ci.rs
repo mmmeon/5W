@@ -687,6 +687,47 @@ fn committed_trunk(p: &std::path::Path, commit: Option<&str>) -> Option<String> 
     crate::config::Config::from_toml(&text).ok()?.trunk
 }
 
+/// The archive as commit `rev` has it, empty when it has none — unless the trunk's
+/// committed config is broken and renamed the archive in place, leaving the closed
+/// tasks under the name its last accepted config keeps, which `rev` still has.
+/// Read as empty, an accepted row would stop naming its task and branch: refused
+/// with the repair, as a checkout's reads refuse it (store: `no_archive`). The
+/// names here are the trunk's, even under a pushed config that parses.
+fn archive_at(repo: &Repo, rev: &str) -> Res<String> {
+    let (p, t, file) = (&repo.primary, &repo.trunk, crate::store::CONFIG_FILE);
+    let new = &repo.cfg.archive;
+    if let Some(a) = git::opt(p, &["show", &format!("{rev}:{new}")]) {
+        return Ok(a);
+    }
+    let Some(tip) = [
+        format!("refs/heads/{t}"),
+        format!("refs/remotes/origin/{t}"),
+    ]
+    .iter()
+    .find_map(|r| git::rev(p, r)) else {
+        return Ok(String::new());
+    };
+    let Some(text) = git::opt(p, &["show", &format!("{tip}:{file}")]) else {
+        return Ok(String::new());
+    };
+    let Err(e) = crate::config::Config::from_toml(&text) else {
+        return Ok(String::new());
+    };
+    let old = crate::store::last_accepted_config(p, &tip)
+        .map(|c| c.archive)
+        .filter(|old| old != new && git::ok(p, &["cat-file", "-e", &format!("{rev}:{old}")]));
+    let Some(old) = old else {
+        return Ok(String::new());
+    };
+    let fix = match setting_on(p, Some(&tip), "gate_trunk") {
+        true => format!(
+            "an admin commits a {file} that parses with archive = \"{old}\" on {t} and pushes it past the server's hook"
+        ),
+        false => format!("commit a {file} that parses with archive = \"{old}\" on {t} and push it"),
+    };
+    bail!("{file} on {t} is broken ({e}) and names the archive {new}, not {old} — {fix}")
+}
+
 /// The commits a landing record covers, when it holds: see `trunk_gate`.
 fn landing(
     repo: &Repo,
@@ -748,7 +789,7 @@ fn landing(
     let show = |f: &str| git::opt(p, &["show", &format!("{sha}:{f}")]).unwrap_or_default();
     let all: Vec<Task> = queue::parse(&show(&repo.cfg.file))
         .into_iter()
-        .chain(queue::parse(&show(&repo.cfg.archive)))
+        .chain(queue::parse(&archive_at(repo, sha)?))
         .collect();
     let id_n = parse_id(id)?;
     let Some(t) = all.iter().find(|t| t.id == id_n) else {
@@ -809,9 +850,16 @@ fn ship_check(
         return Ok(());
     }
     let show = |f: &str| git::opt(p, &["show", &format!("{trunk}:{f}")]).unwrap_or_default();
+    let archive = match archive_at(repo, trunk) {
+        Ok(a) => a,
+        Err(why) => {
+            out.push(format!("{branch}: {why}"));
+            return Ok(());
+        }
+    };
     let rows: Vec<_> = queue::parse(&show(&repo.cfg.file))
         .into_iter()
-        .chain(queue::parse(&show(&repo.cfg.archive)))
+        .chain(queue::parse(&archive))
         .filter(|t| t.branch.as_deref() == Some(branch))
         .collect();
     if rows.is_empty() {
