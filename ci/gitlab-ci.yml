@@ -127,11 +127,16 @@
       api() { printf 'PRIVATE-TOKEN: %s\n' "$FIVEW_QUEUE_TOKEN" | curl -fsS -H @- "$CI_API_V4_URL/projects/$CI_PROJECT_ID/$1"; }
       # Every page of a list, as one array; $1 ends in ? or &. Stops at an empty page.
       # A failed page fails the list: a partial one could hide a version or a commit.
+      # So does a page that is not one JSON array (an error object, a proxy's HTML)
+      # or a list longer than 100 pages: neither ends, and the job holds the queue.
       pages() {
         n=1; out=
         while :; do
           r=$(api "${1}per_page=100&page=$n") || return 1
-          [ "$(printf '%s' "$r" | jq length)" != 0 ] || break
+          len=$(printf '%s' "$r" | jq -se 'if length == 1 and (.[0] | type) == "array" then .[0] | length else error("not an array") end' 2>/dev/null) \
+            || { echo "5w: page $n of ${1%[?&]} is not a JSON array" >&2; return 1; }
+          [ "$len" != 0 ] || break
+          [ "$n" -le 100 ] || { echo "5w: ${1%[?&]} has more than 100 pages" >&2; return 1; }
           out="$out$r"; n=$((n + 1))
         done
         printf '%s' "$out" | jq -s 'add // []'
@@ -175,9 +180,11 @@
               ".approved_by[] | select(.user.id != \$a and .approved_at != null and (.approved_at | $epoch) > \$since) | .user.id"); do
             level=$(api "members/all/$id" 2>/dev/null | jq -r '.access_level // 0') || level=0
             [ "${level:-0}" -ge 30 ] || continue
+            # An approver whose emails cannot be read is not counted: they may be a maker.
             emails=$(api "users/$id" 2>/dev/null \
-              | jq -c '[.email, .public_email, .commit_email | select(. != null and . != "") | ascii_downcase]') || emails='[]'
-            [ "$(jq -n --argjson e "${emails:-[]}" --argjson m "$makers" '[$e[] | select(. as $x | $m | index($x))] | length')" = 0 ] \
+              | jq -ec 'objects | [.email, .public_email, .commit_email | select(. != null and . != "") | ascii_downcase]') \
+              || { echo "!$mr: approver $id: user lookup failed; not counted"; continue; }
+            [ "$(jq -n --argjson e "$emails" --argjson m "$makers" '[$e[] | select(. as $x | $m | index($x))] | length')" = 0 ] \
               || { echo "!$mr: approver $id wrote or committed the change; not counted"; continue; }
             approver=$id; break
           done

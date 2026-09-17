@@ -315,8 +315,9 @@ The wiring follows them:
   with that head, so a force-push back to an earlier head does not revive an older approval). Set
   "Minimum role to use pipeline variables" to Owner or no one: a pipeline or schedule variable
   overriding `CI_API_V4_URL` or `CI_SERVER_URL` would redirect the token. Commit authors are matched
-  by the emails GitLab shows the token, so that check is only as good as those. Every list the job
-  reads is read to its last page, and a failed page fails the job.
+  by the emails GitLab shows the token, so that check is only as good as those; an approver whose
+  user record cannot be read is not counted. Every list the job reads is read to its last page, and
+  a failed page, a page that is not a JSON array or a list longer than 100 pages fails the job.
 
 This repository's own [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `cargo fmt`, `cargo
 clippy` and `cargo test` on every push and change request, then the same `5w ci` check against 5W's
