@@ -334,6 +334,7 @@ finished is measured from the submit. Blocked time still running is measured to 
 5w wt new <branch> [--from <parent>] [--install]
 5w wt add <branch>        # worktree for an existing branch
 5w wt ls | path | rm | link | install | setup
+5w wt discard-copy <branch>   # drop the trunk checkout's uncommitted copy of <branch>'s diff
 ```
 
 Worktrees go in `worktrees.root` (default `../<repo>-wt`, or `$FIVEW_WT_ROOT`); a relative root is
@@ -347,6 +348,14 @@ set `worktrees.install` to run a real install per worktree.
 Stacking records the parent in git-town's own config keys, so `git town sync` and friends work on
 these branches when git-town is installed, and nothing requires it when it is not. `5w wt setup`
 configures both.
+
+A branch's change copied into the trunk checkout and left uncommitted — a worker that edited the
+wrong directory, a patch applied to try it — blocks shipping that branch. `5w doctor` names each
+branch whose whole diff (`main...branch`) the trunk checkout's uncommitted changes equal exactly,
+untracked new files included, and `5w wt discard-copy <branch>` discards them: it refuses unless
+every changed path, both sides of it and its mode match the branch's diff byte for byte and no path
+is partly staged, then restores those files from `HEAD` and deletes the ones the branch adds.
+Anything else in the checkout makes it refuse, so nothing that is not in the branch is lost.
 
 ## Configuration
 

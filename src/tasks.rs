@@ -993,6 +993,7 @@ pub fn doctor_findings(repo: &Repo) -> Res<Doctor> {
         ));
     }
     notes.extend(crate::upkeep::notes(repo)?);
+    notes.extend(crate::wt::copy_notes(repo)?);
     if long > 0 {
         notes.push(format!(
             "{long} open titles over {} chars — `5w split`",

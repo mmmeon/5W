@@ -1517,6 +1517,79 @@ fn wt_rm_finds_force_anywhere_in_the_arguments() {
     );
 }
 
+#[test]
+fn doctor_names_a_trunk_copy_of_a_branch_and_discard_copy_takes_only_an_exact_one() {
+    let r = Repo::new("copy");
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    std::fs::create_dir_all(wt.join("new/deep")).unwrap();
+    std::fs::write(wt.join("new/deep/file"), "added\n").unwrap();
+    std::fs::write(wt.join("README"), "hi\nthere\n").unwrap();
+    r.git(&wt, &["add", "-A"]);
+    r.git(&wt, &["commit", "-qm", "change"]);
+    r.ok(&r.main, &["wt", "new", "b/y"]);
+    r.commit_in(&r.wt("b/y"), "README", "other\n");
+
+    // Clean trunk: nothing to name, nothing to discard.
+    assert!(!r.ok(&r.main, &["doctor"]).contains("discard-copy"));
+    assert!(
+        r.fails(&r.main, &["wt", "discard-copy", "a/x"])
+            .contains("no uncommitted changes")
+    );
+
+    // The same change copied into the trunk checkout, part of it staged.
+    std::fs::create_dir_all(r.main.join("new/deep")).unwrap();
+    std::fs::write(r.main.join("new/deep/file"), "added\n").unwrap();
+    std::fs::write(r.main.join("README"), "hi\nthere\n").unwrap();
+    r.git(&r.main, &["add", "README"]);
+    let doc = r.ok(&r.main, &["doctor"]);
+    assert!(doc.contains("`5w wt discard-copy a/x`"), "{doc}");
+    assert!(!doc.contains("b/y"), "{doc}");
+
+    // Not exact — a byte differs, or something else is changed too: refused, untouched.
+    std::fs::write(r.main.join("new/deep/file"), "added \n").unwrap();
+    assert!(!r.ok(&r.main, &["doctor"]).contains("discard-copy"));
+    assert!(
+        r.fails(&r.main, &["wt", "discard-copy", "a/x"])
+            .contains("not exactly a/x's diff")
+    );
+    assert_eq!(
+        std::fs::read_to_string(r.main.join("new/deep/file")).unwrap(),
+        "added \n"
+    );
+    std::fs::write(r.main.join("new/deep/file"), "added\n").unwrap();
+    std::fs::write(r.main.join("mine"), "keep\n").unwrap();
+    assert!(
+        r.fails(&r.main, &["wt", "discard-copy", "a/x"])
+            .contains("not exactly")
+    );
+    std::fs::remove_file(r.main.join("mine")).unwrap();
+    assert!(
+        r.fails(&r.main, &["wt", "discard-copy", "b/y"])
+            .contains("not exactly")
+    );
+
+    // Partly staged: the staged text is in neither HEAD nor the branch.
+    std::fs::write(r.main.join("README"), "staged\n").unwrap();
+    r.git(&r.main, &["add", "README"]);
+    std::fs::write(r.main.join("README"), "hi\nthere\n").unwrap();
+    assert!(
+        r.fails(&r.main, &["wt", "discard-copy", "a/x"])
+            .contains("partly staged")
+    );
+    r.git(&r.main, &["add", "README"]);
+
+    let out = r.ok(&r.main, &["wt", "discard-copy", "a/x"]);
+    assert!(out.contains("discarded 2 file(s)"), "{out}");
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    assert!(!r.main.join("new").exists());
+    assert_eq!(
+        r.git(&r.main, &["diff", "main...a/x", "--name-only"]),
+        "README\nnew/deep/file"
+    );
+    assert!(!r.ok(&r.main, &["doctor"]).contains("discard-copy"));
+}
+
 // --- audit: how a repository has used 5W ------------------------------------------------
 
 impl Repo {

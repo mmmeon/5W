@@ -24,6 +24,8 @@ usage: 5w wt <command> [args]
   link [<path>]               Re-link gitignored artifacts (default: cwd)
   install [<path>]            Run the configured install command
   setup                       Configure git (and git-town, if present). Idempotent
+  discard-copy <branch>       Discard the trunk checkout's uncommitted changes when they
+                              are exactly <branch>'s diff, byte for byte; else refuse
 
 Links are shared, not copied: a write through one hits the primary's file.";
 
@@ -63,6 +65,13 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         "link" => link(repo, &target(repo, rest)?).map(|_| ()),
         "install" => install(repo, &target(repo, rest)?),
         "setup" => setup(repo),
+        "discard-copy" => {
+            let usage = "usage: 5w wt discard-copy <branch>";
+            match rest {
+                [b] if !b.starts_with("--") => discard_copy(repo, b),
+                _ => bail!("{usage}"),
+            }
+        }
         "help" | "-h" | "--help" => {
             println!("{USAGE}");
             Ok(())
@@ -401,6 +410,241 @@ pub fn remove(repo: &Repo, branch: &str, force: bool) -> Res<()> {
     args.push(&d);
     git::git(&repo.primary, &args)?;
     println!("wt: removed {} (branch {branch} kept)", dir.display());
+    Ok(())
+}
+
+// --- copies of a branch in the trunk checkout -------------------------------------------
+
+/// One side of a file's change: `(mode, blob)`, or `None` where the file is absent.
+type Side = Option<(String, String)>;
+type Changes = std::collections::BTreeMap<String, (Side, Side)>;
+
+fn side(mode: &str, sha: &str) -> Side {
+    (mode != "000000").then(|| (mode.to_string(), sha.to_string()))
+}
+
+/// Parse `git diff --raw -z`: `:old new oldsha newsha status\0path\0` per file.
+fn raw_changes(out: &str) -> Changes {
+    let mut v = Changes::new();
+    let mut it = out.split('\0');
+    while let (Some(meta), Some(path)) = (it.next(), it.next()) {
+        let f: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+        if f.len() < 4 {
+            break;
+        }
+        v.insert(path.to_string(), (side(f[0], f[2]), side(f[1], f[3])));
+    }
+    v
+}
+
+/// What `branch` changes over its merge-base with the trunk: `trunk...branch`.
+fn branch_changes(repo: &Repo, branch: &str) -> Res<Changes> {
+    let p = &repo.primary;
+    let mb = git::git(p, &["merge-base", &repo.trunk, branch])?;
+    let out = git::git(
+        p,
+        &[
+            "diff",
+            "--raw",
+            "-z",
+            "--no-renames",
+            "--full-index",
+            "--no-abbrev",
+            &mb,
+            branch,
+        ],
+    )?;
+    Ok(raw_changes(&out))
+}
+
+/// The checkout's uncommitted changes against HEAD, untracked files included, with
+/// each working file's blob hashed as `git add` would (and nothing written). `None`
+/// when a path is partly staged: its staged content is in neither HEAD nor the file.
+fn working_changes(dir: &Path) -> Res<Option<Changes>> {
+    let names = |args: &[&str]| -> Res<std::collections::HashSet<String>> {
+        Ok(git::git(dir, args)?
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect())
+    };
+    let staged = names(&["diff", "--cached", "--name-only", "-z", "--no-renames"])?;
+    let unstaged = names(&["diff", "--name-only", "-z", "--no-renames"])?;
+    if staged.intersection(&unstaged).next().is_some() {
+        return Ok(None);
+    }
+    let raw = git::git(
+        dir,
+        &[
+            "diff",
+            "--raw",
+            "-z",
+            "--no-renames",
+            "--full-index",
+            "--no-abbrev",
+            "HEAD",
+        ],
+    )?;
+    let mut v = raw_changes(&raw);
+    for p in git::git(dir, &["ls-files", "-o", "--exclude-standard", "-z"])?
+        .split('\0')
+        .filter(|s| !s.is_empty())
+    {
+        let old = v.remove(p).and_then(|(o, _)| o);
+        v.insert(p.to_string(), (old, Some((String::new(), String::new()))));
+    }
+    // Hash what is on disk now; the index's idea of a working file may be stale.
+    for (p, (_, new)) in v.iter_mut() {
+        let Some(n) = new else { continue };
+        let file = dir.join(p);
+        let meta = fs::symlink_metadata(&file).map_err(|e| format!("{p}: {e}"))?;
+        let o = if meta.file_type().is_symlink() {
+            let target = fs::read_link(&file).map_err(|e| format!("{p}: {e}"))?;
+            n.0 = "120000".into();
+            git::raw(
+                dir,
+                &["hash-object", "--stdin"],
+                &[],
+                Some(&target.to_string_lossy()),
+            )?
+        } else {
+            use std::os::unix::fs::PermissionsExt;
+            n.0 = if meta.permissions().mode() & 0o111 != 0 {
+                "100755".into()
+            } else {
+                "100644".into()
+            };
+            git::raw(dir, &["hash-object", "--", p], &[], None)?
+        };
+        if !o.ok {
+            bail!("git hash-object {p}: {}", o.stderr.trim());
+        }
+        n.1 = o.stdout.trim().to_string();
+    }
+    Ok(Some(v))
+}
+
+/// Branches whose whole diff the trunk checkout holds uncommitted, byte for byte —
+/// with the checkout. Such a copy blocks shipping the branch and is safe to discard.
+pub fn copies(repo: &Repo) -> Res<Option<(PathBuf, Vec<String>)>> {
+    let Some(dir) = repo.trunk_checkout()? else {
+        return Ok(None);
+    };
+    if !git::dirty(&dir)? {
+        return Ok(None);
+    }
+    let Some(work) = working_changes(&dir)? else {
+        return Ok(None);
+    };
+    let mut found = Vec::new();
+    for b in git::git(
+        &repo.primary,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )?
+    .lines()
+    {
+        if b == repo.trunk {
+            continue;
+        }
+        if let Ok(c) = branch_changes(repo, b)
+            && c == work
+        {
+            found.push(b.to_string());
+        }
+    }
+    Ok(Some((dir, found)))
+}
+
+/// Doctor's notes: each branch the trunk checkout holds an uncommitted copy of.
+pub fn copy_notes(repo: &Repo) -> Res<Vec<String>> {
+    let Some((dir, found)) = copies(repo)? else {
+        return Ok(Vec::new());
+    };
+    Ok(found
+        .iter()
+        .map(|b| {
+            format!(
+                "{} holds {b}'s diff uncommitted, exactly — `5w wt discard-copy {b}` discards it",
+                dir.display()
+            )
+        })
+        .collect())
+}
+
+fn discard_copy(repo: &Repo, branch: &str) -> Res<()> {
+    if branch == repo.trunk || !git::branch_exists(&repo.primary, branch) {
+        bail!("no branch {branch} other than the trunk (see: git branch)");
+    }
+    let Some(dir) = repo.trunk_checkout()? else {
+        bail!(
+            "no worktree has {} checked out; nothing to discard",
+            repo.trunk
+        )
+    };
+    let Some(work) = working_changes(&dir)? else {
+        bail!(
+            "{} has files partly staged; nothing discarded — `git -C {} diff` to see them",
+            dir.display(),
+            dir.display()
+        )
+    };
+    if work.is_empty() {
+        bail!(
+            "{} has no uncommitted changes; nothing to discard",
+            dir.display()
+        );
+    }
+    if work != branch_changes(repo, branch)? {
+        bail!(
+            "{}'s uncommitted changes are not exactly {branch}'s diff; nothing discarded — compare `git -C {} diff HEAD` with `git diff {}...{branch}`",
+            dir.display(),
+            dir.display(),
+            repo.trunk
+        );
+    }
+    let env = [("GIT_LITERAL_PATHSPECS", "1")];
+    let tracked: Vec<&str> = (work.iter())
+        .filter(|(_, (old, _))| old.is_some())
+        .map(|(p, _)| p.as_str())
+        .collect();
+    let added: Vec<&str> = (work.iter())
+        .filter(|(_, (old, _))| old.is_none())
+        .map(|(p, _)| p.as_str())
+        .collect();
+    if !tracked.is_empty() {
+        let mut args = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
+        args.extend(&tracked);
+        let o = git::raw(&dir, &args, &env, None)?;
+        if !o.ok {
+            bail!("git restore: {}", o.stderr.trim());
+        }
+    }
+    for p in added {
+        let o = git::raw(
+            &dir,
+            &["rm", "--cached", "-q", "--ignore-unmatch", "--", p],
+            &env,
+            None,
+        )?;
+        if !o.ok {
+            bail!("git rm --cached {p}: {}", o.stderr.trim());
+        }
+        let file = dir.join(p);
+        fs::remove_file(&file).map_err(|e| format!("{p}: {e}"))?;
+        // Directories the branch added go with their last file.
+        let mut d = file.parent();
+        while let Some(parent) = d {
+            if parent == dir || fs::remove_dir(parent).is_err() {
+                break;
+            }
+            d = parent.parent();
+        }
+    }
+    println!(
+        "wt: discarded {} file(s) in {} — the uncommitted copy of {branch}; the branch is untouched",
+        work.len(),
+        dir.display()
+    );
     Ok(())
 }
 
