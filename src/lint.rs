@@ -89,12 +89,22 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 .map(|i| ("GIT_INDEX_FILE", i.as_str()))
                 .collect();
             let repaired;
-            let repo = match &repo.broken {
-                Some(err) => {
+            let repo = match (&repo.broken, committed_config(repo)) {
+                (Some(err), _) => {
                     repaired = staged_repair(repo, err, &env)?;
                     &repaired
                 }
-                None => repo,
+                (None, Some(Ok(committed))) => {
+                    repaired = with_config(repo, committed);
+                    &repaired
+                }
+                // The checkout's copy parses, the committed one does not: this
+                // commit is that repair, under the names the trunk still gives.
+                (None, Some(Err((err, names)))) => {
+                    repaired = staged_repair(&with_config(repo, names), &err, &env)?;
+                    &repaired
+                }
+                (None, None) => repo,
             };
             // Read first, so a marker the checkout no longer needs goes even on
             // a commit that leaves the queue alone.
@@ -635,6 +645,63 @@ pub fn check_texts(
     check(&repo.cfg, repo, &old, &new, Some(subject), at, out);
 }
 
+/// The config the trunk commits, which a staged queue edit is judged under as
+/// `ci` judges it — not the trunk checkout's working copy, whose uncommitted edit
+/// (a lane's kind, `default_lane`) would otherwise let a close skip review. None:
+/// the trunk commits no config to judge by. Err: it does not parse — its error,
+/// and a config holding the queue names it still gives (see `Repo::open_lenient`).
+fn committed_config(repo: &Repo) -> Option<Result<Config, (String, Config)>> {
+    let file = crate::store::CONFIG_FILE;
+    let tip = [
+        format!("refs/heads/{}", repo.trunk),
+        format!("refs/remotes/origin/{}", repo.trunk),
+    ]
+    .iter()
+    .find_map(|r| git::rev(&repo.primary, r))?;
+    let text = git::opt(&repo.primary, &["show", &format!("{tip}:{file}")])?;
+    let err = match Config::from_toml(&text) {
+        Ok(cfg) => return Some(Ok(cfg)),
+        Err(e) => e,
+    };
+    let kv = crate::config::parse_toml(&text)
+        .ok()
+        .or_else(|| {
+            crate::store::last_readable_config(&repo.primary, &tip)
+                .and_then(|t| crate::config::parse_toml(&t).ok())
+        })
+        .unwrap_or_default();
+    let said = |key: &str| {
+        kv.iter().rev().find_map(|(k, v)| match v {
+            crate::config::Val::Str(t) if k == key => Some(t.clone()),
+            _ => None,
+        })
+    };
+    let d = Config::default();
+    Some(Err((
+        err,
+        Config {
+            file: said("file").unwrap_or(d.file.clone()),
+            archive: said("archive").unwrap_or(d.archive.clone()),
+            commit_prefix: said("commit_prefix").unwrap_or(d.commit_prefix.clone()),
+            ..d
+        },
+    )))
+}
+
+/// `repo` judged under `cfg`.
+fn with_config(repo: &Repo, cfg: Config) -> Repo {
+    Repo {
+        cwd: repo.cwd.clone(),
+        primary: repo.primary.clone(),
+        common: repo.common.clone(),
+        cfg,
+        trunk: repo.trunk.clone(),
+        bare: repo.bare,
+        pin: repo.pin.clone(),
+        broken: None,
+    }
+}
+
 /// A checkout whose trunk config does not parse commits only its repair: an
 /// index whose `.5w.toml` parses (or has none), judged under that config with
 /// the queue names the broken one gives (`Repo::open_lenient`), which it must keep.
@@ -667,16 +734,7 @@ fn staged_repair(repo: &Repo, err: &str, env: &[(&str, &str)]) -> Res<Repo> {
             );
         }
     }
-    Ok(Repo {
-        cwd: repo.cwd.clone(),
-        primary: repo.primary.clone(),
-        common: repo.common.clone(),
-        cfg,
-        trunk: repo.trunk.clone(),
-        bare: repo.bare,
-        pin: repo.pin.clone(),
-        broken: None,
-    })
+    Ok(with_config(repo, cfg))
 }
 
 /// A file as the index `env` names (the caller's, see `git::caller_index`) holds it.

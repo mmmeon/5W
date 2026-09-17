@@ -6006,6 +6006,72 @@ fn the_pre_commit_hook_takes_the_commit_that_repairs_a_broken_config() {
 }
 
 #[test]
+fn the_pre_commit_hook_judges_a_queue_commit_under_the_committed_trunk_config() {
+    let r = Repo::new("hook-committed-config");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let reviewed = cfg.replace("[lanes.agent]\n", "[lanes.agent]\nclose = \"review\"\n");
+    assert_ne!(reviewed, cfg);
+    r.ok(&r.main, &["hook", "install"]);
+    r.commit_in(&r.main, ".5w.toml", &reviewed);
+    r.ok(&r.main, &["add", "do it"]);
+    let closed = r
+        .tasks()
+        .replace("- [ ] #1 do it", "- [x] #1 do it via:self");
+    let commit = |files: &[&str]| {
+        std::fs::write(r.main.join("TASKS.md"), &closed).unwrap();
+        r.git(&r.main, &[&["add", "--"], files].concat());
+        let mut c = Command::new("git");
+        c.args(["commit", "-qm", "close #1"]).current_dir(&r.main);
+        env(&mut c, &r.root);
+        let o = c.output().unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+
+    // An uncommitted edit to the trunk's config does not let a close skip review,
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    let (ok, err) = commit(&["TASKS.md"]);
+    assert!(!ok && err.contains("closes via:review"), "{err}");
+    // nor does staging it with the close.
+    let (ok, err) = commit(&["TASKS.md", ".5w.toml"]);
+    assert!(!ok && err.contains("closes via:review"), "{err}");
+    r.git(&r.main, &["reset", "-q", "--", "TASKS.md", ".5w.toml"]);
+    r.git(&r.main, &["checkout", "--", "TASKS.md"]);
+
+    // A branch commit changing the config is no queue edit: the hook takes it.
+    r.ok(&r.main, &["wt", "new", "f/lane"]);
+    r.commit_in(&r.wt("f/lane"), ".5w.toml", &cfg);
+
+    // Committed on the trunk, the config judges the close.
+    r.git(
+        &r.main,
+        &["commit", "-qm", "closes via:self", "--", ".5w.toml"],
+    );
+    let (ok, err) = commit(&["TASKS.md"]);
+    assert!(ok, "{err}");
+    r.lint_history();
+
+    // A trunk config broken past the hook and fixed only in the checkout: a queue
+    // commit is that repair, staged, as on a checkout that still reads broken.
+    let broken = cfg.replace("title_max = 120", "title_max = = 1");
+    std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+    r.git(&r.main, &["commit", "-qam", "break", "--no-verify"]);
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    let row = r.tasks().replace("## Open\n", "## Open\n\n- [ ] #2 more\n");
+    std::fs::write(r.main.join("TASKS.md"), &row).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    let mut c = Command::new("git");
+    c.args(["commit", "-qm", "add #2"]).current_dir(&r.main);
+    env(&mut c, &r.root);
+    let err = String::from_utf8_lossy(&c.output().unwrap().stderr).to_string();
+    assert!(err.contains("stage a .5w.toml that parses"), "{err}");
+    r.git(&r.main, &["add", ".5w.toml"]);
+    r.git(&r.main, &["commit", "-qm", "repair and add #2"]);
+}
+
+#[test]
 fn a_trunk_config_broken_past_parsing_is_read_as_the_last_one_that_parsed() {
     let r = Repo::new("config-syntax");
     let server = server_of(&r);
