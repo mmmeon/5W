@@ -313,6 +313,18 @@ pub fn batch_edits<'a>(prefix: &str, subject: &'a str) -> Option<Vec<(&'a str, u
     (edits.len() > 1).then_some(edits)
 }
 
+/// The one edit a single queue commit names: its subject is `<prefix>: <verb> #<id>`,
+/// alone or followed by a space and the rest of the message (`set #4 level 1`,
+/// `add #5 — title`). `None` for any other subject, a batch's included.
+pub fn single_edit<'a>(prefix: &str, subject: &'a str) -> Option<(&'a str, u64)> {
+    let rest = subject.strip_prefix(prefix)?.strip_prefix(": ")?;
+    let (verb, rest) = rest.split_once(" #")?;
+    let digits = rest.split(' ').next()?;
+    let ok =
+        VERBS.contains(&verb) && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+    ok.then_some((verb, digits.parse().ok()?))
+}
+
 fn is_sha(s: Option<&str>) -> bool {
     s.is_some_and(|s| s.len() >= 7 && s.bytes().all(|b| b.is_ascii_hexdigit()))
 }
@@ -366,8 +378,11 @@ fn check(
     let old_max = queue::max_id(&old.queue).max(queue::max_id(&old.archive));
     let lane_of = |t: &Task| t.lane.clone().unwrap_or_else(|| cfg.default_lane.clone());
 
-    // A batch subject is the list of rows the commit edits: exactly those.
-    if let Some(edits) = subject.and_then(|s| batch_edits(&cfg.commit_prefix, s)) {
+    // A queue subject names the rows the commit edits: exactly those, each once.
+    if let Some(edits) = subject.and_then(|s| {
+        batch_edits(&cfg.commit_prefix, s)
+            .or_else(|| single_edit(&cfg.commit_prefix, s).map(|e| vec![e]))
+    }) {
         let named: BTreeSet<u64> = edits.iter().map(|e| e.1).collect();
         let changed: BTreeSet<u64> = new_all
             .iter()
@@ -394,7 +409,7 @@ fn check(
                     .join(" "),
             };
             out.push(format!(
-                "{at}: its subject names {}, but it changes {} — a batch names each row it edits, once",
+                "{at}: its subject names {}, but it changes {} — a queue commit names each row it edits, once",
                 edits.iter().map(|e| format!("#{}", e.1)).collect::<Vec<_>>().join(" "),
                 list(&changed)
             ));

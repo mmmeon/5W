@@ -113,7 +113,8 @@ read as accepted, never submitted. The subject names every edit (`chore(tasks): 
 #15, reject #16, add #17`), the body holds each edit's own message, and `lint` and `audit` read it
 as that many edits; `lint` finds a batch subject that names a row the commit leaves alone, or misses
 one it changes. An edit that changes nothing (`set` to the value a row has) is left out. A batch of
-one commits under its edit's own message.
+one commits under its edit's own message, and a batch whose every edit is a no-op commits nothing
+and says so.
 
 Ids need no quoting: `14` and `'#14'` are the same. Filters and fields have shell-safe spellings —
 `lane:owner` for `'>owner'`, `level:3` for `'!3'`, `area:x` for `@x` — because an unquoted `>agent`
@@ -194,7 +195,9 @@ Hand edits are checked, not trusted:
   every row that changed by its transition: `[ ]→[~]` carries `branch:` and `submitted:`,
   `[~]→[x]` carries `via:review` and `reviewed:`, a close carries its lane's `via:`, a reject its
   `rework:`, and nothing else gains one. Closed rows are immutable except to reopen, reflow (`split`)
-  or archive; no row is deleted and no id reused; a queue edit is its own commit on the trunk. Every
+  or archive; no row is deleted and no id reused; a queue edit is its own commit on the trunk, and a
+  subject that names rows (`chore(tasks): set #4 level 1`, or a batch's list) names exactly the rows
+  the commit changes. Every
   commit `5w` itself makes passes it — a `reject` commit may gain `rework:` from any state, as
   releases through 0.1.3 rejected unsubmitted tasks — and the test suite lints its own history.
 - **`5w hook install`** (also run by `5w wt setup`) adds a pre-commit hook running `5w lint --staged`.

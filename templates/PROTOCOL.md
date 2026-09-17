@@ -48,7 +48,8 @@ Never:
 
 - A queue edit is **its own commit**, on the **trunk**, touching only `TASKS.md` and `DONE.md`.
   Branches carry no queue changes.
-- Message: `chore(tasks): <verb> #<id>` — `add`, `submit`, `accept`, `reject`, `close`, `reopen`.
+- Message: `chore(tasks): <verb> #<id>` — `add`, `submit`, `accept`, `reject`, `close`, `reopen`;
+  the commit changes that row and no other.
 - Several edits may share one commit (`5w batch`), each row edited at most once in it. Its subject
   names every row it changes and no other, `chore(tasks): <verb> #<id>, <verb> #<id>`; its body
   holds each edit's message.

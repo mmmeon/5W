@@ -400,7 +400,10 @@ pub fn batch(repo: &Repo, edits: impl FnOnce() -> Res<()>) -> Res<()> {
     };
     result?;
     let message = match b.messages.as_slice() {
-        [] => return Ok(()),
+        [] => {
+            println!("  nothing to commit: every edit leaves its row as it is");
+            return Ok(());
+        }
         [one] => one.clone(),
         many => {
             let head = format!("{}: ", repo.cfg.commit_prefix);

@@ -437,6 +437,10 @@ fn batch_commits_every_edit_in_one_commit_that_lint_and_audit_read() {
 
     // An edit that changes nothing is not named: `set` to the value a row has.
     r.ok(&r.main, &["set", "4", "level", "3"]);
+    let tip = r.git(&r.main, &["rev-parse", "main"]);
+    let (ok, out) = r.batch("set 4 level 3\n");
+    assert!(ok && out.contains("nothing to commit"), "{out}");
+    assert_eq!(r.git(&r.main, &["rev-parse", "main"]), tip);
     let (ok, out) = r.batch("set 4 level 3\nset 3 level 2\n");
     assert!(ok, "{out}");
     let (ok, out) = r.batch("set 4 level 3\nset 4 area docs\nset 3 level 1\n");
@@ -2073,11 +2077,15 @@ fn lint_flags_rework_gained_outside_a_reject() {
         &["commit", "-qm", "chore(tasks): add #5, reject #4"],
     );
     r.lint_history();
-    // A batch subject names exactly the rows its commit changes, each once.
+    // A queue subject names exactly the rows its commit changes, each once:
+    // a batch's list, and a single edit's one row.
     for subject in [
         "chore(tasks): add #9, reject #4",
         "chore(tasks): add #5, reject #4, accept #1",
         "chore(tasks): add #5, reject #4, reject #4",
+        "chore(tasks): reject #4",
+        "chore(tasks): add #5 — sixth",
+        "chore(tasks): set #100 level 1",
     ] {
         r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
         batch_edit();
