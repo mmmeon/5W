@@ -361,10 +361,13 @@ fn begin(repo: &Repo) -> Res<(Lock, String, Option<PathBuf>, Copies, Copies)> {
     let Some(old) = git::rev(&repo.primary, &trunk_ref) else {
         bail!("no trunk branch {}", repo.trunk)
     };
-    for name in [&repo.cfg.file, &repo.cfg.archive] {
-        refuse_link(repo, &old, name)?;
-    }
     let checkout = repo.trunk_checkout()?;
+    for name in [&repo.cfg.file, &repo.cfg.archive] {
+        refuse_link(repo, checkout.as_deref(), &old, name)?;
+        if let Some(w) = checkout.as_deref() {
+            refuse_working_link(repo, w, &old, name)?;
+        }
+    }
     let q = copies(repo, checkout.as_deref(), &old, &repo.cfg.file)?;
     if q.old_blob.is_none() {
         bail!(
@@ -378,26 +381,108 @@ fn begin(repo: &Repo) -> Res<(Lock, String, Option<PathBuf>, Copies, Copies)> {
     Ok((lock, old, checkout, q, a))
 }
 
+/// The mode and blob `rev` tracks at `name`.
+fn entry(repo: &Repo, rev: &str, name: &str) -> Option<(String, String)> {
+    let l = git::opt(&repo.primary, &["ls-tree", "--full-tree", rev, "--", name])?;
+    let mut f = l.split_whitespace();
+    let mode = f.next()?.to_string();
+    f.next()?;
+    Some((mode, f.next()?.to_string()))
+}
+
+/// Where a refusal's fix runs: `git -C <checkout>` and paths under it, so the
+/// fix lands in the trunk checkout wherever it is typed; a relative form, to run
+/// in a checkout of the trunk, when there is none.
+fn in_checkout(checkout: Option<&Path>, name: &str) -> (String, String) {
+    match checkout {
+        Some(w) => (
+            format!("git -C {}", shell_word(&w.to_string_lossy())),
+            shell_word(&w.join(name).to_string_lossy()),
+        ),
+        None => ("git".into(), shell_word(name)),
+    }
+}
+
 /// Refuse a queue write where the trunk tracks `name` as a symlink: a commit to
 /// the link's path would turn it into a file, and one to the path it names would
 /// let a retargeted link aim queue writes at any file in the repository.
-fn refuse_link(repo: &Repo, old: &str, name: &str) -> Res<()> {
-    let entry =
-        git::opt(&repo.primary, &["ls-tree", "--full-tree", old, "--", name]).unwrap_or_default();
-    let mut fields = entry.split_whitespace();
-    let (Some("120000"), Some(_), Some(blob)) = (fields.next(), fields.next(), fields.next())
-    else {
+fn refuse_link(repo: &Repo, checkout: Option<&Path>, old: &str, name: &str) -> Res<()> {
+    let Some((_, blob)) = entry(repo, old, name).filter(|(m, _)| m == "120000") else {
         return Ok(());
     };
-    let to = git::git(&repo.primary, &["cat-file", "blob", blob])?;
+    let to = git::git(&repo.primary, &["cat-file", "blob", &blob])?;
     let at = normalize(&Path::new(name).parent().unwrap_or(Path::new("")).join(&to));
+    let (git_c, name_p) = in_checkout(checkout, name);
+    let name_w = shell_word(name);
+    let trunk = &repo.trunk;
+    if at.extension().is_none_or(|e| e != "md") {
+        // Copying a source file over the queue would not restore it; the queue
+        // file as it was before the commit that set this link does, and only it.
+        // First parent: a merge that took the link from a side branch is where
+        // the trunk's own queue ends, not the side commit, whose parent predates
+        // rows the trunk added meanwhile.
+        let by = git::opt(
+            &repo.primary,
+            &[
+                "log",
+                "-1",
+                "--first-parent",
+                "--format=%h",
+                old,
+                "--",
+                name,
+            ],
+        )
+        .unwrap_or_default();
+        // `~1`, not `^`: a shell with extended globbing reads `^` itself.
+        let before = format!("{by}~1");
+        let restorable = !by.is_empty()
+            && entry(repo, &before, name).is_some_and(|(m, _)| m != "120000" && m != "040000");
+        if !restorable {
+            bail!(
+                "{name} is a symlink on {trunk} to {}, not a queue file, and no commit before it holds the file; replace the link with the queue file by hand and commit",
+                at.display()
+            )
+        }
+        bail!(
+            "{name} is a symlink on {trunk} to {}, not a queue file; restore the file from before {by}, which set the link (`{git_c} checkout {before} -- {name_w}`), and commit",
+            at.display()
+        )
+    }
     // A copy, not `git mv`: the commit then touches the queue file alone, as lint
     // asks of a queue edit; the file the link named can go in a commit of its own.
-    let (name_w, at_w) = (shell_word(name), shell_word(&at.to_string_lossy()));
-    let fix = format!("git rm -q {name_w} && cp {at_w} {name_w} && git add {name_w}");
+    let at_p = match checkout {
+        Some(w) => shell_word(&w.join(&at).to_string_lossy()),
+        None => shell_word(&at.to_string_lossy()),
+    };
+    let fix = format!("{git_c} rm -q {name_w} && cp {at_p} {name_p} && {git_c} add {name_w}");
     bail!(
-        "{name} is a symlink on {}; replace it with the file (`{fix}`) and commit — 5w edits the queue file itself",
-        repo.trunk
+        "{name} is a symlink on {trunk}; replace it with the file (`{fix}`) and commit — 5w edits the queue file itself"
+    )
+}
+
+/// Refuse a queue write where the trunk checkout holds `name` as a symlink the
+/// trunk does not track: writing through it would put the queue wherever the link
+/// points, possibly outside the repository.
+fn refuse_working_link(repo: &Repo, checkout: &Path, old: &str, name: &str) -> Res<()> {
+    let path = checkout.join(name);
+    let Ok(to) = fs::read_link(&path) else {
+        return Ok(());
+    };
+    let (git_c, name_p) = in_checkout(Some(checkout), name);
+    let fix = if git::ok(&repo.primary, &["cat-file", "-e", &format!("{old}:{name}")]) {
+        format!(
+            "rm {name_p} && {git_c} checkout {} -- {}",
+            shell_word(&repo.trunk),
+            shell_word(name)
+        )
+    } else {
+        format!("rm {name_p}")
+    };
+    bail!(
+        "{name} in {} is a symlink to {}; replace the link with the file (`{fix}`) — rows edited through it live there",
+        checkout.display(),
+        to.display()
     )
 }
 

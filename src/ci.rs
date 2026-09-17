@@ -170,6 +170,23 @@ fn ship_check(
     out: &mut Vec<String>,
 ) -> Res<()> {
     let p = &repo.primary;
+    // A link's blob is its target's path, which parses as an empty queue.
+    let links: Vec<_> = [&repo.cfg.file, &repo.cfg.archive]
+        .into_iter()
+        .filter(|f| {
+            git::opt(p, &["ls-tree", "--full-tree", trunk, "--", f])
+                .is_some_and(|e| e.starts_with("120000 "))
+        })
+        .collect();
+    if !links.is_empty() {
+        for f in links {
+            out.push(format!(
+                "{f} is a symlink on {}, not the queue file — replace the link with the file",
+                repo.trunk
+            ));
+        }
+        return Ok(());
+    }
     let show = |f: &str| git::opt(p, &["show", &format!("{trunk}:{f}")]).unwrap_or_default();
     let rows: Vec<_> = queue::parse(&show(&repo.cfg.file))
         .into_iter()

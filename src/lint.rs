@@ -112,7 +112,12 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 "staged",
                 &mut problems,
             );
-            let old = at_rev(repo, head.as_deref());
+            let mut old = at_rev(repo, head.as_deref());
+            unlinked(repo, head.as_deref(), &mut old, |name| {
+                let pathspec = format!(":(top){name}");
+                git::opt(&repo.cwd, &["ls-files", "-s", "--", &pathspec])
+                    .is_some_and(|l| !l.is_empty() && !l.starts_with("120000 "))
+            });
             let new = Snap {
                 queue: show_index(repo, &env, &repo.cfg.file),
                 archive: show_index(repo, &env, &repo.cfg.archive),
@@ -204,7 +209,10 @@ pub fn commits_on(
             short,
             problems,
         );
-        let old = at_rev(repo, parent.as_deref());
+        let mut old = at_rev(repo, parent.as_deref());
+        unlinked(repo, parent.as_deref(), &mut old, |name| {
+            tree_entry(repo, c, name).is_some_and(|(m, _)| m != LINK)
+        });
         let new = at_rev(repo, Some(c));
         let subject = git::git(&repo.cwd, &["log", "-1", "--format=%s", c])?;
         check(
@@ -281,6 +289,38 @@ fn tree_entry(repo: &Repo, rev: &str, name: &str) -> Option<(String, String)> {
     Some((mode, f.next()?.to_string()))
 }
 
+const LINK: &str = "120000";
+
+/// A change that turns a symlinked queue file back into a file is judged against
+/// the file as the first-parent history last held it, not the link, whose target
+/// path reads as an empty queue — else a restore that drops rows passes.
+fn unlinked(repo: &Repo, old: Option<&str>, snap: &mut Snap, is_file: impl Fn(&str) -> bool) {
+    let Some(old) = old else { return };
+    for (name, is_queue) in [(&repo.cfg.file, true), (&repo.cfg.archive, false)] {
+        let was_link = tree_entry(repo, old, name).is_some_and(|(m, _)| m == LINK);
+        if !was_link || !is_file(name) {
+            continue;
+        }
+        let log = git::opt(
+            &repo.cwd,
+            &["log", "--first-parent", "--format=%H", old, "--", name],
+        )
+        .unwrap_or_default();
+        let plain = log
+            .lines()
+            .map(|c| (c, tree_entry(repo, c, name)))
+            .take_while(|(_, e)| e.is_some())
+            .find(|(_, e)| e.as_ref().is_some_and(|(m, _)| m != LINK))
+            .map(|(c, _)| show(repo, &format!("{c}:{name}")))
+            .unwrap_or_default();
+        if is_queue {
+            snap.queue = plain;
+        } else {
+            snap.archive = plain;
+        }
+    }
+}
+
 /// The queue file and archive are files: a change that makes either a symlink or
 /// points one elsewhere is a queue edit no row shows —
 /// retargeted, it would aim queue writes at another file.
@@ -291,7 +331,6 @@ fn links(
     at: &str,
     out: &mut Vec<String>,
 ) {
-    const LINK: &str = "120000";
     for name in [&repo.cfg.file, &repo.cfg.archive] {
         let (old, new) = (old(name), new(name));
         let is_link = |e: &Option<(String, String)>| e.as_ref().is_some_and(|(m, _)| m == LINK);

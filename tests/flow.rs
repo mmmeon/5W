@@ -2779,12 +2779,17 @@ fn an_archive_that_cannot_write_the_archive_file_writes_nothing() {
 
 /// Run the fix a refusal names between backticks, in the checkout.
 fn follow_fix(r: &Repo, err: &str) {
+    follow_fix_in(r, &r.main, err)
+}
+
+/// Run the fix a refusal names between backticks, in `cwd`.
+fn follow_fix_in(r: &Repo, cwd: &Path, err: &str) {
     let fix = err
         .split('`')
         .nth(1)
         .unwrap_or_else(|| panic!("no fix in {err}"));
     let mut c = Command::new("sh");
-    c.args(["-c", fix]).current_dir(&r.main);
+    c.args(["-c", fix]).current_dir(cwd);
     env(&mut c, &r.root);
     let o = c.output().unwrap();
     assert!(
@@ -2810,9 +2815,10 @@ fn link_queue(r: &Repo) {
 fn a_queue_tracked_as_a_symlink_refuses_writes_and_names_the_fix() {
     let r = Repo::new("symlinked-queue");
     r.ok(&r.main, &["add", "first"]);
+    let (wt, local) = wt_with_local_queue_line(&r);
     link_queue(&r);
     let head = r.git(&r.main, &["rev-parse", "main"]);
-    let err = r.refuses(&r.main, &["add", "second"]);
+    let err = r.refuses(&wt, &["add", "second"]);
     assert!(err.contains("TASKS.md is a symlink on main"), "{err}");
     assert_eq!(r.git(&r.main, &["rev-parse", "main"]), head);
     assert!(r.main.join("TASKS.md").is_symlink());
@@ -2820,13 +2826,167 @@ fn a_queue_tracked_as_a_symlink_refuses_writes_and_names_the_fix() {
     // Reads still go through the link.
     assert!(r.ok(&r.main, &["show", "1"]).contains("first"));
 
-    follow_fix(&r, &err);
+    // Typed in a worktree, the fix still lands in the checkout.
+    follow_fix_in(&r, &wt, &err);
+    assert_eq!(std::fs::read_to_string(wt.join("TASKS.md")).unwrap(), local);
     // The fix itself passes lint.
     r.ok(&r.main, &["lint", "--staged"]);
     r.git(&r.main, &["commit", "-qm", "queue back in place"]);
     r.ok(&r.main, &["add", "second"]);
     let entry = r.git(&r.main, &["ls-tree", "main", "TASKS.md"]);
     assert!(entry.starts_with("100644 "), "{entry}");
+    assert!(r.tasks().contains("#2 second"), "{}", r.tasks());
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+}
+
+/// A worktree whose own TASKS.md carries an uncommitted line a fix must not touch.
+fn wt_with_local_queue_line(r: &Repo) -> (PathBuf, String) {
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    let mut local = std::fs::read_to_string(wt.join("TASKS.md")).unwrap();
+    local.push_str("<!-- local -->\n");
+    std::fs::write(wt.join("TASKS.md"), &local).unwrap();
+    (wt, local)
+}
+
+#[test]
+fn a_queue_symlink_to_a_non_queue_file_names_a_path_scoped_restore() {
+    let r = Repo::new("symlinked-queue-source");
+    r.ok(&r.main, &["add", "first"]);
+    let (wt, local) = wt_with_local_queue_line(&r);
+    // One commit points the link at a source file and adds another file.
+    std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
+    std::os::unix::fs::symlink("README", r.main.join("TASKS.md")).unwrap();
+    std::fs::write(r.main.join("app.rs"), "fn main() {}\n").unwrap();
+    r.git(&r.main, &["add", "TASKS.md", "app.rs"]);
+    r.git(&r.main, &["commit", "-qm", "retarget", "--no-verify"]);
+    let err = r.refuses(&wt, &["add", "second"]);
+    assert!(err.contains("not a queue file"), "{err}");
+    assert!(!err.contains("cp ") && !err.contains("revert"), "{err}");
+
+    follow_fix_in(&r, &wt, &err);
+    assert_eq!(std::fs::read_to_string(wt.join("TASKS.md")).unwrap(), local);
+    assert!(!r.main.join("TASKS.md").is_symlink());
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "T  TASKS.md");
+    r.ok(&r.main, &["lint", "--staged"]);
+    r.git(&r.main, &["commit", "-qm", "queue back in place"]);
+    assert!(r.main.join("app.rs").exists());
+    r.ok(&r.main, &["add", "second"]);
+    assert!(r.tasks().contains("#2 second"), "{}", r.tasks());
+}
+
+/// A side branch cut after #1 and #2 points TASKS.md at README; main adds #3,
+/// then a --no-ff merge takes the link.
+fn merge_a_side_link(r: &Repo) {
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.git(&r.main, &["checkout", "-q", "-b", "side"]);
+    std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
+    std::os::unix::fs::symlink("README", r.main.join("TASKS.md")).unwrap();
+    std::fs::write(r.main.join("app.rs"), "fn main() {}\n").unwrap();
+    r.git(&r.main, &["add", "TASKS.md", "app.rs"]);
+    r.git(&r.main, &["commit", "-qm", "retarget", "--no-verify"]);
+    r.git(&r.main, &["checkout", "-q", "main"]);
+    r.ok(&r.main, &["add", "third"]);
+    let mut c = Command::new("git");
+    c.args([
+        "merge",
+        "-q",
+        "--no-ff",
+        "--no-verify",
+        "side",
+        "-m",
+        "merge side",
+    ])
+    .current_dir(&r.main);
+    env(&mut c, &r.root);
+    // Git records each type on its own path; keep the link.
+    c.output().unwrap();
+    r.git(&r.main, &["rm", "-q", "--cached", "TASKS.md~HEAD"]);
+    std::fs::remove_file(r.main.join("TASKS.md~HEAD")).unwrap();
+    std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
+    r.git(&r.main, &["checkout", "side", "--", "TASKS.md"]);
+    r.git(&r.main, &["add", "TASKS.md"]);
+    r.git(&r.main, &["commit", "-qm", "merge side", "--no-verify"]);
+    r.git(&r.main, &["rev-parse", "--verify", "HEAD^2"]);
+    assert!(r.main.join("TASKS.md").is_symlink());
+}
+
+#[test]
+fn a_queue_symlink_merged_from_a_side_branch_restores_the_trunk_queue() {
+    let r = Repo::new("symlinked-queue-merged");
+    merge_a_side_link(&r);
+    let err = r.refuses(&r.main, &["add", "fourth"]);
+    assert!(err.contains("~1 -- TASKS.md"), "{err}");
+    follow_fix(&r, &err);
+    r.ok(&r.main, &["lint", "--staged"]);
+    r.git(&r.main, &["commit", "-qm", "queue back in place"]);
+    r.ok(&r.main, &["lint", "HEAD"]);
+    let tasks = r.tasks();
+    for row in ["#1 first", "#2 second", "#3 third"] {
+        assert!(tasks.contains(row), "{tasks}");
+    }
+    r.ok(&r.main, &["add", "fourth"]);
+    assert!(r.tasks().contains("#4 fourth"), "{}", r.tasks());
+    assert!(r.main.join("app.rs").exists());
+}
+
+#[test]
+fn lint_judges_a_queue_link_made_a_file_against_the_file_before_the_link() {
+    let r = Repo::new("lint-unlinked-queue");
+    merge_a_side_link(&r);
+    // The side commit's parent predates #3: restoring from it drops a row.
+    std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
+    r.git(&r.main, &["checkout", "side~1", "--", "TASKS.md"]);
+    let err = r.fails(&r.main, &["lint", "--staged"]);
+    assert!(err.contains("#3") && err.contains("deleted"), "{err}");
+    r.git(&r.main, &["commit", "-qm", "stale restore", "--no-verify"]);
+    let err = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(err.contains("#3") && err.contains("deleted"), "{err}");
+}
+
+#[test]
+fn a_queue_symlink_set_by_a_root_commit_names_a_fix_by_hand() {
+    let r = Repo::new("symlinked-queue-root");
+    r.ok(&r.main, &["add", "first"]);
+    // A new history whose first commit already tracks the link.
+    r.git(&r.main, &["checkout", "-q", "--orphan", "fresh"]);
+    std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
+    std::os::unix::fs::symlink("README", r.main.join("TASKS.md")).unwrap();
+    r.git(&r.main, &["add", "-A"]);
+    r.git(&r.main, &["commit", "-qm", "fresh", "--no-verify"]);
+    r.git(&r.main, &["branch", "-M", "fresh", "main"]);
+    let err = r.refuses(&r.main, &["add", "second"]);
+    assert!(err.contains("by hand"), "{err}");
+    assert!(!err.contains('`'), "{err}");
+}
+
+#[test]
+fn a_queue_symlinked_only_in_the_checkout_refuses_writes() {
+    let r = Repo::new("working-symlinked-queue");
+    r.ok(&r.main, &["add", "first"]);
+    let (wt, local) = wt_with_local_queue_line(&r);
+    // TASKS.md stays a file on main; the checkout's copy is a link outside it.
+    let outside = r.root.join("elsewhere.md");
+    std::fs::copy(r.main.join("TASKS.md"), &outside).unwrap();
+    std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
+    std::os::unix::fs::symlink(&outside, r.main.join("TASKS.md")).unwrap();
+    let before = std::fs::read_to_string(&outside).unwrap();
+    let head = r.git(&r.main, &["rev-parse", "main"]);
+    let err = r.refuses(&wt, &["add", "second"]);
+    assert!(err.contains("TASKS.md in "), "{err}");
+    assert!(
+        err.contains(&format!("symlink to {}", outside.display())),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), before);
+    assert_eq!(r.git(&r.main, &["rev-parse", "main"]), head);
+
+    follow_fix_in(&r, &wt, &err);
+    assert_eq!(std::fs::read_to_string(wt.join("TASKS.md")).unwrap(), local);
+    assert!(!r.main.join("TASKS.md").is_symlink());
+    r.ok(&r.main, &["add", "second"]);
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), before);
     assert!(r.tasks().contains("#2 second"), "{}", r.tasks());
     assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
 }
@@ -3620,6 +3780,24 @@ fn ci_branch_mode_is_the_ship_check() {
     let o = r.cli(&r.main, &["ci", "--head", "a/x", "--branch", "a/x"]);
     assert!(!o.status.success());
     assert!(text(o).contains("not the change accepted"));
+}
+
+#[test]
+fn ci_branch_mode_flags_a_queue_symlinked_on_the_trunk() {
+    let r = Repo::new("cibranch-link");
+    r.ok(&r.main, &["add", "x", "branch:a/x"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    r.commit_in(&r.wt("a/x"), "f", "1\n");
+    link_queue(&r);
+    let o = r.cli(&r.main, &["ci", "--head", "a/x", "--branch", "a/x"]);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(!o.status.success(), "{text}");
+    assert!(text.contains("TASKS.md is a symlink on main"), "{text}");
+    assert!(!text.contains("no task names"), "{text}");
 }
 
 /// A CI job's clone of a forge: detached at the change request, the trunk fetched.

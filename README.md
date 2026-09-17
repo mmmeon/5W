@@ -134,9 +134,18 @@ staged row (`checkout fixed: #1 matches main`), or moving a peer's staged row in
 where a rename from there is refused, as across bind mounts) before the commit and renamed into place after it, the archive first, so a moved row is never in neither: one that
 cannot be written (a directory in its place) refuses with nothing committed, and an archive in a
 directory the checkout lacks creates it. A queue or archive the trunk tracks as a symlink refuses
-queue writes, naming the `git rm` and copy that put the file in its place, and lint flags a commit
+queue writes, naming the `git rm` and copy that put the file in its place (or, when the link names a
+file that is not a queue, a checkout of `TASKS.md` alone from before the first-parent commit that set the link, so a merge
+that took the link from a side branch restores the trunk's own rows; by hand when that commit has no
+parent), and lint flags a commit
 that makes either a symlink or points one elsewhere: a retargeted link would aim
-queue writes at another file. A temporary file or private index a killed run left in the
+queue writes at another file. A commit that turns such a link back into a file is linted against the
+file as the first-parent history last held it, not the link's empty reading, so a restore that drops
+rows is flagged. A link only the trunk checkout holds refuses too, naming where it points
+(rows edited through it live there) and the `rm` and `git checkout` that restore the file. Every
+such fix is `git -C <checkout>` with absolute paths, so typed in a worktree it still lands in the
+trunk checkout; and `5w ci --branch` reports a queue or archive that is a
+symlink on the trunk rather than reading the link as an empty queue. A temporary file or private index a killed run left in the
 git dir (`5w-write-<pid>-<n>-<file>`, `5w-index-<pid>`) is removed by the next write, under the lock. If the checkout cannot take a change the trunk already has
 (its `index.lock` held), the refusal names the rows committed and a fix that applies that commit's
 own diff to the working files and index, keeping anything else in them (`--3way` where a hand

@@ -49,7 +49,7 @@ Never:
 ## Commits
 
 - A queue edit is **its own commit**, on the **trunk**, touching only `TASKS.md` and `DONE.md`.
-  Branches carry no queue changes. Both are plain files, never symlinks.
+  Branches carry no queue changes. Both are plain files, never symlinks — on the trunk or in its checkout.
 - Message: `chore(tasks): <verb> #<id>` — `add`, `submit`, `accept`, `reject`, `close`, `reopen`;
   the commit changes no other row.
 - Several edits may share one commit (`5w batch`), each row edited at most once in it. Its subject
