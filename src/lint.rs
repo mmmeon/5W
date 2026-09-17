@@ -75,17 +75,30 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         ));
     }
     let arg = args.first().map(|s| s.as_str()).unwrap_or("--staged");
+    if let Some(e) = &repo.broken
+        && arg != "--staged"
+    {
+        return Err(e.clone());
+    }
     let mut problems = Vec::new();
     match arg {
         "--staged" => {
-            // Read first, so a marker the checkout no longer needs goes even on
-            // a commit that leaves the queue alone.
-            let missed = crate::store::missed_marker_fix(repo);
             let index = git::caller_index();
             let env: Vec<(&str, &str)> = index
                 .iter()
                 .map(|i| ("GIT_INDEX_FILE", i.as_str()))
                 .collect();
+            let repaired;
+            let repo = match &repo.broken {
+                Some(err) => {
+                    repaired = staged_repair(repo, err, &env)?;
+                    &repaired
+                }
+                None => repo,
+            };
+            // Read first, so a marker the checkout no longer needs goes even on
+            // a commit that leaves the queue alone.
+            let missed = crate::store::missed_marker_fix(repo);
             let o = git::raw(&repo.cwd, &["diff", "--cached", "--name-only"], &env, None)?;
             if !o.ok {
                 return Err(format!("git diff --cached: {}", o.stderr.trim()));
@@ -620,6 +633,50 @@ pub fn check_texts(
     let [queue, archive] = new;
     let new = Snap { queue, archive };
     check(&repo.cfg, repo, &old, &new, Some(subject), at, out);
+}
+
+/// A checkout whose trunk config does not parse commits only its repair: an
+/// index whose `.5w.toml` parses (or has none), judged under that config with
+/// the queue names the broken one gives (`Repo::open_lenient`), which it must keep.
+fn staged_repair(repo: &Repo, err: &str, env: &[(&str, &str)]) -> Res<Repo> {
+    let file = crate::store::CONFIG_FILE;
+    if err.contains("requires 5w") {
+        return Err(err.to_string());
+    }
+    let staged = git::raw(&repo.cwd, &["show", &format!(":{file}")], env, None)?;
+    let cfg = match staged.ok {
+        true => Config::from_toml(&staged.stdout).ok(),
+        false => Some(Config::default()),
+    };
+    let Some(cfg) = cfg else {
+        bail!(
+            "{}'s {file} is unreadable — {err} — stage a {file} that parses to commit its repair",
+            repo.trunk
+        )
+    };
+    let was = &repo.cfg;
+    for (key, old, new) in [
+        ("file", &was.file, &cfg.file),
+        ("archive", &was.archive, &cfg.archive),
+        ("commit_prefix", &was.commit_prefix, &cfg.commit_prefix),
+    ] {
+        if old != new {
+            bail!(
+                "a commit repairing {}'s {file} keeps {key} = {old:?}: stage it so, and rename in a later commit",
+                repo.trunk
+            );
+        }
+    }
+    Ok(Repo {
+        cwd: repo.cwd.clone(),
+        primary: repo.primary.clone(),
+        common: repo.common.clone(),
+        cfg,
+        trunk: repo.trunk.clone(),
+        bare: repo.bare,
+        pin: repo.pin.clone(),
+        broken: None,
+    })
 }
 
 /// A file as the index `env` names (the caller's, see `git::caller_index`) holds it.

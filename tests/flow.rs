@@ -5914,6 +5914,85 @@ fn a_server_cloned_after_the_trunk_config_broke_installs_the_hook_that_takes_the
 }
 
 #[test]
+fn the_pre_commit_hook_takes_the_commit_that_repairs_a_broken_config() {
+    let r = Repo::new("config-bricked-commit");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    r.ok(&r.main, &["hook", "install"]);
+    r.ok(&r.main, &["add", "fix the config"]);
+    r.ok(&r.main, &["wt", "new", "f/fix"]);
+    let fix = r.wt("f/fix");
+    let commit = |cwd: &Path, files: &[(&str, &str)], args: &[&str]| {
+        for (f, text) in files {
+            std::fs::write(cwd.join(f), text).unwrap();
+            r.git(cwd, &["add", f]);
+        }
+        let mut c = Command::new("git");
+        c.args([&["commit", "-qm", "wip"], args].concat())
+            .current_dir(cwd);
+        env(&mut c, &r.root);
+        let o = c.output().unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+
+    // The break lands past the hook; plain code on it is refused, naming the fix.
+    let broken = cfg.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n");
+    assert!(commit(&r.main, &[(".5w.toml", &broken)], &["--no-verify"]).0);
+    let (ok, err) = commit(&r.main, &[("code.txt", "x\n")], &[]);
+    assert!(
+        !ok && err.contains("unknown key sections.trunk")
+            && err.contains("stage a .5w.toml that parses"),
+        "{err}"
+    );
+    r.git(&r.main, &["rm", "-q", "--cached", "code.txt"]);
+
+    // In the fix's worktree: a staged config that still does not parse is refused,
+    r.git(&fix, &["merge", "-q", "--ff-only", "main"]);
+    let (ok, err) = commit(
+        &fix,
+        &[(
+            ".5w.toml",
+            &cfg.replace("title_max = 120", "title_max = = 1"),
+        )],
+        &[],
+    );
+    assert!(!ok && err.contains("stage a .5w.toml that parses"), "{err}");
+    // as is a repair that renames the queue,
+    let (ok, err) = commit(
+        &fix,
+        &[(
+            ".5w.toml",
+            &cfg.replace("file = \"TASKS.md\"", "file = \"Q.md\""),
+        )],
+        &[],
+    );
+    assert!(!ok && err.contains("keeps file = \"TASKS.md\""), "{err}");
+    // and one that edits the queue off the trunk: the protocol still holds.
+    let tasks = std::fs::read_to_string(fix.join("TASKS.md")).unwrap();
+    assert!(tasks.contains("- [ ] #1"), "{tasks}");
+    let (ok, err) = commit(
+        &fix,
+        &[
+            (".5w.toml", &cfg),
+            ("TASKS.md", &tasks.replace("- [ ] #1", "- [x] #1")),
+        ],
+        &[],
+    );
+    assert!(!ok && err.contains("queue edits go on main"), "{err}");
+    r.git(
+        &fix,
+        &["restore", "--staged", "--worktree", "--", "TASKS.md"],
+    );
+
+    // The repair alone passes the hook.
+    let (ok, err) = commit(&fix, &[(".5w.toml", &cfg)], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(r.git(&fix, &["show", "HEAD:.5w.toml"]), cfg.trim_end());
+}
+
+#[test]
 fn a_trunk_config_broken_past_parsing_is_read_as_the_last_one_that_parsed() {
     let r = Repo::new("config-syntax");
     let server = server_of(&r);

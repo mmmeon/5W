@@ -428,7 +428,12 @@ says `gate_trunk = false`. Under the gate the repair needs a landing record like
 broken config naming a trunk an unpinned server has no branch for names the pin instead:
 `git config 5w.trunk <HEAD's branch>`, then the repair. A server cloned after the break still installs
 the hook: `5w hook install pre-receive` notes the broken config and that only the repair will be
-accepted (`5w hook install` in a checkout still refuses — fix the file there).
+accepted (`5w hook install` in a checkout still refuses — fix the file there). A checkout's
+pre-commit hook takes the repair commit the same way: while the trunk's `.5w.toml` does not parse,
+`5w lint --staged` refuses a commit whose staged `.5w.toml` does not parse either, naming the fix,
+and judges one whose staged config parses (or is absent) under it — so the repair can be committed on
+a branch in its worktree. It must keep the queue file, archive and commit prefix the broken config
+gives (rename in a later commit), and its queue edits are checked as any.
 
 A forge's check is judged the same way: `5w ci --branch` on a change request whose head commits a
 config that parses (or none) runs the ship check under that config, with the trunk's queue file,
