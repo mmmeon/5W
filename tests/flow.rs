@@ -532,7 +532,7 @@ fn a_subcommand_help_prints_only_that_command() {
     assert!(!r.ok(&r.main, &["show", "-h"]).contains("http"));
     // One example invocation under the usage line; a command's help does not repeat it.
     assert!(
-        full.starts_with("usage: 5w <command> [args]\nexample  5w ready area:output\n"),
+        full.starts_with("usage: 5w <command> [args]\nexample  5w ready level:1\n"),
         "{full}"
     );
     assert!(!r.ok(&r.main, &["ready", "-h"]).contains("example"));
