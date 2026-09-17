@@ -468,6 +468,42 @@ fn check(
         let close = cfg.lane(&lane).map(|l| l.close.clone());
 
         // Fields that are always checkable.
+        // A sha written or changed here is the full name. A prefix stays valid in
+        // a row that carried it before, and in a submit or accept commit the tool
+        // made (its subject names that edit of this row): releases through 0.1.3
+        // recorded 12 digits, and lint passes every commit the tool made.
+        let tool_edit = |verb: &str| {
+            subject.is_some_and(|s| {
+                single_edit(&cfg.commit_prefix, s) == Some((verb, id))
+                    || batch_edits(&cfg.commit_prefix, s).is_some_and(|e| e.contains(&(verb, id)))
+            })
+        };
+        for (field, verb, v, was) in [
+            (
+                "submitted",
+                "submit",
+                &n.submitted,
+                old_all.get(&id).and_then(|o| o.submitted.as_ref()),
+            ),
+            (
+                "reviewed",
+                "accept",
+                &n.reviewed,
+                old_all.get(&id).and_then(|o| o.reviewed.as_ref()),
+            ),
+        ] {
+            if let Some(v) = v
+                && was != Some(v)
+                && is_sha(Some(v))
+                && !matches!(v.len(), 40 | 64)
+                && !tool_edit(verb)
+            {
+                say(
+                    id,
+                    format!("{field}:{v} is not a full sha — record `git rev-parse <commit>`"),
+                );
+            }
+        }
         if cfg.lane(&lane).is_none() {
             say(id, format!("lane >{lane} is not in the config"));
         }

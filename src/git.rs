@@ -75,15 +75,24 @@ const SCOPE: [&str; 5] = [
 ];
 
 /// Inside receive-pack's quarantine: GIT_OBJECT_DIRECTORY is the path git says
-/// holds the objects being pushed.
+/// holds the objects being pushed, a directory inside the repository's own
+/// object store, which git names as the alternate.
 fn quarantined() -> bool {
-    match (
+    let (Some(q), Some(o), Some(alt)) = (
         std::env::var_os("GIT_QUARANTINE_PATH"),
         std::env::var_os("GIT_OBJECT_DIRECTORY"),
-    ) {
-        (Some(q), Some(o)) => !q.is_empty() && q == o,
-        _ => false,
+        std::env::var_os("GIT_ALTERNATE_OBJECT_DIRECTORIES"),
+    ) else {
+        return false;
+    };
+    if q != o {
+        return false;
     }
+    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let Some(store) = Path::new(&q).parent().and_then(canon) else {
+        return false;
+    };
+    std::env::split_paths(&alt).any(|a| canon(&a).as_ref() == Some(&store))
 }
 
 /// Refuse a GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR that names another
@@ -97,21 +106,28 @@ pub fn check_env() -> Res<()> {
     if set.is_empty() {
         return Ok(());
     }
+    // One rev-parse per side: the gitdir, the common dir, and where the
+    // worktree's top is from here (empty in a bare repository).
     let probe = |inherit: bool| {
-        ["--absolute-git-dir", "--git-common-dir", "--show-toplevel"].map(|q| {
-            let mut c = Command::new("git");
-            c.args(["rev-parse", "--path-format=absolute", q]);
-            if !inherit {
-                for k in SCOPE {
-                    c.env_remove(k);
-                }
+        let mut c = Command::new("git");
+        c.args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            "--show-cdup",
+            "--show-prefix",
+        ]);
+        if !inherit {
+            for k in SCOPE {
+                c.env_remove(k);
             }
-            c.stdin(Stdio::null()).stderr(Stdio::null());
-            c.output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| o.stdout)
-        })
+        }
+        c.stdin(Stdio::null()).stderr(Stdio::null());
+        c.output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout)
     };
     let named = probe(true);
     let here = probe(false);
@@ -188,6 +204,64 @@ pub fn rev(dir: &Path, r: &str) -> Option<String> {
         ],
     )
     .filter(|s| matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// What a `submitted:` or `reviewed:` value names.
+#[derive(Debug, PartialEq)]
+pub enum Recorded {
+    /// The one commit it names, as a full sha.
+    Commit(String),
+    /// A prefix more than one commit shares.
+    Ambiguous,
+    /// No commit here has that name.
+    Missing,
+    /// Not a commit name: not hex, or under 7 digits.
+    Invalid,
+}
+
+/// Resolve a recorded sha. A full one (40 or 64 hex) is that object; a prefix,
+/// as rows written before full shas hold, is looked up among objects only —
+/// never as a ref — and names a commit only when exactly one commit has it.
+pub fn recorded(dir: &Path, value: &str) -> Recorded {
+    let v = value.to_ascii_lowercase();
+    if v.len() < 7 || v.len() > 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Recorded::Invalid;
+    }
+    if matches!(v.len(), 40 | 64) {
+        return match rev(dir, &v) {
+            Some(c) if c == v => Recorded::Commit(c),
+            _ => Recorded::Missing,
+        };
+    }
+    let Some(found) = opt(dir, &["rev-parse", &format!("--disambiguate={v}")]) else {
+        return Recorded::Missing;
+    };
+    let types = if found.is_empty() {
+        String::new()
+    } else {
+        raw(
+            dir,
+            &["cat-file", "--batch-check=%(objecttype) %(objectname)"],
+            &[],
+            Some(&format!("{found}\n")),
+        )
+        .map(|o| o.stdout)
+        .unwrap_or_default()
+    };
+    let commits: Vec<&str> = types
+        .lines()
+        .filter_map(|l| l.strip_prefix("commit "))
+        .collect();
+    match commits.as_slice() {
+        [] => Recorded::Missing,
+        [c] => Recorded::Commit(c.to_string()),
+        _ => Recorded::Ambiguous,
+    }
+}
+
+/// Whether the recorded `value` names exactly the commit `sha`.
+pub fn names(dir: &Path, value: &str, sha: &str) -> bool {
+    recorded(dir, value) == Recorded::Commit(sha.to_string())
 }
 
 pub fn current_branch(dir: &Path) -> Option<String> {

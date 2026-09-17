@@ -300,6 +300,90 @@ fn submit_and_accept_record_full_shas_and_short_ones_still_read() {
     assert!(r.main.join("x.txt").exists() && r.main.join("y.txt").exists());
 }
 
+/// Two children of `parent` with its tree, whose shas share their first 7 hex
+/// digits: a birthday search over commits that differ only in their message.
+fn commits_sharing_a_prefix(r: &Repo, parent: &str) -> (String, String) {
+    use std::io::Write;
+    let marks = r.root.join("grind-marks");
+    let mut seen = std::collections::HashMap::new();
+    for batch in 0..10 {
+        let mut stream = String::new();
+        for i in 1..=40000 {
+            let m = format!("grind {batch} {i}");
+            stream.push_str(&format!(
+                "commit refs/grind\nmark :{i}\ncommitter t <t@example.com> 0 +0000\ndata {}\n{m}\nfrom {parent}\n\n",
+                m.len()
+            ));
+        }
+        let mut c = Command::new("git");
+        c.args(["fast-import", "--quiet"])
+            .arg(format!("--export-marks={}", marks.display()))
+            .current_dir(&r.main)
+            .stdin(std::process::Stdio::piped());
+        env(&mut c, &r.root);
+        let mut child = c.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stream.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        for line in std::fs::read_to_string(&marks).unwrap().lines() {
+            let sha = line.split(' ').nth(1).unwrap().to_string();
+            if let Some(other) = seen.insert(sha[..7].to_string(), sha.clone()) {
+                return (other, sha);
+            }
+        }
+    }
+    panic!("no two of 400000 commits share 7 hex digits");
+}
+
+#[test]
+fn a_recorded_prefix_that_is_ambiguous_or_too_short_authorises_nothing() {
+    let r = Repo::new("ambiguous");
+    r.ok(&r.main, &["add", "one"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "x.txt", "x\n");
+    let w = r.git(&wt, &["rev-parse", "HEAD"]);
+    // `a` is what was submitted and reviewed; `b` shares its first 7 digits.
+    let (a, b) = commits_sharing_a_prefix(&r, &w);
+    let rewrite = |from: &str, to: &str| {
+        let t = r.tasks();
+        assert!(t.contains(from), "{from} not in:\n{t}");
+        std::fs::write(r.main.join("TASKS.md"), t.replace(from, to)).unwrap();
+        r.git(&r.main, &["commit", "-qam", "chore(tasks): rewrite #1"]);
+    };
+    r.git(&wt, &["reset", "-q", "--hard", &a]);
+    r.ok(&wt, &["submit", "1"]);
+    r.git(&wt, &["reset", "-q", "--hard", &b]);
+
+    // accept: a prefix both commits share names neither, nor does one under 7 digits.
+    rewrite(&format!("submitted:{a}"), &format!("submitted:{}", &a[..7]));
+    let err = r.refuses(&r.main, &["accept", "1"]);
+    assert!(err.contains("is ambiguous"), "{err}");
+    rewrite(
+        &format!("submitted:{}", &a[..7]),
+        &format!("submitted:{}", &b[..6]),
+    );
+    let err = r.refuses(&r.main, &["accept", "1"]);
+    assert!(err.contains("is not a commit name"), "{err}");
+    assert!(r.line(1).starts_with("- [~] #1"));
+
+    // ship: likewise for reviewed:, whatever the tip starts with.
+    r.ok(&r.main, &["accept", "1", "--at", &a]);
+    rewrite(&format!("reviewed:{a}"), &format!("reviewed:{}", &a[..7]));
+    let err = r.refuses(&r.main, &["ship", "a/x"]);
+    assert!(err.contains("is ambiguous"), "{err}");
+    rewrite(
+        &format!("reviewed:{}", &a[..7]),
+        &format!("reviewed:{}", &b[..1]),
+    );
+    let err = r.refuses(&r.main, &["ship", "a/x"]);
+    assert!(err.contains("is not a commit name"), "{err}");
+}
+
 #[test]
 fn a_peers_uncommitted_row_is_never_swept_into_a_commit() {
     let r = Repo::new("peer");
@@ -2030,7 +2114,7 @@ fn lint_passes_a_correct_hand_edit_and_names_each_violation() {
     r.ok(&r.main, &["add", "agent work"]);
     r.ok(&r.main, &["add", "a call", "lane:owner"]);
     r.git(&r.main, &["branch", "a/x"]);
-    let sha = r.git(&r.main, &["rev-parse", "--short=12", "a/x"]);
+    let sha = r.git(&r.main, &["rev-parse", "a/x"]);
 
     // A correct hand submit passes.
     hand_edit(
@@ -2068,6 +2152,25 @@ fn lint_passes_a_correct_hand_edit_and_names_each_violation() {
             "- [~] #2 a call >owner".into(),
             "without branch",
         ),
+        // A sha written by hand is the full name; under 7 digits is none at all.
+        (
+            &format!("submitted:{sha}"),
+            format!("submitted:{}", &sha[..12]),
+            "is not a full sha",
+        ),
+        (
+            &format!("- [~] #1 agent work branch:a/x submitted:{sha}"),
+            format!(
+                "- [x] #1 agent work branch:a/x via:review reviewed:{}",
+                &sha[..12]
+            ),
+            "is not a full sha",
+        ),
+        (
+            &format!("submitted:{sha}"),
+            format!("submitted:{}", &sha[..6]),
+            "submitted without submitted:<sha>",
+        ),
     ];
     for (from, to, want) in cases {
         let before = r.tasks();
@@ -2077,6 +2180,30 @@ fn lint_passes_a_correct_hand_edit_and_names_each_violation() {
         std::fs::write(r.main.join("TASKS.md"), before).unwrap();
         r.git(&r.main, &["add", "TASKS.md"]);
     }
+
+    // A prefix the tool recorded (releases through 0.1.3 wrote 12 digits) passes
+    // in its submit or accept commit, and stays valid while the row keeps it.
+    let short = format!("submitted:{}", &sha[..12]);
+    hand_edit(&r, &format!("submitted:{sha}"), &short);
+    r.git(&r.main, &["commit", "-qm", "chore(tasks): shorten #1"]);
+    assert!(
+        r.fails(&r.main, &["lint", "HEAD"])
+            .contains("is not a full sha")
+    );
+    r.git(
+        &r.main,
+        &[
+            "commit",
+            "-q",
+            "--amend",
+            "-m",
+            "chore(tasks): submit #1 for review",
+        ],
+    );
+    r.ok(&r.main, &["lint", "HEAD"]);
+    hand_edit(&r, "- [~] #1 agent work", "- [~] #1 agent work again");
+    r.ok(&r.main, &["lint"]);
+    r.git(&r.main, &["reset", "-q", "--hard"]);
 
     // Shape: a queue edit mixed with code, and one made on a branch.
     hand_edit(&r, "- [ ] #2 a call", "- [ ] #2 a better call");
@@ -3107,6 +3234,26 @@ fn pre_receive_accepts_the_protocol_and_rejects_the_rest() {
     );
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("not installed on the server"));
+}
+
+#[test]
+fn object_directories_outside_a_push_quarantine_are_not_inherited() {
+    // Only receive-pack's quarantine — a directory in the repository's own object
+    // store, which git names as the alternate — keeps GIT_OBJECT_DIRECTORY.
+    let r = Repo::new("quarantine");
+    r.ok(&r.main, &["add", "one"]);
+    let stray = r.root.join("stray-objects");
+    let elsewhere = r.root.join("elsewhere");
+    std::fs::create_dir_all(&stray).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let mut c = Command::new(bin5w());
+    c.args(["lint", "HEAD"]).current_dir(&r.main);
+    env(&mut c, &r.root);
+    c.env("GIT_OBJECT_DIRECTORY", &stray)
+        .env("GIT_QUARANTINE_PATH", &stray)
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &elsewhere);
+    let o = c.output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 #[test]

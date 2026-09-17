@@ -204,7 +204,9 @@ Hand edits are checked, not trusted:
 - **`5w lint`** compares the queue before and after — `--staged`, one commit, or a range — and judges
   every row that changed by its transition: `[ ]→[~]` carries `branch:` and `submitted:`,
   `[~]→[x]` carries `via:review` and `reviewed:`, a close carries its lane's `via:`, a reject its
-  `rework:`, and nothing else gains one. Closed rows are immutable except to reopen, reflow (`split`)
+  `rework:`, and nothing else gains one. A `submitted:` or `reviewed:` written or changed is a full sha
+  (a prefix passes only in a submit or accept commit, as releases through 0.1.3 wrote 12 digits);
+  a prefix is read only while it names exactly one commit, and one under 7 digits never. Closed rows are immutable except to reopen, reflow (`split`)
   or archive; no row is deleted and no id reused; a queue edit is its own commit on the trunk. A
   single edit's subject (`chore(tasks): set #4 level 1`) names the only row its commit may change, and
   a batch's names exactly the rows it changes; a line rewritten to read the same is no change. Every

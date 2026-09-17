@@ -1377,17 +1377,22 @@ fn review(repo: &Repo, args: &[String]) -> Res<()> {
         }
         let mut moved = None;
         if let (Some(tip), Some(sub)) = (&tip, &t.submitted) {
-            moved = Some("0".to_string());
-            if !tip.starts_with(sub.as_str()) {
-                let n = git::opt(
-                    &repo.primary,
-                    &["rev-list", "--count", &format!("{sub}..{tip}")],
-                );
-                notes.push(format!(
-                    "moved since submit (+{} commits)",
-                    n.as_deref().unwrap_or("?")
-                ));
-                moved = n;
+            match git::recorded(&repo.primary, sub) {
+                git::Recorded::Commit(c) if c == *tip => moved = Some("0".to_string()),
+                git::Recorded::Commit(c) => {
+                    let n = git::opt(
+                        &repo.primary,
+                        &["rev-list", "--count", &format!("{c}..{tip}")],
+                    );
+                    notes.push(format!(
+                        "moved since submit (+{} commits)",
+                        n.as_deref().unwrap_or("?")
+                    ));
+                    moved = n;
+                }
+                git::Recorded::Ambiguous => notes.push(format!("submitted:{sub} is ambiguous")),
+                git::Recorded::Invalid => notes.push(format!("submitted:{sub} is not a sha")),
+                git::Recorded::Missing => notes.push(format!("submitted:{sub} is gone")),
             }
         }
         let (mut stat, mut behind) = (None, None);
@@ -1521,19 +1526,34 @@ pub fn accept_one(repo: &Repo, id: u64, at: Option<&str>, force: bool) -> Res<()
             (None, Some(tip)) => {
                 // The review was of the submitted commit; later ones are unread.
                 if let Some(sub) = &t.submitted
-                    && !tip.starts_with(sub.as_str())
                     && !force
                 {
-                    let n = git::opt(
-                        &repo.primary,
-                        &["rev-list", "--count", &format!("{sub}..{tip}")],
-                    )
-                    .unwrap_or("?".into());
-                    bail!(
-                        "{b} gained {n} commit(s) after it was submitted at {}: `git log {sub}..{b}`; once reviewed, `{tasks} accept {id} --at {}`",
-                        short(sub),
-                        short(&tip)
-                    );
+                    let n = match git::recorded(&repo.primary, sub) {
+                        git::Recorded::Commit(c) if c == tip => None,
+                        git::Recorded::Commit(c) => Some(
+                            git::opt(
+                                &repo.primary,
+                                &["rev-list", "--count", &format!("{c}..{tip}")],
+                            )
+                            .unwrap_or("?".into()),
+                        ),
+                        git::Recorded::Missing => Some("?".into()),
+                        git::Recorded::Ambiguous => bail!(
+                            "#{id}'s submitted:{sub} is ambiguous: more than one commit starts with it; once {b} is reviewed, `{tasks} accept {id} --at {}`",
+                            short(&tip)
+                        ),
+                        git::Recorded::Invalid => bail!(
+                            "#{id}'s submitted:{sub} is not a commit name (7 or more hex digits); once {b} is reviewed, `{tasks} accept {id} --at {}`",
+                            short(&tip)
+                        ),
+                    };
+                    if let Some(n) = n {
+                        bail!(
+                            "{b} gained {n} commit(s) after it was submitted at {}: `git log {sub}..{b}`; once reviewed, `{tasks} accept {id} --at {}`",
+                            short(sub),
+                            short(&tip)
+                        );
+                    }
                 }
                 reviewed = Some(tip);
             }

@@ -189,12 +189,16 @@ fn ship_check(
     for t in &rows {
         match (t.state, t.via.as_deref(), t.reviewed.as_deref()) {
             (State::Done, Some("review"), Some(r)) => {
-                let Some(reviewed) = git::rev(p, r) else {
-                    out.push(format!(
-                        "#{}: reviewed commit {r} is not in this clone — fetch full history",
-                        t.id
-                    ));
-                    continue;
+                let reviewed = match git::recorded(p, r) {
+                    git::Recorded::Commit(c) => c,
+                    other => {
+                        out.push(format!(
+                            "#{}: reviewed:{r} {}",
+                            t.id,
+                            recorded_problem(&other)
+                        ));
+                        continue;
+                    }
                 };
                 if git::change_id(p, trunk, head)? == git::change_id(p, trunk, &reviewed)? {
                     println!(
@@ -304,7 +308,7 @@ fn submit_event(repo: &Repo, branch: &str, head: Option<&str>, task: Option<u64>
     let id = t.id;
     match (t.state, t.submitted.as_deref()) {
         (State::Done, _) => println!("5w ci: #{id} is closed — nothing to submit"),
-        (State::Review, Some(s)) if head.starts_with(s) => {
+        (State::Review, Some(s)) if git::names(&repo.primary, s, &head) => {
             println!("5w ci: #{id} already submitted at {}", short(s))
         }
         (State::Review, s) => println!(
@@ -314,7 +318,7 @@ fn submit_event(repo: &Repo, branch: &str, head: Option<&str>, task: Option<u64>
         ),
         (State::Open, _) => match rejected_at(repo, id) {
             // A re-run of the job that submitted what was rejected must not resubmit it.
-            Some(r) if t.rework.is_some() && head.starts_with(&r) => println!(
+            Some(r) if t.rework.is_some() && git::names(&repo.primary, &r, &head) => println!(
                 "5w ci: #{id} was rejected at {} — a new commit on {branch} submits it again",
                 short(&r)
             ),
@@ -348,7 +352,7 @@ fn accept_event(
         );
     }
     match (t.state, t.reviewed.as_deref()) {
-        (State::Done, Some(r)) if reviewed.starts_with(r) => {
+        (State::Done, Some(r)) if git::names(p, r, &reviewed) => {
             println!("5w ci: #{id} already accepted at {}", short(r))
         }
         (State::Done, _) => println!(
@@ -364,19 +368,32 @@ fn accept_event(
             repo.cfg.cmd_tasks
         ),
         (State::Review, sub) => {
-            if let Some(s) = sub
-                && !git::ok(p, &["merge-base", "--is-ancestor", s, &reviewed])
-            {
-                bail!(
-                    "#{id} was submitted at {}, which {} does not contain — the review predates the submit",
-                    short(s),
-                    short(&reviewed)
-                );
+            if let Some(s) = sub {
+                let sub = match git::recorded(p, s) {
+                    git::Recorded::Commit(c) => c,
+                    other => bail!("#{id}'s submitted:{s} {}", recorded_problem(&other)),
+                };
+                if !git::ok(p, &["merge-base", "--is-ancestor", &sub, &reviewed]) {
+                    bail!(
+                        "#{id} was submitted at {}, which {} does not contain — the review predates the submit",
+                        short(s),
+                        short(&reviewed)
+                    );
+                }
             }
             crate::tasks::accept_one(repo, id, Some(&reviewed), false)?
         }
     }
     Ok(())
+}
+
+/// Why a recorded sha names no commit, for a refusal.
+fn recorded_problem(r: &git::Recorded) -> &'static str {
+    match r {
+        git::Recorded::Ambiguous => "is ambiguous: more than one commit starts with it",
+        git::Recorded::Invalid => "is not a commit name (7 or more hex digits)",
+        _ => "is not in this clone — fetch full history",
+    }
 }
 
 /// The commit the last rejection of `id` on the trunk sent back, if the history says.

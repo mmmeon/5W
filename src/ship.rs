@@ -546,24 +546,35 @@ fn verify_reviewed(
                 t.id,
                 t.via.as_deref().unwrap_or("unrecorded")
             ),
-            Some(r) if tip.starts_with(r.as_str()) => {
-                say!("ship: authorised by #{} via:review at {}", t.id, short(r))
-            }
             Some(r) => {
-                let Some(reviewed) = git::rev(p, r) else {
-                    if force {
+                let why = match git::recorded(p, r) {
+                    git::Recorded::Commit(c) if c == tip => {
+                        say!("ship: authorised by #{} via:review at {}", t.id, short(r));
+                        continue;
+                    }
+                    git::Recorded::Commit(c) => Ok(c),
+                    git::Recorded::Missing => Err("no longer exists"),
+                    git::Recorded::Ambiguous => {
+                        Err("is ambiguous: more than one commit starts with it")
+                    }
+                    git::Recorded::Invalid => Err("is not a commit name (7 or more hex digits)"),
+                };
+                let reviewed = match why {
+                    Ok(c) => c,
+                    Err(why) if force => {
                         note(format!(
-                            "ship: reviewed commit {} is gone; --force",
+                            "ship: #{}'s reviewed:{} {why}; --force",
+                            t.id,
                             short(r)
                         ));
                         continue;
                     }
-                    bail!(
-                        "#{} was reviewed at {}, which no longer exists; re-review, then `{tasks} accept {} --force --at {branch}`",
+                    Err(why) => bail!(
+                        "#{} was reviewed at {}, which {why}; re-review, then `{tasks} accept {} --force --at {branch}`",
                         t.id,
                         short(r),
                         t.id
-                    )
+                    ),
                 };
                 let now = git::change_id(p, trunk, &tip)?;
                 let then = git::change_id(p, trunk, &reviewed)?;
@@ -631,7 +642,9 @@ fn landed_parents(repo: &Repo, all: &[queue::Task], commit: &str) -> Res<Vec<(u6
         if git::branch_exists(p, b) {
             continue;
         }
-        let Some(base) = git::rev(p, r) else { continue };
+        let git::Recorded::Commit(base) = git::recorded(p, r) else {
+            continue;
+        };
         if base == commit
             || !git::ok(p, &["merge-base", "--is-ancestor", &base, commit])
             || git::ok(p, &["merge-base", "--is-ancestor", &base, trunk])
