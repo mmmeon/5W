@@ -239,7 +239,24 @@ Hand edits are checked, not trusted:
   a prefix is read only while it names exactly one commit, and one under 7 digits never. Closed rows are immutable except to reopen, reflow (`split`)
   or archive, and an archived row moves back to the queue only unchanged, in a commit whose subject
   names each (`chore(tasks): unarchive #4`, or several joined by `, `) and that changes no row — how
-  an archived row is reopened, which is what `reopen` of one names; no row is deleted, no id reused and none in both files (in a merge's tree too); a queue edit is its own commit on the trunk. A
+  an archived row is reopened, which is what `reopen` of one names; no row is deleted, no id reused and none in both files; a queue edit is its own commit on the trunk. A
+  merge is judged by the tree it makes against its first parent (the trunk's side). A row it holds as
+  another parent does passes when the first parent left that row as at one of their merge bases (all
+  of them: a criss-cross history has several) — a feature merged into the trunk carries the trunk's
+  queue, the trunk merged into a feature brings rows the feature never touched. A row both sides
+  changed is a resolved conflict, merged field by field against a merge base: a field neither side
+  changed keeps the base's value, one a single side changed takes that side's, one both changed takes
+  either's. The result is then judged as a change from the parent whose state it keeps (the first
+  parent's when both), so a closed row gains no field and an open one no `via:`. Taking a row whole
+  from the side discards the trunk's edit and is refused — except a close, which wins over edits the
+  other side made while the row was open. The first parent's row whole always passes: it is no change
+  to the trunk, as `lint --staged` sees it. A merge
+  trusts what its sides' own commits did: a range lint judges those inside it, and a hand edit on a
+  side outside the linted range goes unseen. A row no parent holds is an add, judged as one — two clones that both added an id renumber one past
+  both sides' highest. Any other change (a row dropped, a row neither side changed edited in the
+  resolution) is judged against the first parent and flagged as a queue edit inside a merge.
+  `lint --staged` judges a merge being committed the same way, so the
+  pre-commit hook and a range lint in CI agree. A
   single edit's subject (`chore(tasks): set #4 level 1`) names the only row its commit may change, and
   a batch's names exactly the rows it changes; a line rewritten to read the same is no change. Every
   commit `5w` itself makes passes it — a `reject` commit may gain `rework:` from any state, as

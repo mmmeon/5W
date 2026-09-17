@@ -95,6 +95,26 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             if !touches_queue(&repo.cfg, &files) {
                 return Ok(());
             }
+            let staged_entry = |name: &str| {
+                let pathspec = format!(":(top){name}");
+                let l = git::opt(&repo.cwd, &["ls-files", "-s", "--", &pathspec])?;
+                let mut f = l.split_whitespace();
+                Some((f.next()?.to_string(), f.next()?.to_string()))
+            };
+            let new = Snap {
+                queue: show_index(repo, &env, &repo.cfg.file),
+                archive: show_index(repo, &env, &repo.cfg.archive),
+            };
+            // A merge being committed is judged as `lint <rev>` will judge it.
+            let merging = git::opt(&repo.cwd, &["rev-parse", "--git-path", "MERGE_HEAD"])
+                .and_then(|p| std::fs::read_to_string(repo.cwd.join(p)).ok());
+            if let (Some(head), Some(m)) = (git::rev(&repo.cwd, "HEAD"), merging) {
+                let parents: Vec<String> = std::iter::once(head)
+                    .chain(m.split_whitespace().map(String::from))
+                    .collect();
+                merge(repo, &parents, &new, &staged_entry, "staged", &mut problems);
+                return report(problems);
+            }
             shape(
                 repo,
                 &files,
@@ -106,12 +126,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             links(
                 repo,
                 |name| head.as_deref().and_then(|h| tree_entry(repo, h, name)),
-                |name| {
-                    let pathspec = format!(":(top){name}");
-                    let l = git::opt(&repo.cwd, &["ls-files", "-s", "--", &pathspec])?;
-                    let mut f = l.split_whitespace();
-                    Some((f.next()?.to_string(), f.next()?.to_string()))
-                },
+                staged_entry,
                 "staged",
                 &mut problems,
             );
@@ -121,10 +136,6 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 git::opt(&repo.cwd, &["ls-files", "-s", "--", &pathspec])
                     .is_some_and(|l| !l.is_empty() && !l.starts_with("120000 "))
             });
-            let new = Snap {
-                queue: show_index(repo, &env, &repo.cfg.file),
-                archive: show_index(repo, &env, &repo.cfg.archive),
-            };
             check(&repo.cfg, repo, &old, &new, None, "staged", &mut problems);
             unarchived(repo, &old, &new, None, missed, "staged", &mut problems);
         }
@@ -161,6 +172,10 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             )?;
         }
     }
+    report(problems)
+}
+
+fn report(problems: Vec<String>) -> Res<()> {
     if problems.is_empty() {
         return Ok(());
     }
@@ -182,7 +197,20 @@ pub fn commits_on(
     for c in commits {
         let c = c.as_str();
         let short = &c[..c.len().min(12)];
-        merged_into_both(repo, c, short, problems)?;
+        let line = git::git(&repo.cwd, &["rev-list", "--parents", "-n", "1", c])?;
+        let parents: Vec<String> = line.split_whitespace().skip(1).map(String::from).collect();
+        if parents.len() > 1 {
+            let new = at_rev(repo, Some(c));
+            merge(
+                repo,
+                &parents,
+                &new,
+                &|name| tree_entry(repo, c, name),
+                short,
+                problems,
+            );
+            continue;
+        }
         let files = git::git(
             &repo.cwd,
             &[
@@ -359,30 +387,222 @@ fn unarchived(
     }
 }
 
-/// A merge changes no file against itself as git lists one, so the rows of its
-/// tree go unjudged: flag an id the merge leaves in both the queue and the
-/// archive that no parent had in both.
-fn merged_into_both(repo: &Repo, c: &str, at: &str, out: &mut Vec<String>) -> Res<()> {
-    let line = git::git(&repo.cwd, &["rev-list", "--parents", "-n", "1", c])?;
-    let parents: Vec<&str> = line.split_whitespace().skip(1).collect();
-    if parents.len() < 2 {
-        return Ok(());
+/// A merge lists no changed file, so judge the tree it makes (`new`, whose
+/// entries `new_entry` gives) against its first parent — the trunk's side — row by row:
+///
+/// - a row as the first parent holds it passes (it is no change to the trunk);
+/// - a row as another parent holds it passes where the first parent left that
+///   row as it was at one of their merge bases;
+/// - a row both sides changed since a merge base is a resolved conflict: it must
+///   merge the two field by field (`three_way`) — or be the side's close, which
+///   wins over edits made while open — and is judged as a change from the parent
+///   whose state it keeps;
+/// - a row no parent holds is an add (a colliding id renumbered past every
+///   parent's highest), judged as one;
+/// - anything else — a row dropped, or edited as neither side had it — is judged
+///   against the first parent and flagged as a queue edit inside a merge.
+///
+/// `lint --staged` judges a merge being committed the same way.
+fn merge(
+    repo: &Repo,
+    parents: &[String],
+    new: &Snap,
+    new_entry: &dyn Fn(&str) -> Option<(String, String)>,
+    at: &str,
+    out: &mut Vec<String>,
+) {
+    let names = [&repo.cfg.file, &repo.cfg.archive];
+    if names
+        .iter()
+        .all(|n| tree_entry(repo, &parents[0], n) == new_entry(n))
+    {
+        return;
     }
-    let both = |rev: &str| -> BTreeSet<u64> {
-        let (q, a) = at_rev(repo, Some(rev)).tasks();
-        a.iter()
-            .filter(|t| q.iter().any(|x| x.id == t.id))
-            .map(|t| t.id)
-            .collect()
+    links(
+        repo,
+        |name| tree_entry(repo, &parents[0], name),
+        new_entry,
+        at,
+        out,
+    );
+    let is_file = |name: &str| new_entry(name).is_some_and(|(m, _)| m != LINK);
+    let snap = |rev: &str| {
+        let mut s = at_rev(repo, Some(rev));
+        unlinked(repo, Some(rev), &mut s, is_file);
+        s
     };
-    let before: BTreeSet<u64> = parents.iter().flat_map(|p| both(p)).collect();
-    for id in both(c).difference(&before) {
+    let parse = |s: &Snap| [queue::parse(&s.queue), queue::parse(&s.archive)];
+    let snaps: Vec<Snap> = parents.iter().map(|p| snap(p)).collect();
+    let rows: Vec<[Vec<Task>; 2]> = snaps.iter().map(parse).collect();
+    // Every merge base of the first parent with each other one, as rows: a
+    // criss-cross history has several, and git's pick among them is arbitrary.
+    let bases: Vec<Vec<[Vec<Task>; 2]>> = parents
+        .iter()
+        .map(|p| {
+            git::opt(&repo.cwd, &["merge-base", "--all", &parents[0], p])
+                .unwrap_or_default()
+                .lines()
+                .map(|b| parse(&snap(b)))
+                .collect()
+        })
+        .collect();
+    let [nq, na] = parse(new);
+    let new_ids: HashSet<u64> = nq.iter().chain(&na).map(|t| t.id).collect();
+    let old_max = snaps
+        .iter()
+        .map(|s| queue::max_id(&s.queue).max(queue::max_id(&s.archive)))
+        .max()
+        .unwrap_or(0);
+    let mut old: HashMap<u64, &Task> = HashMap::new();
+    let mut own = BTreeSet::new();
+    let mut close_hint = BTreeSet::new();
+    for (file, n) in nq.iter().map(|t| (0, t)).chain(na.iter().map(|t| (1, t))) {
+        let id = n.id;
+        let first = find_row(&rows[0], id);
+        // Parent k's row is as it was at a merge base of k with the first parent.
+        let at_base = |k: usize, r| bases[k].iter().any(|b| same_row(r, find_row(b, id)));
+        if same_row(first, Some((file, n))) {
+            old.insert(id, n);
+            continue;
+        }
+        let Some(before) = rows.iter().find_map(|r| find_row(r, id)) else {
+            continue; // an add
+        };
+        let mut merged = false;
+        for k in 1..parents.len() {
+            let side = find_row(&rows[k], id);
+            if same_row(side, Some((file, n))) && at_base(k, first) {
+                // The side's change, the first parent's row as it was.
+                old.insert(id, n);
+                merged = true;
+                break;
+            }
+            let both = side.is_some() && !at_base(k, first) && !at_base(k, side);
+            // A close wins over edits the other side made to the row while open:
+            // a closed row does not change, so a resolution cannot keep both.
+            let closes = |a: Option<(usize, &Task)>, b: Option<(usize, &Task)>| {
+                a.is_some_and(|(_, t)| t.state == State::Done)
+                    && bases[k].iter().any(|base| {
+                        let at = |r: Option<(usize, &Task)>| r.map(|(_, t)| t.state);
+                        at(find_row(base, id)) == at(b)
+                    })
+            };
+            if both && same_row(side, Some((file, n))) && closes(side, first) {
+                old.insert(id, n);
+                merged = true;
+                break;
+            }
+            if both
+                && bases[k]
+                    .iter()
+                    .any(|b| three_way(find_row(b, id), first, side, (file, n)))
+            {
+                // A conflict resolved field by field: judged as a change from
+                // the parent whose state it keeps, the first when both do.
+                let keeps = |r: Option<(usize, &Task)>| {
+                    r.is_some_and(|(f, t)| f == file && t.state == n.state)
+                };
+                let prev = if keeps(first) || !keeps(side) {
+                    first
+                } else {
+                    side
+                };
+                if let Some((_, t)) = prev {
+                    old.insert(id, t);
+                }
+                if closes(side, first) || closes(first, side) {
+                    close_hint.insert(id);
+                }
+                merged = true;
+                break;
+            }
+        }
+        if !merged {
+            old.insert(id, first.unwrap_or(before).1);
+            own.insert(id);
+        }
+    }
+    for t in rows.iter().flat_map(|r| r.iter().flatten()) {
+        if !new_ids.contains(&t.id) {
+            old.entry(t.id).or_insert(t);
+        }
+    }
+    let start = out.len();
+    judge(&repo.cfg, repo, &old, old_max, new, None, at, out);
+    for id in close_hint {
+        let changed = format!("{at} #{id}: a closed row changed — reopen it first");
+        for f in out[start..].iter_mut().filter(|f| **f == changed) {
+            f.push_str(" (take the closed side's row whole)");
+        }
+    }
+    if !own.is_empty() {
         out.push(format!(
-            "{at} #{id}: in both {} and {}",
-            repo.cfg.file, repo.cfg.archive
+            "{at}: a merge changes {} against its first parent — a queue edit is its own commit, on {}",
+            own.iter()
+                .map(|i| format!("#{i}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            repo.trunk
         ));
     }
-    Ok(())
+}
+
+/// Whether `n`, in `file`, merges `a` and `s` from `base` field by field: a
+/// field neither side changed keeps the base's value, one a single side changed
+/// takes that side's, and one both changed takes either side's.
+fn three_way(
+    base: Option<(usize, &Task)>,
+    a: Option<(usize, &Task)>,
+    s: Option<(usize, &Task)>,
+    (file, n): (usize, &Task),
+) -> bool {
+    let (Some((fa, a)), Some((fs, s))) = (a, s) else {
+        return false;
+    };
+    fn pick<T: PartialEq>(b: Option<&T>, a: &T, s: &T, n: &T) -> bool {
+        match b {
+            Some(b) if a == b => n == s,
+            Some(b) if s == b => n == a,
+            _ => n == a || n == s,
+        }
+    }
+    let b = base.map(|(_, t)| t);
+    pick(base.map(|(f, _)| f).as_ref(), &fa, &fs, &file)
+        && pick(b.map(|t| &t.state), &a.state, &s.state, &n.state)
+        && pick(b.map(|t| &t.text), &a.text, &s.text, &n.text)
+        && pick(b.map(|t| &t.body), &a.body, &s.body, &n.body)
+        && pick(b.map(|t| &t.area), &a.area, &s.area, &n.area)
+        && pick(b.map(|t| &t.level), &a.level, &s.level, &n.level)
+        && pick(b.map(|t| &t.lane), &a.lane, &s.lane, &n.lane)
+        && pick(b.map(|t| &t.needs), &a.needs, &s.needs, &n.needs)
+        && pick(b.map(|t| &t.branch), &a.branch, &s.branch, &n.branch)
+        && pick(b.map(|t| &t.rework), &a.rework, &s.rework, &n.rework)
+        && pick(b.map(|t| &t.via), &a.via, &s.via, &n.via)
+        && pick(
+            b.map(|t| &t.submitted),
+            &a.submitted,
+            &s.submitted,
+            &n.submitted,
+        )
+        && pick(
+            b.map(|t| &t.reviewed),
+            &a.reviewed,
+            &s.reviewed,
+            &n.reviewed,
+        )
+}
+
+/// A row by id in a queue and archive, with the file (0 queue, 1 archive) it sits in.
+fn find_row(r: &[Vec<Task>; 2], id: u64) -> Option<(usize, &Task)> {
+    (0..2).find_map(|f| r[f].iter().find(|t| t.id == id).map(|t| (f, t)))
+}
+
+/// The same row in the same file, or absent from both.
+fn same_row(a: Option<(usize, &Task)>, b: Option<(usize, &Task)>) -> bool {
+    match (a, b) {
+        (Some((fa, a)), Some((fb, b))) => fa == fb && a.state == b.state && queue::identical(a, b),
+        (a, b) => a.is_none() && b.is_none(),
+    }
 }
 
 /// Judge one queue change given the texts on either side of it — for `audit`,
@@ -652,6 +872,23 @@ fn check(
     out: &mut Vec<String>,
 ) {
     let (oq, oa) = old.tasks();
+    let old_all: HashMap<u64, &Task> = oq.iter().chain(&oa).map(|t| (t.id, t)).collect();
+    let old_max = queue::max_id(&old.queue).max(queue::max_id(&old.archive));
+    judge(cfg, repo, &old_all, old_max, new, subject, at, out);
+}
+
+/// `check` given the rows before the change by id, and the highest id then.
+#[allow(clippy::too_many_arguments)]
+fn judge(
+    cfg: &Config,
+    repo: &Repo,
+    old_all: &HashMap<u64, &Task>,
+    old_max: u64,
+    new: &Snap,
+    subject: Option<&str>,
+    at: &str,
+    out: &mut Vec<String>,
+) {
     let (nq, na) = new.tasks();
     let mut say = |id: u64, m: String| out.push(format!("{at} #{id}: {m}"));
 
@@ -680,13 +917,10 @@ fn check(
         out.push(format!("{at}: a ``` fence in {} is never closed", cfg.file));
     }
 
-    let old_all: HashMap<u64, &Task> = oq.iter().chain(&oa).map(|t| (t.id, t)).collect();
     let new_all: HashMap<u64, &Task> = nq.iter().chain(&na).map(|t| (t.id, t)).collect();
     let new_ids: HashSet<u64> = new_all.keys().copied().collect();
-    let old_max = queue::max_id(&old.queue).max(queue::max_id(&old.archive));
-    let lane_of = |t: &Task| t.lane.clone().unwrap_or_else(|| cfg.default_lane.clone());
 
-    if let Some(m) = subject.and_then(|s| subject_rows(&cfg.commit_prefix, s, &old_all, &new_all)) {
+    if let Some(m) = subject.and_then(|s| subject_rows(&cfg.commit_prefix, s, old_all, &new_all)) {
         out.push(format!("{at}: {m}"));
     }
 
@@ -714,165 +948,195 @@ fn check(
         {
             continue;
         }
-        let lane = lane_of(n);
-        let close = cfg.lane(&lane).map(|l| l.close.clone());
+        judge_row(
+            cfg,
+            repo,
+            old_all.get(&id).copied(),
+            n,
+            &new_ids,
+            old_max,
+            subject,
+            at,
+            out,
+        );
+    }
+}
 
-        // Fields that are always checkable.
-        // A sha written or changed here is the full name. A prefix stays valid in
-        // a row that carried it before, and in a submit or accept commit the tool
-        // made (its subject names that edit of this row) when it is the 12 digits
-        // releases through 0.1.3 recorded: lint passes every commit the tool made.
-        let tool_edit = |verb: &str| {
-            subject.is_some_and(|s| {
-                single_edit(&cfg.commit_prefix, s) == Some((verb, id))
-                    || batch_edits(&cfg.commit_prefix, s).is_some_and(|e| e.contains(&(verb, id)))
-            })
-        };
-        for (field, verb, v, was) in [
-            (
-                "submitted",
-                "submit",
-                &n.submitted,
-                old_all.get(&id).and_then(|o| o.submitted.as_ref()),
-            ),
-            (
-                "reviewed",
-                "accept",
-                &n.reviewed,
-                old_all.get(&id).and_then(|o| o.reviewed.as_ref()),
-            ),
-        ] {
-            if let Some(v) = v
-                && was != Some(v)
-                && is_sha(Some(v))
-                && !matches!(v.len(), 40 | 64)
-                && !(v.len() == 12 && tool_edit(verb))
-            {
-                say(
-                    id,
-                    format!("{field}:{v} is not a full sha — record `git rev-parse <commit>`"),
-                );
-            }
-        }
-        if cfg.lane(&lane).is_none() {
-            say(id, format!("lane >{lane} is not in the config"));
-        }
-        for d in &n.needs {
-            if !new_ids.contains(d) {
-                say(id, format!("needs #{d}, which does not exist"));
-            }
-        }
-        if let Some(b) = &n.branch
-            && !git::ok(&repo.primary, &["check-ref-format", "--branch", b])
+/// Judge one row's change from `old` (none: added) to `n`, by the rules a
+/// commit follows.
+#[allow(clippy::too_many_arguments)]
+fn judge_row(
+    cfg: &Config,
+    repo: &Repo,
+    old: Option<&Task>,
+    n: &Task,
+    new_ids: &HashSet<u64>,
+    old_max: u64,
+    subject: Option<&str>,
+    at: &str,
+    out: &mut Vec<String>,
+) {
+    let id = n.id;
+    let lane_of = |t: &Task| t.lane.clone().unwrap_or_else(|| cfg.default_lane.clone());
+    let mut say = |id: u64, m: String| out.push(format!("{at} #{id}: {m}"));
+    let lane = lane_of(n);
+    let close = cfg.lane(&lane).map(|l| l.close.clone());
+
+    // Fields that are always checkable.
+    // A sha written or changed here is the full name. A prefix stays valid in
+    // a row that carried it before, and in a submit or accept commit the tool
+    // made (its subject names that edit of this row) when it is the 12 digits
+    // releases through 0.1.3 recorded: lint passes every commit the tool made.
+    let tool_edit = |verb: &str| {
+        subject.is_some_and(|s| {
+            single_edit(&cfg.commit_prefix, s) == Some((verb, id))
+                || batch_edits(&cfg.commit_prefix, s).is_some_and(|e| e.contains(&(verb, id)))
+        })
+    };
+    for (field, verb, v, was) in [
+        (
+            "submitted",
+            "submit",
+            &n.submitted,
+            old.and_then(|o| o.submitted.as_ref()),
+        ),
+        (
+            "reviewed",
+            "accept",
+            &n.reviewed,
+            old.and_then(|o| o.reviewed.as_ref()),
+        ),
+    ] {
+        if let Some(v) = v
+            && was != Some(v)
+            && is_sha(Some(v))
+            && !matches!(v.len(), 40 | 64)
+            && !(v.len() == 12 && tool_edit(verb))
         {
-            say(id, format!("branch:{b} is not a valid branch name"));
+            say(
+                id,
+                format!("{field}:{v} is not a full sha — record `git rev-parse <commit>`"),
+            );
         }
+    }
+    if cfg.lane(&lane).is_none() {
+        say(id, format!("lane >{lane} is not in the config"));
+    }
+    for d in &n.needs {
+        if !new_ids.contains(d) {
+            say(id, format!("needs #{d}, which does not exist"));
+        }
+    }
+    if let Some(b) = &n.branch
+        && !git::ok(&repo.primary, &["check-ref-format", "--branch", b])
+    {
+        say(id, format!("branch:{b} is not a valid branch name"));
+    }
 
-        let Some(o) = old_all.get(&id) else {
-            // Added.
-            if id <= old_max {
+    let Some(o) = old else {
+        // Added.
+        if id <= old_max {
+            say(
+                id,
+                format!("new row reuses id {id} (highest before was {old_max})"),
+            );
+        }
+        if n.state != State::Open
+            || n.via.is_some()
+            || n.submitted.is_some()
+            || n.reviewed.is_some()
+        {
+            say(
+                id,
+                "a new row is open, with no via:, submitted: or reviewed:".into(),
+            );
+        }
+        if n.rework.is_some() {
+            say(
+                id,
+                "a new row carries rework: — only a reject adds one".into(),
+            );
+        }
+        return;
+    };
+
+    let same_content = words(o) == words(n) && fields(o) == fields(n);
+    if o.rework.is_none()
+        && n.rework.is_some()
+        && n.state != State::Done
+        && (o.state, n.state) != (State::Review, State::Open)
+        && subject != Some(format!("{}: reject #{id}", cfg.commit_prefix).as_str())
+        && !subject
+            .and_then(|s| batch_edits(&cfg.commit_prefix, s))
+            .is_some_and(|e| e.contains(&("reject", id)))
+    {
+        say(id, "gained rework: outside a reject ([~]→[ ])".into());
+    }
+    match (o.state, n.state) {
+        (State::Done, State::Done) => {
+            if !same_content {
+                say(id, "a closed row changed — reopen it first".into());
+            }
+        }
+        (State::Done, State::Open) => {
+            if n.via.is_some() || n.reviewed.is_some() || n.submitted.is_some() {
                 say(
                     id,
-                    format!("new row reuses id {id} (highest before was {old_max})"),
+                    "reopened, but still carries via:, reviewed: or submitted:".into(),
                 );
             }
-            if n.state != State::Open
-                || n.via.is_some()
-                || n.submitted.is_some()
-                || n.reviewed.is_some()
-            {
+        }
+        (State::Done, State::Review) => say(
+            id,
+            "[x]→[~] is not a transition; reopen, then submit".into(),
+        ),
+        (State::Open, State::Open) | (State::Review, State::Open) => {
+            if n.via.is_some() || n.reviewed.is_some() {
+                say(id, "an open row carries via: or reviewed:".into());
+            }
+            if n.submitted.is_some() {
+                say(id, "an open row carries submitted:".into());
+            }
+            if o.state == State::Review && n.rework.is_none() {
+                say(id, "rejected without rework:\"why\"".into());
+            }
+        }
+        (_, State::Review) => {
+            if n.branch.is_none() {
+                say(id, "submitted without branch:".into());
+            }
+            if !is_sha(n.submitted.as_deref()) {
                 say(
                     id,
-                    "a new row is open, with no via:, submitted: or reviewed:".into(),
+                    "submitted without submitted:<sha> (git rev-parse <branch>)".into(),
                 );
+            }
+            if n.via.is_some() || n.reviewed.is_some() {
+                say(id, "a submitted row carries via: or reviewed:".into());
+            }
+        }
+        (_, State::Done) => {
+            match n.via.as_deref() {
+                Some("review") => {
+                    if n.branch.is_some() && !is_sha(n.reviewed.as_deref()) {
+                        say(id, "accepted without reviewed:<sha>".into());
+                    }
+                    if o.state == State::Open {
+                        say(id, "accepted but never submitted".into());
+                    }
+                }
+                Some(v) if Some(v) == close.as_deref() => {}
+                Some(v) => say(
+                    id,
+                    format!(
+                        "closed via:{v}, but >{lane} closes via:{}",
+                        close.as_deref().unwrap_or("?")
+                    ),
+                ),
+                None => say(id, "closed without via:".into()),
             }
             if n.rework.is_some() {
-                say(
-                    id,
-                    "a new row carries rework: — only a reject adds one".into(),
-                );
-            }
-            continue;
-        };
-
-        let same_content = words(o) == words(n) && fields(o) == fields(n);
-        if o.rework.is_none()
-            && n.rework.is_some()
-            && n.state != State::Done
-            && (o.state, n.state) != (State::Review, State::Open)
-            && subject != Some(format!("{}: reject #{id}", cfg.commit_prefix).as_str())
-            && !subject
-                .and_then(|s| batch_edits(&cfg.commit_prefix, s))
-                .is_some_and(|e| e.contains(&("reject", id)))
-        {
-            say(id, "gained rework: outside a reject ([~]→[ ])".into());
-        }
-        match (o.state, n.state) {
-            (State::Done, State::Done) => {
-                if !same_content {
-                    say(id, "a closed row changed — reopen it first".into());
-                }
-            }
-            (State::Done, State::Open) => {
-                if n.via.is_some() || n.reviewed.is_some() || n.submitted.is_some() {
-                    say(
-                        id,
-                        "reopened, but still carries via:, reviewed: or submitted:".into(),
-                    );
-                }
-            }
-            (State::Done, State::Review) => say(
-                id,
-                "[x]→[~] is not a transition; reopen, then submit".into(),
-            ),
-            (State::Open, State::Open) | (State::Review, State::Open) => {
-                if n.via.is_some() || n.reviewed.is_some() {
-                    say(id, "an open row carries via: or reviewed:".into());
-                }
-                if n.submitted.is_some() {
-                    say(id, "an open row carries submitted:".into());
-                }
-                if o.state == State::Review && n.rework.is_none() {
-                    say(id, "rejected without rework:\"why\"".into());
-                }
-            }
-            (_, State::Review) => {
-                if n.branch.is_none() {
-                    say(id, "submitted without branch:".into());
-                }
-                if !is_sha(n.submitted.as_deref()) {
-                    say(
-                        id,
-                        "submitted without submitted:<sha> (git rev-parse <branch>)".into(),
-                    );
-                }
-                if n.via.is_some() || n.reviewed.is_some() {
-                    say(id, "a submitted row carries via: or reviewed:".into());
-                }
-            }
-            (_, State::Done) => {
-                match n.via.as_deref() {
-                    Some("review") => {
-                        if n.branch.is_some() && !is_sha(n.reviewed.as_deref()) {
-                            say(id, "accepted without reviewed:<sha>".into());
-                        }
-                        if o.state == State::Open {
-                            say(id, "accepted but never submitted".into());
-                        }
-                    }
-                    Some(v) if Some(v) == close.as_deref() => {}
-                    Some(v) => say(
-                        id,
-                        format!(
-                            "closed via:{v}, but >{lane} closes via:{}",
-                            close.as_deref().unwrap_or("?")
-                        ),
-                    ),
-                    None => say(id, "closed without via:".into()),
-                }
-                if n.rework.is_some() {
-                    say(id, "closed but still carries rework:".into());
-                }
+                say(id, "closed but still carries rework:".into());
             }
         }
     }

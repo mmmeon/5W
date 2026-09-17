@@ -50,6 +50,10 @@ Never:
 ## Commits
 
 - A queue edit is **its own commit**, on the **trunk**, touching only `TASKS.md` and `DONE.md`.
+  A merge carries each side's rows as they are. Resolving a conflict, a row both sides changed keeps
+  every field either side changed (a close wins over edits made while open), and a row both sides
+  added under one id is renumbered past both sides' highest id; any other change in a merge is a queue
+  edit inside it.
   Branches carry no queue changes. Both are plain files, never symlinks — on the trunk or in its checkout.
 - Message: `chore(tasks): <verb> #<id>` — `add`, `submit`, `accept`, `reject`, `close`, `reopen`,
   `unarchive`;

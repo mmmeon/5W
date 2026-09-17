@@ -2462,6 +2462,529 @@ fn lint_of_a_commit_or_range_flags_an_id_in_both_files_even_from_a_merge() {
     }
 }
 
+/// A queue as the trunk holds it: #1 closed, #2 in review on `feat`, #3 open.
+fn merge_base_queue(r: &Repo) -> PathBuf {
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["add", "third"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["wt", "new", "feat"]);
+    let wt = r.wt("feat");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "2"]);
+    wt
+}
+
+#[test]
+fn lint_passes_ordinary_merges_that_carry_a_parent_queue() {
+    let r = Repo::new("lint-merges-clean");
+    let wt = merge_base_queue(&r);
+    // The trunk moves on; the feature branch merges it in, then more work.
+    r.ok(&r.main, &["add", "fourth"]);
+    r.git(&wt, &["merge", "-q", "--no-edit", "main"]);
+    r.ok(&wt, &["lint", "HEAD"]);
+    r.commit_in(&wt, "f", "2\n");
+    r.ok(&r.main, &["add", "fifth"]);
+    r.ok(&r.main, &["archive"]);
+    // Rows the trunk archived move for the feature too.
+    r.git(&wt, &["merge", "-q", "--no-edit", "main"]);
+    r.ok(&wt, &["lint", "HEAD"]);
+    // Two more branches, one cut before the archive.
+    r.git(&r.main, &["branch", "a", "main~1"]);
+    r.git(&r.main, &["branch", "b", "main"]);
+    for (b, f) in [("a", "a"), ("b", "b")] {
+        r.git(&r.main, &["checkout", "-q", b]);
+        r.commit_in(&r.main, f, "x\n");
+    }
+    r.git(&r.main, &["checkout", "-q", "main"]);
+    r.git(&r.main, &["merge", "-q", "--no-ff", "--no-edit", "feat"]);
+    r.ok(&r.main, &["lint", "HEAD"]);
+    r.git(&r.main, &["merge", "-q", "--no-ff", "--no-edit", "a", "b"]);
+    assert!(r.git(&r.main, &["rev-parse", "--verify", "HEAD^3"]).len() >= 40);
+    r.ok(&r.main, &["lint", "HEAD"]);
+    r.ok(&r.main, &["add", "sixth"]);
+    r.lint_history();
+}
+
+#[test]
+fn lint_judges_a_merge_queue_against_its_parents() {
+    let r = Repo::new("lint-merge-rows");
+    merge_base_queue(&r);
+    r.git(&r.main, &["branch", "side", "main~2"]);
+    r.git(&r.main, &["checkout", "-q", "side"]);
+    r.commit_in(&r.main, "s", "1\n");
+    r.git(&r.main, &["checkout", "-q", "main"]);
+    r.lint_history();
+    let root = r.git(&r.main, &["rev-list", "--max-parents=0", "main"]);
+    let range = format!("{root}..main");
+    let merge = |tasks: &str| {
+        r.git(
+            &r.main,
+            &["merge", "-q", "--no-commit", "-s", "ours", "side"],
+        );
+        std::fs::write(r.main.join("TASKS.md"), tasks).unwrap();
+        r.git(&r.main, &["add", "TASKS.md"]);
+        r.git(&r.main, &["commit", "-qm", "merge side", "--no-verify"]);
+    };
+    let tasks = r.tasks();
+
+    // A resolution that drops a row the trunk has.
+    let dropped: String = tasks
+        .lines()
+        .filter(|l| !l.contains("#3 third"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    merge(&dropped);
+    for args in [&["lint", "HEAD"][..], &["lint", &range]] {
+        let out = r.fails(&r.main, args);
+        assert!(out.contains("#3: deleted"), "{out}");
+    }
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // One that takes the side's older rows is judged as the trunk sees it.
+    let side = r.git(&r.main, &["show", "side:TASKS.md"]);
+    merge(&format!("{side}\n"));
+    for args in [&["lint", "HEAD"][..], &["lint", &range]] {
+        let out = r.fails(&r.main, args);
+        assert!(out.contains("#2: rejected without rework"), "{out}");
+    }
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // A row edited as no parent had it is a queue edit inside a merge.
+    merge(&tasks.replace("#3 third", "#3 third, retitled"));
+    for args in [&["lint", "HEAD"][..], &["lint", &range]] {
+        let out = r.fails(&r.main, args);
+        assert!(out.contains("a merge changes #3 against"), "{out}");
+    }
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // The trunk's queue, unchanged, passes.
+    merge(&tasks);
+    r.lint_history();
+}
+
+/// Run git where it may stop on a conflict; true when it succeeded.
+fn git_may_conflict(r: &Repo, cwd: &Path, args: &[&str]) -> bool {
+    let mut c = Command::new("git");
+    c.args(args).current_dir(cwd);
+    env(&mut c, &r.root);
+    c.output().unwrap().status.success()
+}
+
+/// A clone of the trunk that edits the queue on its own, as a second machine does.
+fn clone_of(r: &Repo) -> PathBuf {
+    let clone = r.root.join("clone");
+    r.git(&r.root, &["clone", "-q", r.main.to_str().unwrap(), "clone"]);
+    clone
+}
+
+#[test]
+fn lint_passes_a_clean_merge_in_a_criss_cross_history() {
+    let r = Repo::new("lint-criss-cross");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["wt", "new", "feat"]);
+    let wt = r.wt("feat");
+    r.commit_in(&wt, "f", "1\n");
+    let f1 = r.git(&wt, &["rev-parse", "HEAD"]);
+    r.ok(&r.main, &["add", "third"]);
+    r.ok(&r.main, &["add", "fourth"]);
+    // Each side merges the other as it was: two merge bases.
+    r.git(&wt, &["merge", "-q", "--no-edit", "main"]);
+    r.git(&r.main, &["merge", "-q", "--no-ff", "--no-edit", &f1]);
+    r.ok(&r.main, &["set", "4", "level", "2"]);
+    r.commit_in(&wt, "f", "2\n");
+    let bases = r.git(&wt, &["merge-base", "--all", "HEAD", "main"]);
+    assert_eq!(bases.lines().count(), 2, "{bases}");
+    r.git(&wt, &["merge", "-q", "--no-edit", "main"]);
+    r.ok(&wt, &["lint", "HEAD"]);
+    let root = r.git(&r.main, &["rev-list", "--max-parents=0", "main"]);
+    r.ok(&wt, &["lint", &format!("{root}..HEAD")]);
+    r.git(&r.main, &["merge", "-q", "--no-ff", "--no-edit", "feat"]);
+    r.lint_history();
+}
+
+#[test]
+fn lint_passes_a_resolved_conflict_on_a_row_both_clones_edited() {
+    let r = Repo::new("lint-merge-conflict");
+    r.ok(&r.main, &["hook", "install"]);
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["add", "third"]);
+    let clone = clone_of(&r);
+    r.ok(&clone, &["set", "3", "area", "ui"]);
+    r.ok(&r.main, &["set", "3", "level", "1"]);
+    let theirs = std::fs::read_to_string(clone.join("TASKS.md")).unwrap();
+    let ours = r.tasks();
+    let root = r.git(&r.main, &["rev-list", "--max-parents=0", "main"]);
+    let range = format!("{root}..main");
+    let pull = || {
+        let pulled = git_may_conflict(
+            &r,
+            &r.main,
+            &["pull", "-q", "--no-rebase", "--no-edit", "../clone", "main"],
+        );
+        assert!(!pulled, "the same row edited on both sides conflicts");
+    };
+    let both = ours
+        .lines()
+        .map(|l| match l.contains("#3 third") {
+            true => format!("{l} @ui\n"),
+            false => format!("{l}\n"),
+        })
+        .collect::<String>();
+    // A resolution that keeps both edits passes the pre-commit hook, and lint
+    // of the commit agrees.
+    pull();
+    std::fs::write(r.main.join("TASKS.md"), &both).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    r.ok(&r.main, &["lint", "--staged"]);
+    r.git(&r.main, &["commit", "-q", "--no-edit"]);
+    r.ok(&r.main, &["lint", "HEAD"]);
+    r.ok(&r.main, &["lint", &range]);
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // Taking their row whole discards the trunk's level: refused at commit
+    // time as in a range.
+    pull();
+    std::fs::write(r.main.join("TASKS.md"), &theirs).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    let out = r.fails(&r.main, &["lint", "--staged"]);
+    assert!(out.contains("a merge changes #3 against"), "{out}");
+    r.git(&r.main, &["commit", "-q", "--no-edit", "--no-verify"]);
+    let out = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(out.contains("a merge changes #3 against"), "{out}");
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // A resolution that also retitles a row neither side changed is a queue edit
+    // inside a merge, at commit time as in a range.
+    pull();
+    std::fs::write(
+        r.main.join("TASKS.md"),
+        both.replace("#1 first", "#1 retitled"),
+    )
+    .unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    let out = r.fails(&r.main, &["lint", "--staged"]);
+    assert!(out.contains("a merge changes #1 against"), "{out}");
+    r.git(&r.main, &["commit", "-q", "--no-edit", "--no-verify"]);
+    let out = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(out.contains("a merge changes #1 against"), "{out}");
+}
+
+/// Five rows, #4 submitted on `feat`, then a clone; `trunk` and `side` edit
+/// the queue apart. Returns the clone.
+fn apart(r: &Repo, trunk: &[&str], side: &[&str]) -> PathBuf {
+    for t in ["first", "second", "third", "fourth", "fifth"] {
+        r.ok(&r.main, &["add", t]);
+    }
+    r.ok(&r.main, &["wt", "new", "feat"]);
+    let wt = r.wt("feat");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "4"]);
+    let clone = clone_of(r);
+    r.ok(&clone, side);
+    r.ok(&r.main, trunk);
+    clone
+}
+
+/// Pull the clone into the trunk and commit `tasks` as the merge's queue.
+fn merge_clone_as(r: &Repo, tasks: &str) {
+    git_may_conflict(
+        r,
+        &r.main,
+        &[
+            "pull",
+            "-q",
+            "--no-rebase",
+            "--no-commit",
+            "../clone",
+            "main",
+        ],
+    );
+    std::fs::write(r.main.join("TASKS.md"), tasks).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    r.git(&r.main, &["commit", "-q", "--no-edit", "--no-verify"]);
+    r.git(&r.main, &["rev-parse", "--verify", "HEAD^2"]);
+}
+
+/// `tasks` with row `id`'s line replaced by `line`, where it stood.
+fn with_row(tasks: &str, id: u64, line: &str) -> String {
+    tasks
+        .lines()
+        .map(|l| match l.contains(&format!("] #{id} ")) {
+            true => format!("{line}\n"),
+            false => format!("{l}\n"),
+        })
+        .collect()
+}
+
+/// Row `id`'s line in a queue file.
+fn row_of(tasks: &str, id: u64) -> String {
+    tasks
+        .lines()
+        .find(|l| l.contains(&format!("] #{id} ")))
+        .unwrap()
+        .to_string()
+}
+
+/// A merge's queue made from the trunk's and the side's files.
+type Resolve = fn(&str, &str) -> String;
+
+#[test]
+fn lint_refuses_a_merge_that_undoes_or_breaks_the_trunk_edit_of_a_row_both_sides_changed() {
+    let theirs_whole: Resolve = |_, theirs| theirs.to_string();
+    let close = &["done", "5", "--self"][..];
+    let cases: [(&[&str], &[&str], Resolve); 5] = [
+        // The side's row whole reverts the close.
+        (close, &["set", "5", "level", "1"], theirs_whole),
+        // The side's open state with the trunk's via.
+        (close, &["set", "5", "level", "1"], |_, theirs| {
+            with_row(theirs, 5, &format!("{} via:self", row_of(theirs, 5)))
+        }),
+        // The trunk's close with the side's level: a closed row changed.
+        (close, &["set", "5", "level", "1"], |ours, _| {
+            with_row(ours, 5, &format!("{} !1", row_of(ours, 5)))
+        }),
+        // The side's row undoes the accept.
+        (&["accept", "4"], &["set", "4", "level", "1"], theirs_whole),
+        // The side's row strips the reject's rework:.
+        (
+            &["reject", "4", "bad"],
+            &["set", "4", "level", "1"],
+            theirs_whole,
+        ),
+    ];
+    for (i, (trunk, side, resolve)) in cases.into_iter().enumerate() {
+        let r = Repo::new(&format!("lint-merge-undo-{i}"));
+        let clone = apart(&r, trunk, side);
+        let base = r.git(&r.main, &["rev-parse", "main~1"]);
+        let theirs = std::fs::read_to_string(clone.join("TASKS.md")).unwrap();
+        merge_clone_as(&r, &resolve(&r.tasks(), &theirs));
+        let id = format!("#{}", trunk[1]);
+        for args in [&["lint", "HEAD"][..], &["lint", &format!("{base}..main")]] {
+            let out = r.fails(&r.main, args);
+            assert!(out.contains(&id), "case {i}: {out}");
+        }
+    }
+}
+
+#[test]
+fn lint_passes_a_merge_that_keeps_a_close_over_an_edit_made_while_open() {
+    let r = Repo::new("lint-merge-close-wins");
+    let clone = apart(&r, &["set", "5", "level", "1"], &["done", "5", "--self"]);
+    let base = r.git(&r.main, &["rev-parse", "main~1"]);
+    let theirs = std::fs::read_to_string(clone.join("TASKS.md")).unwrap();
+    merge_clone_as(&r, &theirs);
+    r.ok(&r.main, &["lint", "HEAD"]);
+    r.ok(&r.main, &["lint", &format!("{base}..main")]);
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+    // Keeping the level as well changes the closed row.
+    let closed = row_of(&theirs, 5);
+    merge_clone_as(&r, &with_row(&theirs, 5, &format!("{closed} !1")));
+    let out = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(
+        out.contains(
+            "#5: a closed row changed — reopen it first (take the closed side's row whole)"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_range_names_a_side_hand_edit_at_its_commit_not_at_the_merge_that_brings_it() {
+    let r = Repo::new("lint-merge-side-edit");
+    let clone = apart(&r, &["set", "3", "level", "1"], &["done", "1", "--self"]);
+    let tasks = std::fs::read_to_string(clone.join("TASKS.md")).unwrap();
+    std::fs::write(
+        clone.join("TASKS.md"),
+        tasks.replace("#1 first", "#1 first, rewritten"),
+    )
+    .unwrap();
+    r.git(&clone, &["commit", "-qam", "tidy", "--no-verify"]);
+    let bad = r.git(&clone, &["rev-parse", "--short=12", "HEAD"]);
+    let base = r.git(&r.main, &["rev-parse", "main~1"]);
+    assert!(git_may_conflict(
+        &r,
+        &r.main,
+        &["pull", "-q", "--no-rebase", "--no-edit", "../clone", "main"]
+    ));
+    let merge = r.git(&r.main, &["rev-parse", "--short=12", "HEAD"]);
+    let out = r.fails(&r.main, &["lint", &format!("{base}..main")]);
+    assert!(
+        out.contains(&format!("{bad} #1: a closed row changed")),
+        "{out}"
+    );
+    assert!(!out.contains(&merge), "{out}");
+    // The merge alone trusts its side: a side edit outside the range goes unseen.
+    r.ok(&r.main, &["lint", "HEAD"]);
+}
+
+/// A trunk commit made with --no-verify that retitles closed #1; returns its
+/// short sha and its parent.
+fn bad_trunk_edit(r: &Repo, cwd: &Path) -> (String, String) {
+    let tasks = std::fs::read_to_string(cwd.join("TASKS.md")).unwrap();
+    std::fs::write(
+        cwd.join("TASKS.md"),
+        tasks.replace("#1 first", "#1 first, retitled"),
+    )
+    .unwrap();
+    r.git(cwd, &["commit", "-qam", "retitle", "--no-verify"]);
+    (
+        r.git(cwd, &["rev-parse", "--short=12", "HEAD"]),
+        r.git(cwd, &["rev-parse", "HEAD~1"]),
+    )
+}
+
+/// `lint <before>..main` and `ci` on main name the bad commit, never a merge.
+fn only_bad_is_named(r: &Repo, cwd: &Path, bad: &str, before: &str) {
+    let merges = r.git(
+        cwd,
+        &[
+            "rev-list",
+            "--merges",
+            "--abbrev=12",
+            "--abbrev-commit",
+            &format!("{before}..main"),
+        ],
+    );
+    assert!(!merges.is_empty());
+    for args in [
+        &["lint", &format!("{before}..main")][..],
+        &[
+            "ci",
+            "--ref",
+            "refs/heads/main",
+            "--base",
+            before,
+            "--head",
+            "main",
+        ],
+    ] {
+        let out = r.fails(cwd, args);
+        assert!(
+            out.contains(&format!("{bad} #1: a closed row changed")),
+            "{args:?}: {out}"
+        );
+        for m in merges.lines() {
+            assert!(!out.contains(m), "{args:?}: {out}");
+        }
+    }
+}
+
+#[test]
+fn a_trunk_hand_edit_is_named_once_after_a_pull_merge() {
+    let r = Repo::new("lint-merge-pull-bad");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    let clone = clone_of(&r);
+    let (bad, before) = bad_trunk_edit(&r, &r.main);
+    // The clone commits locally, then pulls: its own commit is the first parent.
+    r.ok(&clone, &["add", "third"]);
+    r.git(
+        &clone,
+        &["pull", "-q", "--no-rebase", "--no-edit", "origin", "main"],
+    );
+    r.git(&clone, &["rev-parse", "--verify", "HEAD^2"]);
+    // And pushes: the remote trunk is the merge, as ci's checkout sees it.
+    r.git(&clone, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    only_bad_is_named(&r, &clone, &bad, &before);
+}
+
+#[test]
+fn a_trunk_hand_edit_is_named_once_after_a_fast_forward_landing() {
+    let r = Repo::new("lint-merge-ff-bad");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["wt", "new", "feat"]);
+    let wt = r.wt("feat");
+    r.commit_in(&wt, "f", "1\n");
+    let (bad, before) = bad_trunk_edit(&r, &r.main);
+    r.git(&wt, &["merge", "-q", "--no-edit", "main"]);
+    r.git(&r.main, &["merge", "-q", "--ff-only", "feat"]);
+    only_bad_is_named(&r, &r.main, &bad, &before);
+}
+
+#[test]
+fn lint_does_not_blame_a_merge_for_a_trunk_commit_it_brings_in() {
+    let r = Repo::new("lint-merge-trunk-finding");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["wt", "new", "feat"]);
+    let wt = r.wt("feat");
+    r.commit_in(&wt, "f", "1\n");
+    // A hand edit lands on the trunk, flagged there, and stays in history.
+    let tasks = r.tasks().replace("#1 first", "#1 first, retitled");
+    std::fs::write(r.main.join("TASKS.md"), tasks).unwrap();
+    r.git(&r.main, &["commit", "-qam", "retitle", "--no-verify"]);
+    r.fails(&r.main, &["lint", "HEAD"]);
+    let before = r.git(&r.main, &["rev-parse", "main"]);
+
+    r.git(&wt, &["merge", "-q", "--no-edit", "main"]);
+    r.ok(&wt, &["lint", "HEAD"]);
+    r.ok(&r.main, &["add", "third"]);
+    let before_landing = r.git(&r.main, &["rev-parse", "main"]);
+    r.git(&r.main, &["merge", "-q", "--no-ff", "--no-edit", "feat"]);
+    r.ok(&r.main, &["lint", "HEAD"]);
+    r.ok(&r.main, &["lint", &format!("{before}..main")]);
+    r.ok(
+        &r.main,
+        &[
+            "ci",
+            "--ref",
+            "refs/heads/main",
+            "--base",
+            &before_landing,
+            "--head",
+            "main",
+        ],
+    );
+}
+
+/// Two clones that each add a row give it the same id; the merge renumbers one
+/// past every parent's highest id — a new row, as an add is. Renumbering into
+/// an id either side holds is not.
+#[test]
+fn lint_passes_a_merge_that_renumbers_a_colliding_new_row() {
+    let r = Repo::new("lint-merge-renumber");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    let clone = clone_of(&r);
+    r.ok(&clone, &["add", "from the clone"]);
+    r.ok(&r.main, &["add", "from main"]);
+    let ours = r.tasks();
+    let row = |id: u64| {
+        ours.lines()
+            .find(|l| l.contains("from main"))
+            .unwrap()
+            .replace("#3 from main", &format!("#{id} from the clone"))
+    };
+    let root = r.git(&r.main, &["rev-list", "--max-parents=0", "main"]);
+    let range = format!("{root}..main");
+    let merge = |tasks: String| {
+        assert!(!git_may_conflict(
+            &r,
+            &r.main,
+            &["pull", "-q", "--no-rebase", "--no-edit", "../clone", "main"]
+        ));
+        std::fs::write(r.main.join("TASKS.md"), tasks).unwrap();
+        r.git(&r.main, &["add", "TASKS.md"]);
+        r.git(&r.main, &["commit", "-q", "--no-edit", "--no-verify"]);
+    };
+    let with = |line: String| ours.replace("#3 from main", &format!("#3 from main\n{line}"));
+
+    merge(with(row(4)));
+    r.ok(&r.main, &["lint", "HEAD"]);
+    r.ok(&r.main, &["lint", &range]);
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    merge(with(row(2)));
+    let out = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(out.contains("#2"), "{out}");
+}
 #[test]
 fn a_single_edit_subject_may_rewrite_its_own_row_but_changes_no_other() {
     let r = Repo::new("lint-single-subject");
@@ -2960,6 +3483,21 @@ fn a_queue_symlink_merged_from_a_side_branch_restores_the_trunk_queue() {
 fn lint_judges_a_queue_link_made_a_file_against_the_file_before_the_link() {
     let r = Repo::new("lint-unlinked-queue");
     merge_a_side_link(&r);
+    // The merge that took the link is flagged, as a commit making one is.
+    let err = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(err.contains("makes it a symlink"), "{err}");
+    // So is a merge whose resolution restores the stale file.
+    r.git(&r.main, &["branch", "stale", "side~1"]);
+    r.git(
+        &r.main,
+        &["merge", "-q", "--no-commit", "-s", "ours", "stale"],
+    );
+    std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
+    r.git(&r.main, &["checkout", "side~1", "--", "TASKS.md"]);
+    r.git(&r.main, &["commit", "-qm", "merge stale", "--no-verify"]);
+    let err = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(err.contains("#3: deleted"), "{err}");
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
     // The side commit's parent predates #3: restoring from it drops a row.
     std::fs::remove_file(r.main.join("TASKS.md")).unwrap();
     r.git(&r.main, &["checkout", "side~1", "--", "TASKS.md"]);
