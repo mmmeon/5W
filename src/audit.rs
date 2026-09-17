@@ -760,7 +760,14 @@ fn ids(v: &[u64]) -> String {
         .join(",")
 }
 
+/// History is read by the names the trunk commits, as lint reads it, and so is
+/// the doctor block — which notes an uncommitted edit, as `5w doctor` does.
 pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
+    let (judged, note) = crate::lint::under_committed_rules(repo);
+    crate::lint::noted(note, run_under(judged.as_ref().unwrap_or(repo), args))
+}
+
+fn run_under(repo: &Repo, args: &[String]) -> Res<()> {
     let mut json = false;
     let mut compact = tasks::compact_default();
     let mut since_arg = None;
@@ -785,15 +792,6 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         }
         i += 1;
     }
-    // History is read by the names the trunk commits, as lint reads it.
-    let judged;
-    let repo = match crate::lint::under_committed_rules(repo) {
-        Some(r) => {
-            judged = r;
-            &judged
-        }
-        None => repo,
-    };
 
     let trunk_ref = [
         format!("refs/heads/{}", repo.trunk),

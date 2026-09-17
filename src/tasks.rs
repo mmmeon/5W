@@ -514,16 +514,15 @@ pub fn run(repo: &Repo, cmd: &str, args: &[String]) -> Res<()> {
         return Err(unknown_flag(repo, cmd, f));
     }
     // The queue is read and written under the config the trunk commits, as the
-    // hook and ci judge it. Doctor reports on the checkout as it stands.
-    let judged;
-    let repo = match crate::lint::under_committed_rules(repo) {
-        Some(r) if cmd != "doctor" => {
-            judged = r;
-            &judged
-        }
-        _ => repo,
+    // hook and ci judge it, saying so when the checkout's copy differs. Doctor
+    // reports on the checkout as it stands, and notes the difference itself.
+    let (judged, note) = match cmd {
+        "doctor" => (None, None),
+        _ => crate::lint::under_committed_rules(repo),
     };
-    match cmd {
+    let note = note.filter(|_| !store::batching());
+    let repo = judged.as_ref().unwrap_or(repo);
+    let res = match cmd {
         "ready" => ready(repo, args),
         "next" => next(repo, args),
         "ls" | "list" => ls(repo, args),
@@ -546,7 +545,8 @@ pub fn run(repo: &Repo, cmd: &str, args: &[String]) -> Res<()> {
         "split" => split(repo, args),
         "batch" => batch(repo, args),
         _ => bail!("unknown command: {cmd} (5w help)"),
-    }
+    };
+    crate::lint::noted(note, res)
 }
 
 fn arg<'a>(args: &'a [String], i: usize, usage: &str) -> Res<&'a str> {
@@ -990,7 +990,12 @@ pub fn brief_costs(repo: &Repo) -> Res<Vec<(u64, usize, usize)>> {
 }
 
 fn doctor(repo: &Repo) -> Res<()> {
-    let d = doctor_findings(repo)?;
+    // A checkout config doctor cannot read the queue by may be an uncommitted edit.
+    let d =
+        doctor_findings(repo).map_err(|e| match crate::lint::under_committed_rules(repo).1 {
+            Some(n) => format!("{e} (note: {n})"),
+            None => e,
+        })?;
     for p in &d.problems {
         println!("  {p}");
     }
@@ -1135,6 +1140,7 @@ pub fn doctor_findings(repo: &Repo) -> Res<Doctor> {
             cfg.file
         ));
     }
+    notes.extend(crate::lint::under_committed_rules(repo).1);
     notes.extend(crate::upkeep::notes(repo)?);
     notes.extend(crate::wt::copy_notes(repo));
     notes.extend(crate::wt::stack_notes(repo));
@@ -1174,6 +1180,21 @@ fn validate_field(repo: &Repo, w: &str, ids: &HashSet<u64>) -> Res<Kind> {
                     .iter()
                     .map(|l| format!(">{}", l.name))
                     .collect();
+                // Named only by the trunk checkout's uncommitted copy: say what makes it one.
+                let uncommitted = repo
+                    .cfg
+                    .checkout_text
+                    .as_deref()
+                    .and_then(|t| crate::config::Config::from_toml(t).ok())
+                    .is_some_and(|c| c.lane(&w[1..]).is_some());
+                if uncommitted {
+                    bail!(
+                        "unknown lane {w}: only the uncommitted {} names it — commit {} on {} first",
+                        store::CONFIG_FILE,
+                        store::CONFIG_FILE,
+                        repo.trunk
+                    );
+                }
                 bail!("unknown lane {w} (have: {})", names.join(" "));
             }
         }

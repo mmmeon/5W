@@ -458,6 +458,9 @@ pub struct Config {
     pub cmd_tasks: String,
     pub cmd_wt: String,
     pub cmd_ship: String,
+    /// The text read from the trunk checkout's working copy, when that is where
+    /// the config came from: what an uncommitted edit is told apart by.
+    pub checkout_text: Option<String>,
 }
 
 impl Lane {
@@ -518,6 +521,7 @@ impl Default for Config {
             cmd_tasks: "5w".into(),
             cmd_wt: "5w wt".into(),
             cmd_ship: "5w ship".into(),
+            checkout_text: None,
         }
     }
 }

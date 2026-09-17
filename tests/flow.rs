@@ -6553,7 +6553,17 @@ fn queue_writes_take_lanes_names_and_prefix_from_the_committed_trunk_config() {
     let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
     r.ok(&r.main, &["add", "decide it", ">owner"]);
     r.ok(&r.main, &["add", "do it"]);
-    let audit = r.ok(&r.main, &["audit", "--json"]);
+    let stdout = |args: &[&str]| {
+        let o = r.cli(&r.main, args);
+        assert!(o.status.success(), "{args:?}");
+        (
+            String::from_utf8_lossy(&o.stdout).to_string(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+    let note = ".5w.toml on main has uncommitted edits; queue commands read the committed one — commit it first";
+    let (audit, err) = stdout(&["audit", "--json"]);
+    assert!(!err.contains(note), "{err}");
     // The trunk checkout's copy renames what the queue is written by, uncommitted:
     // a new lane, a delegable owner lane, the default lane, the prefix, the
     // done section and the queue file.
@@ -6573,20 +6583,36 @@ fn queue_writes_take_lanes_names_and_prefix_from_the_committed_trunk_config() {
     assert!(edited.contains("\"queue\"") && edited.contains("## Closed"));
     assert!(edited.contains("[lanes.extra]") && edited.contains("\"owner\""));
     std::fs::write(r.main.join(".5w.toml"), &edited).unwrap();
-    // Audit reads the history by the trunk's names,
-    assert_eq!(r.ok(&r.main, &["audit", "--json"]), audit);
+    // Audit reads the history by the trunk's names, and says why,
+    let (out, err) = stdout(&["audit", "--json"]);
+    let noted = format!("\"notes\":[\"{note}\"]");
+    assert_eq!(out, audit.replace("\"notes\":[]", &noted));
+    assert_eq!(err, format!("5w: {note}\n"));
+    // as doctor does, reading the checkout as it stands.
+    let out = r.fails(&r.main, &["doctor"]);
+    assert!(
+        out.contains(&format!("no QUEUE.md on main — `5w init` (note: {note})")),
+        "{out}"
+    );
 
-    // a lane only the checkout names is no lane to add or set,
+    // A lane only the checkout names is no lane to add or set: commit it first,
     let err = r.refuses(&r.main, &["add", "more", ">extra"]);
-    assert!(err.contains("unknown lane >extra"), "{err}");
+    assert!(
+        err.contains("unknown lane >extra: only the uncommitted .5w.toml names it — commit .5w.toml on main first"),
+        "{err}"
+    );
     let err = r.refuses(&r.main, &["set", "2", "lane", "extra"]);
-    assert!(err.contains("unknown lane >extra"), "{err}");
-    // and a lane the trunk makes the owner's is not delegated.
+    assert!(err.contains("commit .5w.toml on main first"), "{err}");
+    // and a lane the trunk makes the owner's is not delegated, the refusal noting why.
     let err = r.refuses(&r.main, &["delegate", "1"]);
-    assert!(err.contains(">owner (decision)"), "{err}");
+    assert!(
+        err.contains(">owner (decision)") && err.contains(&format!("(note: {note})")),
+        "{err}"
+    );
 
     // A write lands in the trunk's file, section and subject, on its default lane.
-    r.ok(&r.main, &["done", "2", "--self"]);
+    let (_, err) = stdout(&["done", "2", "--self"]);
+    assert_eq!(err, format!("5w: {note}\n"));
     assert!(!r.main.join("QUEUE.md").exists());
     assert!(r.line(2).contains("via:self"), "{}", r.line(2));
     let tasks = r.tasks();
@@ -6602,7 +6628,24 @@ fn queue_writes_take_lanes_names_and_prefix_from_the_committed_trunk_config() {
         std::fs::read_to_string(r.main.join(".5w.toml")).unwrap(),
         edited
     );
+    // Reverted, the note is gone;
     std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    let (_, err) = stdout(&["ready"]);
+    assert!(!err.contains("uncommitted"), "{err}");
+    assert!(!r.ok(&r.main, &["doctor"]).contains("uncommitted"));
+    // an edit committed on the trunk is the queue's to read, and needs none.
+    let extra = cfg.replace(
+        "[lanes.owner]\n",
+        "[lanes.extra]\nkind = \"agent\"\n\n[lanes.owner]\n",
+    );
+    assert_ne!(extra, cfg);
+    std::fs::write(r.main.join(".5w.toml"), &extra).unwrap();
+    let out = r.ok(&r.main, &["doctor"]);
+    assert!(out.contains(&format!("note: {note}")), "{out}");
+    r.git(&r.main, &["commit", "-qm", "lane extra", "--", ".5w.toml"]);
+    let (_, err) = stdout(&["add", "more", ">extra"]);
+    assert!(!err.contains("uncommitted"), "{err}");
+    assert!(!r.ok(&r.main, &["doctor"]).contains("uncommitted"));
     r.lint_history();
 }
 

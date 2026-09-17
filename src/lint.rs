@@ -661,6 +661,14 @@ pub fn check_texts(
 /// The trunk is the one committed state names: an uncommitted `trunk` edit does
 /// not send the rules to another branch's config.
 fn committed_config(repo: &Repo) -> Option<Result<Config, (String, Config)>> {
+    let (_, cfg) = committed_config_text(repo)?;
+    Some(cfg)
+}
+
+type Committed = Result<Config, (String, Config)>;
+
+/// `committed_config`, with the text the trunk commits.
+fn committed_config_text(repo: &Repo) -> Option<(String, Committed)> {
     let file = crate::store::CONFIG_FILE;
     let trunk = &repo.committed_trunk;
     let tip = [
@@ -670,20 +678,23 @@ fn committed_config(repo: &Repo) -> Option<Result<Config, (String, Config)>> {
     .iter()
     .find_map(|r| git::rev(&repo.primary, r))?;
     let text = git::opt(&repo.primary, &["show", &format!("{tip}:{file}")])?;
-    let err = match Config::from_toml(&text) {
-        Ok(cfg) => return Some(Ok(cfg)),
-        Err(e) => e,
-    };
-    let kv = crate::config::parse_toml(&text)
+    let cfg = Config::from_toml(&text).map_err(|e| unparsed_names(repo, &tip, &text, e));
+    Some((text, cfg))
+}
+
+/// A committed config that does not parse: its error, and a config holding the
+/// queue names it still gives.
+fn unparsed_names(repo: &Repo, tip: &str, text: &str, err: String) -> (String, Config) {
+    let kv = crate::config::parse_toml(text)
         .ok()
         .or_else(|| {
-            crate::store::last_readable_config(&repo.primary, &tip)
+            crate::store::last_readable_config(&repo.primary, tip)
                 .and_then(|t| crate::config::parse_toml(&t).ok())
         })
         .unwrap_or_default();
-    let said = |key: &str| crate::store::said(&repo.primary, &kv, Some(&tip), key);
+    let said = |key: &str| crate::store::said(&repo.primary, &kv, Some(tip), key);
     let d = Config::default();
-    Some(Err((
+    (
         err,
         Config {
             file: said("file").unwrap_or(d.file.clone()),
@@ -691,7 +702,7 @@ fn committed_config(repo: &Repo) -> Option<Result<Config, (String, Config)>> {
             commit_prefix: said("commit_prefix").unwrap_or(d.commit_prefix.clone()),
             ..d
         },
-    )))
+    )
 }
 
 /// The config queue rules are judged under in a checkout: the one its trunk
@@ -707,10 +718,39 @@ pub fn committed_rules(repo: &Repo) -> Option<Config> {
 
 /// `repo` as queue commands read and write it: under the config its trunk
 /// commits (`committed_rules`), so an uncommitted edit to the trunk checkout's
-/// copy renames no lane, section, prefix or queue file a write commits by.
-/// None: `repo` itself.
-pub fn under_committed_rules(repo: &Repo) -> Option<Repo> {
-    committed_rules(repo).map(|cfg| with_config(repo, cfg))
+/// copy renames no lane, section, prefix or queue file a write commits by —
+/// None: `repo` itself — and, when that copy differs, the note that says so.
+pub fn under_committed_rules(repo: &Repo) -> (Option<Repo>, Option<String>) {
+    if repo.broken.is_some() {
+        return (None, None);
+    }
+    let Some((text, Ok(mut cfg))) = committed_config_text(repo) else {
+        return (None, None);
+    };
+    let edited = (repo.cfg.checkout_text.as_deref()).filter(|t| t.trim() != text.trim());
+    let note = edited.map(|_| {
+        format!(
+            "{} on {} has uncommitted edits; queue commands read the committed one — commit it first",
+            crate::store::CONFIG_FILE,
+            repo.committed_trunk
+        )
+    });
+    cfg.checkout_text = repo.cfg.checkout_text.clone();
+    (Some(with_config(repo, cfg)), note)
+}
+
+/// `res` with `under_committed_rules`' note: on stderr after a success, and
+/// on a refusal's one line unless it already names the uncommitted config.
+pub fn noted(note: Option<String>, res: Res<()>) -> Res<()> {
+    let Some(n) = note else { return res };
+    match res {
+        Ok(()) => {
+            eprintln!("5w: {n}");
+            Ok(())
+        }
+        Err(e) if e.contains("uncommitted") => Err(e),
+        Err(e) => Err(format!("{e} (note: {n})")),
+    }
 }
 
 /// `repo` judged under `cfg`, on the trunk committed state names.

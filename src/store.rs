@@ -303,24 +303,26 @@ impl Repo {
                 git::opt(&primary, &["config", "git-town.main-branch"]).filter(|s| !s.is_empty())
             })
             .unwrap_or_else(|| "main".into());
+        let checkout = std::cell::Cell::new(false);
         let on_trunk = |t: &str| {
-            git::worktree_of(&primary, t)
+            let text = git::worktree_of(&primary, t)
                 .ok()
                 .flatten()
-                .and_then(|w| fs::read_to_string(w.join(CONFIG_FILE)).ok())
-                .or_else(|| {
-                    git::opt(
-                        &primary,
-                        &["show", &format!("refs/heads/{t}:{CONFIG_FILE}")],
-                    )
-                })
-                // A CI checkout often has the trunk only as a remote-tracking ref.
-                .or_else(|| {
-                    git::opt(
-                        &primary,
-                        &["show", &format!("refs/remotes/origin/{t}:{CONFIG_FILE}")],
-                    )
-                })
+                .and_then(|w| fs::read_to_string(w.join(CONFIG_FILE)).ok());
+            checkout.set(text.is_some());
+            text.or_else(|| {
+                git::opt(
+                    &primary,
+                    &["show", &format!("refs/heads/{t}:{CONFIG_FILE}")],
+                )
+            })
+            // A CI checkout often has the trunk only as a remote-tracking ref.
+            .or_else(|| {
+                git::opt(
+                    &primary,
+                    &["show", &format!("refs/remotes/origin/{t}:{CONFIG_FILE}")],
+                )
+            })
         };
         let mut src = on_trunk(&guess);
         let mut from_primary = src.is_none();
@@ -339,9 +341,13 @@ impl Repo {
             guess = t;
         }
         let mut broken = None;
+        let in_checkout = checkout.get() && !from_primary;
         let cfg = match src {
             Some(s) => match Config::from_toml(&s) {
-                Ok(c) => c,
+                Ok(c) => Config {
+                    checkout_text: in_checkout.then_some(s),
+                    ..c
+                },
                 Err(e) if mode == Broken::Repair => match repair_config(&primary, &guess, bare) {
                     Some(c) => {
                         broken = Some(e);
