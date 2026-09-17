@@ -14,12 +14,15 @@ the source comments say which.
 
 ```
 cargo install --path .        # installs `5w`
-cd your-repo && 5w init       # writes .5w.toml and TASKS.md, commits them
+cd your-repo && 5w init       # writes .5w.toml, TASKS.md, PROTOCOL.md; commits them
 ```
 
-To uninstall: `cargo uninstall 5w`, or delete the release binary from wherever you put it. A repository
-keeps its `.5w.toml`, `TASKS.md` and `PROTOCOL.md` (ordinary committed files); `5w hook uninstall`
-(and `5w hook uninstall pre-receive` on a server) removes the hooks.
+To uninstall: `cargo uninstall fivew` (the package is `fivew`, the binary `5w`), or delete the release
+binary from wherever you put it. A repository keeps its committed `.5w.toml`, `TASKS.md`,
+`PROTOCOL.md` (and `DONE.md` once archived); `5w hook uninstall` (`5w hook uninstall pre-receive` on
+a server) removes the hooks. Also left behind: worktrees under `worktrees.root` (default
+`../<repo>-wt`), and git config from `5w wt setup` (`rebase.updateRefs`, `git-town.*` when git-town
+is present) and per branch (`git-town-branch.<b>.parent` / `.branchtype`).
 
 ## The file
 
