@@ -36,6 +36,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #88 A clone with only origin/<trunk> (no local trunk branch) gets 'no TASKS.md on <trunk> — 5w init' @queue !1
   wrongly suggesting init
   Found reviewing #81 (pre-existing): queue commands read TASKS.md only from the local trunk branch; a fresh clone where the trunk exists only as origin/<trunk> refuses with a hint to run init. Either read the queue from origin/<trunk> for reads and name 'git switch <trunk>' / 'git branch <trunk> origin/<trunk>' for writes, or at least name that fix instead of init; test a clone checked out on another branch.
+- [ ] #89 An unterminated section header in .5w.toml makes a multi-line config error, crashing 5w (exit 101) instead of refusing @upkeep !1
+  Found by #87's worker: '[sections' with no ']' produces a multi-line error from config parsing; main.rs's one-line refusal assertion (#44 debug_assert) panics, exit 101. Make the parser's errors one line for every syntax error (fold or trim), and test unterminated headers, unterminated strings and arrays.
 
 ## Done
 
