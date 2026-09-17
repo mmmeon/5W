@@ -503,18 +503,19 @@ fn trunk_gate(
     let mut covered: HashSet<String> = HashSet::new();
     // A record the gate does not judge (its first parent has the gate off) still
     // covers the judged commits it lands, as when a push turns the gate on, then
-    // off: it is held to the same checks, and its failure is told only when code
-    // it could have covered is left uncovered.
+    // off: it is held to the same checks, and its failure is told only when a
+    // judged commit it could have covered, one below it, is left uncovered.
     let judged_set: HashSet<&str> = judged.iter().map(String::as_str).collect();
-    let mut unjudged_failures: Vec<String> = Vec::new();
+    let mut unjudged_failures: Vec<(&String, String)> = Vec::new();
     for c in range.iter().filter(|c| !judged_set.contains(c.as_str())) {
         let Some(k) = commits.get(c) else { continue };
         let Some(id) = record_of(k) else { continue };
         match landing(repo, c, k, &id, &commits, &in_range) {
             Ok(landed) => covered.extend(landed),
-            Err(why) => {
-                unjudged_failures.push(format!("{}: land #{id} covers nothing — {why}", short(c)))
-            }
+            Err(why) => unjudged_failures.push((
+                c,
+                format!("{}: land #{id} covers nothing — {why}", short(c)),
+            )),
         }
     }
     let mut need: Vec<&String> = Vec::new();
@@ -545,8 +546,13 @@ fn trunk_gate(
         }
     }
     let uncovered: Vec<&String> = need.into_iter().filter(|c| !covered.contains(*c)).collect();
-    if !uncovered.is_empty() {
-        out.extend(unjudged_failures);
+    for (record, why) in unjudged_failures {
+        if uncovered
+            .iter()
+            .any(|u| git::ok(p, &["merge-base", "--is-ancestor", u, record]))
+        {
+            out.push(why);
+        }
     }
     for c in uncovered {
         out.push(format!(

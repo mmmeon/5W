@@ -2114,6 +2114,41 @@ fn ship_accepted_records_landings_through_a_push_that_turns_gate_trunk_on_then_o
 }
 
 #[test]
+fn gate_trunk_does_not_report_a_broken_record_from_before_it_was_on() {
+    let r = Repo::new("gatebrokenoldrecord");
+    let server = server_of(&r);
+    let before = r.git(&server, &["rev-parse", "main"]);
+    r.commit_in(&r.main, "old.txt", "old\n");
+    r.git(
+        &r.main,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "chore(tasks): land #1\n\nLanded: nonsense",
+        ],
+    );
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    r.commit_in(
+        &r.main,
+        ".5w.toml",
+        &cfg.replace("gate_trunk = false", "gate_trunk = true"),
+    );
+    r.commit_in(&r.main, "new.txt", "new\n");
+    let uncovered = r.git(&r.main, &["rev-parse", "--short=12", "HEAD"]);
+    let (ok, err) = push_to(&r, &["main"]);
+    assert!(
+        !ok && err.contains(&format!(
+            "{uncovered}: code on main that no landing record covers"
+        )) && !err.contains("covers nothing")
+            && err.contains("1 finding(s)"),
+        "{err}"
+    );
+    assert_eq!(r.git(&server, &["rev-parse", "main"]), before);
+}
+
+#[test]
 fn ship_accepted_stops_after_a_branch_renames_what_the_gate_reads() {
     let (r, out, ok, err) = ship_accepted_over_a_config_change(
         "shipacceptedrename",
