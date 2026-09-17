@@ -1750,6 +1750,8 @@ pub const ARCHIVE_HEADER: &str = "# Archive\n\nClosed tasks moved out of the que
 /// Move every closed task out of the queue, in one commit touching both files.
 /// Only rows closed on the trunk are committed and counted; a row closed only in
 /// the checkout moves there, and with none closed on the trunk nothing is committed.
+/// A row closed on the trunk that the checkout shows open (reopened by hand, in
+/// the working or the staged copy) is not archived anywhere, and a note names it.
 fn archive(repo: &Repo) -> Res<()> {
     let q = Q::load(repo)?;
     let closed = |t: &Task| t.state == State::Done;
@@ -1761,9 +1763,23 @@ fn archive(repo: &Repo) -> Res<()> {
         println!("  nothing closed to archive");
         return Ok(());
     }
-    // Counted where the op first runs, on the committed copy under the lock:
-    // a row closed on the trunk after any earlier read is still counted.
-    let moved: std::cell::RefCell<Option<Vec<u64>>> = std::cell::RefCell::new(None);
+    let staged = match repo.trunk_checkout()? {
+        Some(w) => git::opt(&w, &["show", &format!(":{}", repo.cfg.file)]),
+        None => None,
+    };
+    let open: HashSet<u64> = q
+        .tasks
+        .iter()
+        .cloned()
+        .chain(queue::parse(staged.as_deref().unwrap_or_default()))
+        .filter(|t| !closed(t))
+        .map(|t| t.id)
+        .collect();
+    // Worked out where the op first runs, on the committed copy under the lock:
+    // a row closed on the trunk after any earlier read is still counted, and the
+    // rows skipped there are skipped in every copy, and only those.
+    let skipped: std::cell::RefCell<Option<Vec<u64>>> = std::cell::RefCell::new(None);
+    let moved = std::cell::Cell::new(None);
     let done = repo.cfg.done_section.clone();
     store::transact(
         repo,
@@ -1771,21 +1787,26 @@ fn archive(repo: &Repo) -> Res<()> {
             format!(
                 "{}: archive {} closed tasks",
                 repo.cfg.commit_prefix,
-                moved.borrow().as_ref().map_or(0, Vec::len)
+                moved.get().unwrap_or(0)
             )
         },
         &[],
         |_| Ok(()),
         |f, _| {
-            if moved.borrow().is_none() {
-                let ids = queue::parse(&f.queue.text())
-                    .iter()
-                    .filter(|t| closed(t))
-                    .map(|t| t.id)
-                    .collect();
-                *moved.borrow_mut() = Some(ids);
+            let skip = skipped
+                .borrow_mut()
+                .get_or_insert_with(|| {
+                    queue::parse(&f.queue.text())
+                        .iter()
+                        .filter(|t| closed(t) && open.contains(&t.id))
+                        .map(|t| t.id)
+                        .collect()
+                })
+                .clone();
+            let blocks = f.queue.take(|t| closed(t) && !skip.contains(&t.id));
+            if moved.get().is_none() {
+                moved.set(Some(blocks.len()));
             }
-            let blocks = f.queue.take(|t| t.state == State::Done);
             if !blocks.is_empty() && f.archive.lines.iter().all(|l| l.trim().is_empty()) {
                 f.archive = queue::Doc::new(ARCHIVE_HEADER);
             }
@@ -1795,37 +1816,26 @@ fn archive(repo: &Repo) -> Res<()> {
             Ok(())
         },
     )?;
-    let moved = moved.into_inner().unwrap_or_default();
-    // A row closed on the trunk but open in the checkout was reopened by hand:
-    // it is archived on the trunk and the checkout keeps its copy.
-    let reopened: Vec<u64> = moved
-        .iter()
-        .copied()
-        .filter(|id| {
-            q.tasks
-                .iter()
-                .any(|t| t.id == *id && t.state != State::Done)
-        })
-        .collect();
-    match reopened.as_slice() {
+    let (n, skipped) = (
+        moved.get().unwrap_or(0),
+        skipped.into_inner().unwrap_or_default(),
+    );
+    let (trunk, cmd) = (&repo.trunk, &repo.cfg.cmd_tasks);
+    match skipped.as_slice() {
         [] => {}
         [id] => println!(
-            "  note: #{id} is closed on {} but open in the checkout — `{} reopen {id}` to reopen it on {}",
-            repo.trunk, repo.cfg.cmd_tasks, repo.trunk
+            "  note: #{id} is closed on {trunk} but open in the checkout; not archived — `{cmd} reopen {id}` reopens it on {trunk}, or restore the checkout's row"
         ),
         ids => println!(
-            "  note: {} are closed on {} but open in the checkout — `{} reopen <id>` to reopen them on {}",
+            "  note: {} are closed on {trunk} but open in the checkout; not archived — `{cmd} reopen <id>` reopens them on {trunk}, or restore the checkout's rows",
             ids.iter()
                 .map(|id| format!("#{id}"))
                 .collect::<Vec<_>>()
-                .join(", "),
-            repo.trunk,
-            repo.cfg.cmd_tasks,
-            repo.trunk
+                .join(", ")
         ),
     }
-    match moved.len() {
-        0 => println!("  nothing closed on {} to archive", repo.trunk),
+    match n {
+        0 => println!("  nothing closed on {trunk} to archive"),
         n => println!("  archived {n} → {}", repo.cfg.archive),
     }
     Ok(())

@@ -2294,6 +2294,8 @@ fn an_archive_that_commits_nothing_stages_both_files_together() {
     r.ok(&r.main, &["lint", "--staged"]);
 }
 
+const ARCHIVE_HEADER: &str = "# Archive\n\nClosed tasks moved out of the queue by `5w archive`. Their ids stay taken, they still\nsatisfy `needs:`, and ship still reads their `branch:` and `reviewed:`.\n";
+
 #[test]
 fn an_archive_of_a_staged_close_stages_a_done_file_the_trunk_lacks() {
     let r = Repo::new("archive-staged-no-done");
@@ -2318,12 +2320,12 @@ fn an_archive_of_a_staged_close_stages_a_done_file_the_trunk_lacks() {
     r.ok(&r.main, &["lint", "--staged"]);
     r.lint_history();
 
-    // A header-only untracked DONE.md has no rows to leave half-tracked: the
-    // staged move goes ahead the same.
+    // An untracked DONE.md holding only archive's own header has nothing to
+    // leave half-tracked: the staged move goes ahead the same.
     let r = Repo::new("archive-staged-header-done");
     r.ok(&r.main, &["add", "first"]);
     hand_edit(&r, "- [ ] #1 first", "- [x] #1 first via:self");
-    std::fs::write(r.main.join("DONE.md"), "# Archive\n").unwrap();
+    std::fs::write(r.main.join("DONE.md"), ARCHIVE_HEADER).unwrap();
     r.ok(&r.main, &["archive"]);
     assert!(
         r.git(&r.main, &["show", ":DONE.md"])
@@ -2333,7 +2335,7 @@ fn an_archive_of_a_staged_close_stages_a_done_file_the_trunk_lacks() {
 }
 
 #[test]
-fn an_archive_refuses_an_untracked_done_file_with_rows_and_names_a_clean_fix() {
+fn an_archive_refuses_an_untracked_done_file_of_its_own_and_names_a_clean_fix() {
     let r = Repo::new("archive-staged-untracked-done");
     r.ok(&r.main, &["add", "first"]);
     r.ok(&r.main, &["add", "second"]);
@@ -2369,7 +2371,10 @@ fn an_archive_refuses_an_untracked_done_file_with_rows_and_names_a_clean_fix() {
     );
     let err = r.fails(&r.main, &["archive"]);
     assert_eq!(err.trim().lines().count(), 1, "{err}");
-    assert!(err.contains("`git add -f TASKS.md DONE.md`"), "{err}");
+    assert!(
+        err.contains("`git add -f DONE.md && git add -p TASKS.md`"),
+        "{err}"
+    );
     assert_eq!(r.tasks(), tasks);
     assert_eq!(
         std::fs::read_to_string(r.main.join("DONE.md")).unwrap(),
@@ -2377,36 +2382,106 @@ fn an_archive_refuses_an_untracked_done_file_with_rows_and_names_a_clean_fix() {
     );
     assert_eq!(r.git(&r.main, &["show", ":TASKS.md"]), index);
 
-    // Following the fix line leaves a staged copy lint passes, and archive then runs.
-    r.git(&r.main, &["add", "-f", "TASKS.md", "DONE.md"]);
+    // Following the fix line (here every hunk `add -p` offers is #1's removal)
+    // leaves a staged copy lint passes, and archive then runs.
+    r.git(&r.main, &["add", "-f", "DONE.md"]);
+    r.git(&r.main, &["add", "TASKS.md"]);
     r.ok(&r.main, &["lint", "--staged"]);
     r.ok(&r.main, &["archive"]);
     r.ok(&r.main, &["lint", "--staged"]);
+
+    // Plain notes in an untracked DONE.md are refused the same, untouched.
+    let r = Repo::new("archive-staged-notes-done");
+    r.ok(&r.main, &["add", "first"]);
+    hand_edit(&r, "- [ ] #1 first", "- [x] #1 first via:self");
+    std::fs::write(r.main.join("DONE.md"), "my notes\n").unwrap();
+    let (tasks, index) = (r.tasks(), r.git(&r.main, &["show", ":TASKS.md"]));
+    let err = r.fails(&r.main, &["archive"]);
+    assert!(err.contains("untracked DONE.md has content"), "{err}");
+    assert_eq!(r.tasks(), tasks);
+    assert_eq!(r.git(&r.main, &["show", ":TASKS.md"]), index);
+    assert_eq!(
+        std::fs::read_to_string(r.main.join("DONE.md")).unwrap(),
+        "my notes\n"
+    );
 }
 
 #[test]
-fn an_archive_notes_rows_closed_on_the_trunk_but_reopened_in_the_checkout() {
+fn an_archive_skips_a_trunk_closed_row_the_checkout_reopened() {
     let r = Repo::new("archive-reopened-by-hand");
     r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
     r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["done", "2", "--self"]);
+    // #1 is reopened by hand in the working copy: it stays where it is on the
+    // trunk and in the checkout, and only #2 is archived.
     let t = r
         .tasks()
         .replace("- [x] #1 first via:self", "- [ ] #1 first");
     std::fs::write(r.main.join("TASKS.md"), t).unwrap();
     let out = r.ok(&r.main, &["archive"]);
-    assert!(!out.contains("nothing closed"), "{out}");
     assert!(
         out.contains(
-            "  note: #1 is closed on main but open in the checkout — `5w reopen 1` to reopen it on main"
+            "  note: #1 is closed on main but open in the checkout; not archived — `5w reopen 1` reopens it on main, or restore the checkout's row"
         ),
         "{out}"
     );
-    assert!(!out.contains("checkout --"), "{out}");
     assert!(out.contains("  archived 1 → DONE.md"), "{out}");
-    let done = r.git(&r.main, &["show", "HEAD:DONE.md"]);
-    assert!(done.contains("- [x] #1 first"), "{done}");
+    let (tq, ta) = (
+        r.git(&r.main, &["show", "HEAD:TASKS.md"]),
+        r.git(&r.main, &["show", "HEAD:DONE.md"]),
+    );
+    assert!(
+        tq.contains("- [x] #1 first") && !ta.contains("#1 first") && ta.contains("#2 second"),
+        "{tq}\n{ta}"
+    );
     assert!(r.tasks().contains("- [ ] #1 first"));
+    // The note's fix works and leaves no id in both files.
+    r.ok(&r.main, &["reopen", "1"]);
+    r.ok(&r.main, &["list"]);
     r.lint_history();
+    r.ok(&r.main, &["lint", "--staged"]);
+}
+
+#[test]
+fn an_archive_with_every_trunk_closed_row_reopened_commits_nothing() {
+    let r = Repo::new("archive-all-reopened");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    let head = r.git(&r.main, &["rev-parse", "HEAD"]);
+    let reopen = |t: &str| t.replace("- [x] #1 first via:self", "- [ ] #1 first");
+
+    // Reopened in the working copy only, then staged: neither run commits,
+    // and DONE.md appears in no copy.
+    std::fs::write(r.main.join("TASKS.md"), reopen(&r.tasks())).unwrap();
+    for stage in [false, true] {
+        if stage {
+            r.git(&r.main, &["add", "TASKS.md"]);
+        }
+        let out = r.ok(&r.main, &["archive"]);
+        assert!(out.contains("  note: #1 is closed on main"), "{out}");
+        assert!(out.contains("  nothing closed on main to archive"), "{out}");
+        assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), head, "{out}");
+        assert!(!r.main.join("DONE.md").exists());
+        assert!(r.git(&r.main, &["ls-files", "DONE.md"]).is_empty());
+        let status = r.git(&r.main, &["status", "--porcelain"]);
+        let want = if stage { "M  TASKS.md" } else { " M TASKS.md" };
+        assert_eq!(status, want);
+        r.ok(&r.main, &["lint", "--staged"]);
+    }
+
+    // Reopened only in the index, the working copy still closed: skipped the same.
+    r.git(&r.main, &["checkout", "--", "TASKS.md"]);
+    std::fs::write(
+        r.main.join("TASKS.md"),
+        r.git(&r.main, &["show", "HEAD:TASKS.md"]) + "\n",
+    )
+    .unwrap();
+    let out = r.ok(&r.main, &["archive"]);
+    assert!(out.contains("  note: #1 is closed on main"), "{out}");
+    assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), head, "{out}");
+    assert!(r.git(&r.main, &["ls-files", "DONE.md"]).is_empty());
+    r.ok(&r.main, &["lint", "--staged"]);
 }
 
 #[test]
