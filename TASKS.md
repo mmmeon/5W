@@ -29,6 +29,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Under gate_trunk a pusher can approve their own code in one push: a hand-written "submit #N" commit, then "accept #N via:review reviewed:<own commit>", then the code and a matching land #N record, plus refs/5w/reviewed/N. pre-receive accepts it (on main too) because landing() reads whatever accept row sits in the tip's tree, including one added in the same push. Decide whether the server should require the accept row to predate the push (exist on the trunk before it), be a separate earlier push, or be signed by a different identity — or document the trust boundary. Found in review of #102.
 - [ ] #122 A repair pushed onto the real trunk is refused when the broken config renames the trunk
   In a non-bare CI push job, when the broken trunk config renames the trunk (trunk = "x"), a fix pushed onto the real trunk is refused: ci onto compares against refs/heads/{repo.trunk} (x), so ci --ref refs/heads/main goes to unreadable(), which says "x's .5w.toml is unreadable … push a commit that fixes .5w.toml to x". onto and the non-bare messages in unreadable() should use the broken_at trunk (the bare-server branch keeps naming repo.trunk on purpose). Found in review of #121.
+- [ ] #123 A shallow CI clone gets false queue-edit findings
+  In a shallow (--depth 1) CI clone, 5w ci --branch reports extra findings ("a queue edit is its own commit — also touches README", "queue edits go on main, not a branch") that a full clone does not. Either detect a shallow clone and refuse naming the fix (fetch full history / fetch-depth: 0) or make the checks work; say so in the README. Found in review of #121.
 
 ## Done
 
