@@ -3091,6 +3091,85 @@ fn an_archive_whose_checkout_index_is_locked_says_it_committed_and_keeps_a_hand_
 }
 
 #[test]
+fn a_write_after_a_locked_index_catches_the_checkout_up_to_the_trunk() {
+    let r = Repo::new("catch-up");
+    r.ok(&r.main, &["add", "first"]);
+    std::fs::write(r.main.join(".git/index.lock"), "").unwrap();
+    let err = r.refuses(&r.main, &["add", "second"]);
+    assert!(err.contains("committed #2 to main"), "{err}");
+    std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
+    // A hand line of the checkout's own stays.
+    let t = r.tasks().replacen("# Tasks\n", "# Tasks\n\nmy note\n", 1);
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+
+    // The next write puts the row the checkout missed back in before its own
+    // edit: nothing staged or working reads as a revert of #2.
+    let out = r.ok(&r.main, &["add", "third"]);
+    assert!(out.contains("checkout caught up: #2"), "{out}");
+    let t = r.tasks();
+    assert!(
+        t.contains("#1 first") && t.contains("#2 second") && t.contains("#3 third"),
+        "{t}"
+    );
+    assert!(t.contains("my note"), "{t}");
+    r.ok(&r.main, &["lint", "--staged"]);
+    assert_eq!(r.git(&r.main, &["diff", "--cached", "--name-only"]), "");
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), " M TASKS.md");
+
+    // Caught up, the next write says nothing of it.
+    let out = r.ok(&r.main, &["add", "fourth"]);
+    assert!(!out.contains("caught up"), "{out}");
+}
+
+#[test]
+fn catching_the_checkout_up_moves_a_row_the_missed_archive_moved() {
+    let r = Repo::new("catch-up-archive");
+    r.ok(&r.main, &["add", "zero"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["archive"]);
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["done", "2", "--self"]);
+    // A peer's uncommitted row stays uncommitted.
+    let t = r.tasks().replace("## Done", "- [ ] #9 peer\n\n## Done");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    std::fs::write(r.main.join(".git/index.lock"), "").unwrap();
+    r.refuses(&r.main, &["archive"]);
+    std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
+
+    let out = r.ok(&r.main, &["add", "second"]);
+    assert!(out.contains("checkout caught up: #2"), "{out}");
+    r.ok(&r.main, &["lint", "--staged"]);
+    let t = r.tasks();
+    assert!(!t.contains("#2 first") && t.contains("#9 peer"), "{t}");
+    let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
+    assert!(done.contains("- [x] #2 first"), "{done}");
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), " M TASKS.md");
+}
+
+#[test]
+fn catching_the_checkout_up_leaves_a_row_edited_there_by_hand() {
+    let r = Repo::new("catch-up-edited");
+    r.ok(&r.main, &["add", "first"]);
+    std::fs::write(r.main.join(".git/index.lock"), "").unwrap();
+    r.refuses(&r.main, &["done", "1", "--self"]);
+    std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
+    // The checkout's #1 is edited by hand after the missed commit.
+    let t = r.tasks().replace("#1 first", "#1 first, reworded");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+
+    let out = r.ok(&r.main, &["add", "second"]);
+    assert!(out.contains("checkout caught up: #1"), "{out}");
+    // The index takes the trunk's #1; the working file keeps the hand edit.
+    r.ok(&r.main, &["lint", "--staged"]);
+    assert_eq!(r.git(&r.main, &["diff", "--cached", "--name-only"]), "");
+    let t = r.tasks();
+    assert!(
+        t.contains("- [ ] #1 first, reworded") && t.contains("#2 second"),
+        "{t}"
+    );
+}
+
+#[test]
 fn an_archive_that_cannot_rename_out_of_the_git_dir_copies_beside_each_file() {
     let r = Repo::new("archive-exdev");
     r.ok(&r.main, &["add", "first"]);

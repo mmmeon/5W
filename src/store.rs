@@ -378,6 +378,7 @@ fn begin(repo: &Repo) -> Res<(Lock, String, Option<PathBuf>, Copies, Copies)> {
         );
     }
     let a = copies(repo, checkout.as_deref(), &old, &repo.cfg.archive)?;
+    let (q, a) = catch_up(repo, checkout.as_deref(), &old, q, a)?;
     Ok((lock, old, checkout, q, a))
 }
 
@@ -401,6 +402,157 @@ fn in_checkout(checkout: Option<&Path>, name: &str) -> (String, String) {
         ),
         None => ("git".into(), shell_word(name)),
     }
+}
+
+/// How far back the checkout's index is looked for among the trunk's versions.
+const CATCH_UP_DEPTH: usize = 10;
+
+/// Catch up a checkout that missed trunk commits — the trunk moved, then the
+/// mirror failed (its `index.lock` held): left so, the next write would carry
+/// the checkout's stale copies forward, and they would read as a revert.
+///
+/// Only where the checkout's index entries are exactly the files of a recent
+/// trunk commit, so nothing is staged of its own: the index takes the trunk's
+/// files, and the working files take each row changed since that the checkout
+/// still has as that commit did — a row edited there by hand is left. Under the
+/// lock, before planning; a copy that cannot be written is left for the write's
+/// own refusal. Returns the copies as they now are.
+fn catch_up(
+    repo: &Repo,
+    checkout: Option<&Path>,
+    old: &str,
+    q: Copies,
+    a: Copies,
+) -> Res<(Copies, Copies)> {
+    let Some(w) = checkout else {
+        return Ok((q, a));
+    };
+    if (q.staged_blob == q.old_blob && a.staged_blob == a.old_blob)
+        || q.staged_blob.is_none()
+        || (a.staged_blob != a.old_blob && a.old_blob.is_none())
+    {
+        return Ok((q, a));
+    }
+    // The nearest earlier trunk commit whose files the index holds.
+    let revs = git::opt(
+        &repo.primary,
+        &[
+            "rev-list",
+            "--first-parent",
+            &format!("--max-count={CATCH_UP_DEPTH}"),
+            &format!("{old}^"),
+        ],
+    )
+    .unwrap_or_default();
+    let query: String = revs
+        .lines()
+        .flat_map(|c| [format!("{c}:{}\n", q.name), format!("{c}:{}\n", a.name)])
+        .collect();
+    if query.is_empty() {
+        return Ok((q, a));
+    }
+    let o = git::raw(
+        &repo.primary,
+        &["cat-file", "--batch-check=%(objectname)"],
+        &[],
+        Some(&query),
+    )?;
+    let blob = |l: &str| (!l.ends_with(" missing")).then(|| l.to_string());
+    let lines: Vec<&str> = o.stdout.lines().collect();
+    let Some(seen) = lines
+        .chunks(2)
+        .find(|p| p.len() == 2 && blob(p[0]) == q.staged_blob && blob(p[1]) == a.staged_blob)
+    else {
+        return Ok((q, a));
+    };
+    let text = |b: Option<String>| -> Res<String> {
+        Ok(match b {
+            Some(b) => git::raw(&repo.primary, &["cat-file", "blob", &b], &[], None)?.stdout,
+            None => String::new(),
+        })
+    };
+    let (sq, sa) = (text(blob(seen[0]))?, text(blob(seen[1]))?);
+    // Per file, so a row moving between them counts.
+    let mut ids = rows_changed([&sq, ""], [&q.committed, ""]);
+    ids.extend(rows_changed(["", &sa], ["", &a.committed]));
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok((q, a));
+    }
+
+    let healed = (|| -> Res<()> {
+        // Working files first: were the index then to fail, the next write
+        // finds it behind again, and these rows already caught up.
+        if let Some(wq) = &q.working {
+            let wa = a.working.as_deref().unwrap_or(&sa);
+            let mut docs = [Doc::new(wq), Doc::new(wa)];
+            for &id in &ids {
+                let texts = [docs[0].text(), docs[1].text()];
+                let here = row([&texts[0], &texts[1]], id);
+                if here != row([&sq, &sa], id) {
+                    continue;
+                }
+                let there = row([&q.committed, &a.committed], id);
+                match (here, there) {
+                    (Some((f, s, _)), Some((tf, ts, lines))) if f == tf && s == ts => {
+                        if let Some((at, len)) = docs[f].block(id) {
+                            docs[f].lines.splice(at..at + len, lines);
+                        }
+                    }
+                    (here, there) => {
+                        if let Some((f, ..)) = here {
+                            docs[f].take(|t| t.id == id);
+                        }
+                        if let Some((tf, ts, lines)) = there {
+                            let section = ts.unwrap_or_else(|| repo.cfg.open_section.clone());
+                            docs[tf].insert(lines, &section, Some(&repo.cfg.done_section));
+                        }
+                    }
+                }
+            }
+            let (nq, na) = (docs[0].text(), docs[1].text());
+            let changes: Vec<Change> = vec![
+                (&q, &q.committed, Some(&nq), None),
+                (&a, &a.committed, Some(&na), None),
+            ];
+            Pending::prepare(&repo.common, w, &changes)?
+                .finish()
+                .map_err(|(e, _)| e)?;
+        }
+        for c in [&q, &a] {
+            if let (Some(b), true) = (&c.old_blob, c.staged_blob != c.old_blob) {
+                git::git(
+                    w,
+                    &[
+                        "update-index",
+                        "--add",
+                        "--cacheinfo",
+                        &format!("100644,{b},{}", c.name),
+                    ],
+                )?;
+            }
+        }
+        Ok(())
+    })();
+    if healed.is_ok() {
+        let rows: Vec<String> = ids.iter().map(|id| format!("#{id}")).collect();
+        println!("  checkout caught up: {}", rows.join(", "));
+    }
+    Ok((
+        copies(repo, Some(w), old, &q.name)?,
+        copies(repo, Some(w), old, &a.name)?,
+    ))
+}
+
+/// Which file of the two a row is in, its section, and its lines.
+fn row(texts: [&str; 2], id: u64) -> Option<(usize, Option<String>, Vec<String>)> {
+    texts.iter().enumerate().find_map(|(f, text)| {
+        let d = Doc::new(text);
+        let (at, len) = d.block(id)?;
+        let t = queue::parse(text).into_iter().find(|t| t.id == id)?;
+        Some((f, t.section, d.lines[at..at + len].to_vec()))
+    })
 }
 
 /// Refuse a queue write where the trunk tracks `name` as a symlink: a commit to
