@@ -390,6 +390,11 @@ impl Repo {
         else {
             return Some(fix);
         };
+        // A conflict still writes a tree; any other failure (a git before 2.38) does not.
+        let tree = merged.stdout.lines().next().unwrap_or("");
+        if !(matches!(tree.len(), 40 | 64) && tree.bytes().all(|b| b.is_ascii_hexdigit())) {
+            return Some(fix);
+        }
         if !merged.ok {
             let repairs = git::opt(p, &["merge-base", &trunk, tip]).is_some_and(|base| {
                 !git::ok(p, &["diff", "--quiet", &base, tip, "--", CONFIG_FILE])
@@ -402,10 +407,7 @@ impl Repo {
                 fix
             });
         }
-        let Some(tree) = merged.stdout.lines().next().map(String::from) else {
-            return Some(fix);
-        };
-        let cfg = match show(&tree) {
+        let cfg = match show(tree) {
             Some(text) => match Config::from_toml(&text) {
                 Ok(c) => c,
                 Err(_) => return Some(fix),

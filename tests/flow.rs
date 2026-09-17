@@ -6613,6 +6613,38 @@ fn a_gated_trunk_whose_config_broke_lands_its_repair_through_5w() {
                 && !err.contains("ship the repair"),
             "{err}"
         );
+        // A git without `merge-tree --write-tree` (before 2.38) conflicts nothing:
+        // the clean repair is refused as before, not told to rebase.
+        let real = Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap();
+        let real = String::from_utf8_lossy(&real.stdout).trim().to_string();
+        let dir = r.root.join("old-git");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("git"),
+            format!(
+                "#!/bin/sh\n\
+                 case \" $* \" in *\" merge-tree --write-tree \"*) echo usage >&2; exit 129;; esac\n\
+                 exec {real} \"$@\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            dir.join("git"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let mut c = Command::new(bin5w());
+        c.args(["ship", "f/fix", "--sync"]).current_dir(&r.main);
+        env(&mut c, &r.root);
+        c.env("PATH", format!("{}:{}", dir.display(), path_with_5w()));
+        let err = refusal(&c.output().unwrap(), &["ship", "f/fix", "--sync"]);
+        assert!(
+            err.contains("upgrade 5w, or ship the repair") && !err.contains("rebase"),
+            "{err}"
+        );
         // Nor a repair that renames what the gate reads the queue by.
         let err = r.refuses(&r.main, &["ship", "f/rename", "--sync"]);
         assert!(
