@@ -606,7 +606,7 @@ default: CLAUDE.md's Releasing section describes a reproducible build, a signed 
 is the `SHA256SUMS`, and a release workflow that only publishes on a sums match.
 
 **Easy to uninstall — adopt, minor.** README.md documents `cargo install --path .` (line 16) but
-no corresponding uninstall line. Cheap to add next to it.
+no corresponding uninstall line. Cheap to add next to it. **Done (#31):** an uninstall note follows the install block.
 
 ### Analytics
 
@@ -628,7 +628,7 @@ explicit send).
 - `main.rs: color the "5w: {e}" refusal red when stderr is a terminal and NO_COLOR is unset @output !1`
 - `tasks::USAGE: add one line pointing at the web docs (README.md's URL), per clig's "link to web docs in help text" @output !1` — done, #29
 - `wt rm: parse --force by scanning args like tasks::opts() does, instead of a positional rest.get(1) check @output !1`
-- `README: add a one-line uninstall note (cargo uninstall 5w) near the install instructions @output !1`
+- `README: add a one-line uninstall note (cargo uninstall 5w) near the install instructions @output !1` — done, #31
 
 ## Sources
 

@@ -17,6 +17,10 @@ cargo install --path .        # installs `5w`
 cd your-repo && 5w init       # writes .5w.toml and TASKS.md, commits them
 ```
 
+To uninstall: `cargo uninstall 5w`, or delete the release binary from wherever you put it. A repository
+keeps its `.5w.toml`, `TASKS.md` and `PROTOCOL.md` (ordinary committed files); `5w hook uninstall`
+(and `5w hook uninstall pre-receive` on a server) removes the hooks.
+
 ## The file
 
 ```
