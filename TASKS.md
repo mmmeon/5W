@@ -33,6 +33,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   store.rs last_config_where returns Some("") at a commit that deleted .5w.toml without checking ok, so last_accepted_config / open_for_repair read "deleted" as a default config instead of walking further back to the last config that exists and is accepted. Verify with a test and fix. Found in review of #108.
 - [ ] #113 A break mixing a moved queue and an in-place archive rename names a repair the hook refuses
   A single broken commit that renames the queue with git mv (TASKS.md -> Q.md) AND renames the archive in place (or also changes commit_prefix): 5w ready names the fix "commit a config with archive = DONE.md", but the pre-commit hook refuses that ("keeps archive = DONE2.md") and a full restore ("keeps file = Q.md"), so only --no-verify gets through; the message also names only archive when commit_prefix changed too. Make the named fix and restores_accepted_names agree per name (restore exactly the names renamed in place, keep names whose files moved). Also: no_archive/unmoved_queue test the old name with load_file (trunk checkout working copy) while the hook tests the committed tip — use the committed tip for both. Found in review of #109.
+- [ ] #114 The server blames a renamed-in-place archive on the task, not the config
+  ci.rs landing() and ship_check read cfg.archive with git show … unwrap_or_default(). When a broken trunk config renamed the archive in place, the server refuses a landing with "#N is not in the queue" and the forge check with "no task names it" instead of the renamed-archive message #109 gives the client. Refuse with the same unmoved-archive text. Found in review of #109.
 
 ## Done
 
