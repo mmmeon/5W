@@ -2262,6 +2262,39 @@ fn a_same_value_edit_fixes_a_stale_staged_row() {
 }
 
 #[test]
+fn an_archive_that_commits_nothing_stages_both_files_together() {
+    let r = Repo::new("archive-staged-only");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["archive"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["add", "third"]);
+    let head = r.git(&r.main, &["rev-parse", "HEAD"]);
+
+    // A peer closes #3 by hand and stages only that: nothing is closed on the
+    // trunk, so archive commits nothing, but the staged move of #3 takes both
+    // files, and the line does not claim the checkout matches main.
+    let t = r
+        .tasks()
+        .replace("- [ ] #3 third", "- [x] #3 third via:self");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    let out = r.ok(&r.main, &["archive"]);
+    assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), head);
+    assert!(out.contains("  checkout updated: #3"), "{out}");
+    assert!(!out.contains("matches main"), "{out}");
+    let (sq, sa) = (
+        r.git(&r.main, &["show", ":TASKS.md"]),
+        r.git(&r.main, &["show", ":DONE.md"]),
+    );
+    assert!(
+        !sq.contains("#3 third") && sa.contains("- [x] #3 third"),
+        "{sq}\n{sa}"
+    );
+    r.ok(&r.main, &["lint", "--staged"]);
+}
+
+#[test]
 fn a_closed_row_is_immutable_but_may_be_reflowed_or_archived() {
     let r = Repo::new("immutable");
     r.ok(&r.main, &["add", "One sentence here. And a second sentence that is long enough to push well past the title limit of the queue for sure."]);

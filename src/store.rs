@@ -781,11 +781,24 @@ fn write(
             }
             ids.sort_unstable();
             ids.dedup();
+            // Only claim the checkout matches the trunk where its rows do.
+            let matches = [&plan.working, &plan.staged]
+                .into_iter()
+                .flatten()
+                .all(|(nq, na)| {
+                    !rows_changed([new_q, new_a], [nq, na])
+                        .iter()
+                        .any(|id| ids.is_empty() || ids.contains(id))
+                });
             let rows: Vec<String> = ids.iter().map(|id| format!("#{id}")).collect();
-            match rows.len() {
-                0 => println!("  checkout fixed: {} matches {}", q.name, repo.trunk),
-                1 => println!("  checkout fixed: {} matches {}", rows[0], repo.trunk),
-                _ => println!("  checkout fixed: {} match {}", rows.join(", "), repo.trunk),
+            let what = match rows.as_slice() {
+                [] => q.name.clone(),
+                _ => rows.join(", "),
+            };
+            match (matches, rows.len()) {
+                (true, 2..) => println!("  checkout fixed: {what} match {}", repo.trunk),
+                (true, _) => println!("  checkout fixed: {what} matches {}", repo.trunk),
+                (false, _) => println!("  checkout updated: {what}"),
             }
         }
     } else {
@@ -824,9 +837,11 @@ type Change<'a> = (
 fn mirror_index(repo: &Repo, w: &Path, changes: &[Change], blobs: &[Option<String>]) -> Res<bool> {
     let mut touched = false;
     for ((c, _, _, new_staged), blob) in changes.iter().zip(blobs) {
-        let entry = match (&c.staged, new_staged, blob) {
-            (Some(_), Some(ns), _) => hash_blob(repo, ns)?,
-            (.., Some(b)) if c.staged_blob.is_some() || c.old_blob.is_none() => b.clone(),
+        // A planned staged copy is staged whole, even where the entry matched the
+        // commit: a row moving between the files moves in both entries or neither.
+        let entry = match (new_staged, blob) {
+            (Some(ns), _) if c.staged.is_some() || c.staged_blob.is_some() => hash_blob(repo, ns)?,
+            (_, Some(b)) if c.staged_blob.is_some() || c.old_blob.is_none() => b.clone(),
             _ => continue,
         };
         if c.staged_blob.as_ref() == Some(&entry) {

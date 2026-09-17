@@ -129,7 +129,8 @@ working file, and its index entry, on top of anything already staged there. A pe
 row stays uncommitted; it is never swept into your commit, never makes your command decline, and
 the next ordinary `git commit` in that checkout does not revert the queue. An edit whose committed
 row already reads so commits nothing but still mirrors into the checkout, fixing a stale working or
-staged row (`checkout fixed: #1 matches main`). Writers take a lock, so
+staged row (`checkout fixed: #1 matches main`), or moving a peer's staged row in both files
+(`checkout updated: #3`). Writers take a lock, so
 parallel `add`s mint distinct ids, and state checks read the committed queue under that lock — a
 hand-edited `[~]` in a working copy does not make a task acceptable. A command that names an
 uncommitted row commits it; `add` mints past uncommitted rows, so when a higher id is committed
