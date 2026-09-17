@@ -1048,12 +1048,16 @@ pub fn doctor_findings(repo: &Repo) -> Res<Doctor> {
     }
     // After a missed first archive the checkout's index lacks the archive too:
     // an ordinary commit there would take it off the trunk.
-    // After a later one only the marker a missed commit leaves tells; read, it
-    // also goes once the checkout's index has moved on.
-    let marker = store::missed_marker_fix(repo);
+    // After a later one only the marker a missed commit leaves tells. Read
+    // only: a stale marker is noted, and cleared by a write or the hook.
+    let marker = store::missed_marker(repo);
+    let fix = match &marker {
+        Some(store::Missed::Live(fix)) => Some(fix.clone()),
+        _ => None,
+    };
     let fix = match cross {
-        true => store::missed_commit_fix(repo).or(marker),
-        false => marker,
+        true => store::missed_commit_fix(repo).or(fix),
+        false => fix,
     };
     if let Some(fix) = fix {
         say(format!(
@@ -1108,6 +1112,12 @@ pub fn doctor_findings(repo: &Repo) -> Res<Doctor> {
         say("a ``` fence is never closed — every task after it is invisible".into());
     }
     let mut notes = Vec::new();
+    if let Some(store::Missed::Stale) = marker {
+        notes.push(format!(
+            "a missed-commit marker for {} is left over — any 5w write or `5w lint --staged` clears it",
+            repo.trunk
+        ));
+    }
     let closed = tasks.iter().filter(|t| t.state == State::Done).count();
     if closed > 0 {
         notes.push(format!(

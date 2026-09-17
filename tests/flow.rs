@@ -3815,9 +3815,9 @@ fn a_checkout_fixed_by_hand_after_a_missed_archive_can_unarchive() {
     r.refuses(&r.main, &["archive"]);
     std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
     let marker = r.main.join(".git/5w-missed-main");
-    let left = std::fs::read_to_string(&marker).unwrap();
+    assert!(marker.exists());
 
-    // Doctor names the fix while the checkout is behind, and keeps the marker.
+    // Doctor names the fix while the checkout is behind, and writes nothing.
     let out = r.fails(&r.main, &["doctor"]);
     assert!(
         out.contains("missed a commit to main") && out.contains("apply --cached"),
@@ -3825,7 +3825,8 @@ fn a_checkout_fixed_by_hand_after_a_missed_archive_can_unarchive() {
     );
     assert!(marker.exists());
 
-    // The checkout fixed by hand: the marker no longer stands for its index.
+    // The checkout fixed by hand: doctor notes the marker left over, and leaves
+    // it for a write or the hook.
     r.git(
         &r.main,
         &[
@@ -3840,12 +3841,15 @@ fn a_checkout_fixed_by_hand_after_a_missed_archive_can_unarchive() {
     );
     assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
     let out = r.ok(&r.main, &["doctor"]);
-    assert!(!out.contains("missed a commit"), "{out}");
-    assert!(!marker.exists());
+    assert!(
+        !out.contains("missed a commit") && out.contains("marker for main is left over"),
+        "{out}"
+    );
+    assert!(marker.exists());
 
-    // With no read between the fix and a hand unarchive staged over it, the
-    // hook passes the unarchive and removes the marker.
-    std::fs::write(&marker, left).unwrap();
+    // A deliberate unarchive staged over the fixed checkout passes the hook,
+    // which removes the marker: #2, the row the missed archive moved, is in
+    // DONE.md as main has it.
     let row = "- [x] #1 first via:self";
     let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
     assert!(done.contains(row), "{done}");
@@ -3867,6 +3871,46 @@ fn a_checkout_fixed_by_hand_after_a_missed_archive_can_unarchive() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(!marker.exists());
     r.ok(&r.main, &["lint", "HEAD"]);
+}
+
+#[test]
+fn a_row_staged_over_a_missed_archive_keeps_the_hook_refusing() {
+    let r = Repo::new("missed-archive-new-row");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["archive"]);
+    r.ok(&r.main, &["done", "2", "--self"]);
+    r.ok(&r.main, &["hook", "install"]);
+    std::fs::write(r.main.join(".git/index.lock"), "").unwrap();
+    r.refuses(&r.main, &["archive"]);
+    std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
+    let marker = r.main.join(".git/5w-missed-main");
+
+    // A new row staged by hand changes the index, not #2, which the checkout
+    // still has back in the queue: the marker stands.
+    let tasks = r
+        .tasks()
+        .replace("## Open\n\n", "## Open\n\n- [ ] #3 third\n");
+    assert!(tasks.contains("#3 third"), "{tasks}");
+    std::fs::write(r.main.join("TASKS.md"), tasks).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    let mut c = Command::new("git");
+    c.args(["commit", "-qm", "add third"]).current_dir(&r.main);
+    env(&mut c, &r.root);
+    let o = c.output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(
+        err.contains("#2: archived in DONE.md, back in TASKS.md")
+            && err.contains("missed a commit to main"),
+        "{err}"
+    );
+    assert!(marker.exists());
+    assert!(
+        r.git(&r.main, &["show", "main:DONE.md"])
+            .contains("#2 second")
+    );
 }
 
 #[test]
@@ -6433,6 +6477,26 @@ fn audit_reads_the_queue_history_and_writes_nothing() {
 
     let tip = r.git(&r.main, &["rev-parse", "main"]);
     let status = r.git(&r.main, &["status", "--porcelain"]);
+    // A marker left over from a missed commit, which a write would clear.
+    std::fs::write(r.main.join(".git/5w-missed-main"), format!("{tip} {tip}\n")).unwrap();
+    // The git dir's entries, and what 5w keeps there.
+    let git_dir = || {
+        let mut v: Vec<(String, String)> = std::fs::read_dir(r.main.join(".git"))
+            .unwrap()
+            .flatten()
+            .map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let body = match name.starts_with("5w-") {
+                    true => std::fs::read_to_string(e.path()).unwrap_or_default(),
+                    false => String::new(),
+                };
+                (name, body)
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let before = git_dir();
     let out = r.ok(&r.main, &["audit"]);
     let has = |s: &str| assert!(out.contains(s), "want {s:?} in:\n{out}");
     has("tasks 3 · 1 open · 0 in review · 2 closed (1 via:review, 1 without via:)");
@@ -6456,9 +6520,10 @@ fn audit_reads_the_queue_history_and_writes_nothing() {
         "{out}"
     );
 
-    // Nothing written: not the trunk, not the checkout.
+    // Nothing written: not the trunk, not the checkout, not the git dir.
     assert_eq!(r.git(&r.main, &["rev-parse", "main"]), tip);
     assert_eq!(r.git(&r.main, &["status", "--porcelain"]), status);
+    assert_eq!(git_dir(), before);
 
     let json = r.ok(&r.main, &["audit", "--json"]);
     for want in [

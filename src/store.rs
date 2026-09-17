@@ -575,7 +575,10 @@ pub fn missed_commit_fix(repo: &Repo) -> Option<String> {
             &["rev-parse", "--verify", "--quiet", &format!("{rev}:{n}")],
         )
     };
-    let staged = index_entries(repo, &w);
+    let staged = names.map(|n| {
+        git::opt(&w, &["ls-files", "-s", "--", n])
+            .and_then(|l| l.split_whitespace().nth(1).map(String::from))
+    });
     if staged[0].is_none() || staged == names.map(|n| at(&old, n)) {
         return None;
     }
@@ -593,10 +596,9 @@ pub fn missed_commit_fix(repo: &Repo) -> Option<String> {
 /// The marker a queue commit leaves when the trunk checkout's index could not
 /// take it: `5w-missed-<trunk>` in the git common dir (a `/` in the trunk's name
 /// as `%`), holding the trunk's tip before the first commit missed and after the
-/// last, then the checkout's queue and archive index entries the miss left (`-`
-/// for none). Only while it stands, and those entries are still the index's, does
-/// `lint --staged` read an archived row back in the queue as that missed commit
-/// rather than a deliberate unarchive.
+/// last. Only while it stands does `lint --staged` read an archived row back in
+/// the queue as that missed commit rather than a deliberate unarchive (see
+/// `missed_marker`).
 const MISSED: &str = "5w-missed-";
 
 fn missed_path(repo: &Repo) -> PathBuf {
@@ -604,26 +606,17 @@ fn missed_path(repo: &Repo) -> PathBuf {
         .join(format!("{MISSED}{}", repo.trunk.replace('/', "%")))
 }
 
-/// The checkout's index entries for the queue and the archive.
-fn index_entries(repo: &Repo, w: &Path) -> [Option<String>; 2] {
-    [repo.cfg.file.as_str(), repo.cfg.archive.as_str()].map(|n| {
-        git::opt(w, &["ls-files", "-s", "--", n])
-            .and_then(|l| l.split_whitespace().nth(1).map(String::from))
-    })
-}
-
 /// Record a commit from `old` to `new` the checkout's index missed, keeping the
 /// earliest `old` of a marker already there.
-fn record_missed(repo: &Repo, w: &Path, old: &str, new: &str) {
+fn record_missed(repo: &Repo, old: &str, new: &str) {
     let path = missed_path(repo);
     let first = fs::read_to_string(&path)
         .ok()
         .and_then(|t| t.split_whitespace().next().map(String::from))
         .filter(|f| f.bytes().all(|b| b.is_ascii_hexdigit()) && !f.is_empty());
-    let [q, a] = index_entries(repo, w).map(|b| b.unwrap_or_else(|| "-".into()));
     let _ = fs::write(
         &path,
-        format!("{} {new} {q} {a}\n", first.as_deref().unwrap_or(old)),
+        format!("{} {new}\n", first.as_deref().unwrap_or(old)),
     );
 }
 
@@ -632,43 +625,65 @@ fn clear_missed(repo: &Repo) {
     let _ = fs::remove_file(missed_path(repo));
 }
 
-/// While the marker stands, the fix that catches the trunk checkout up: the
-/// trunk's diff since the first commit it missed, applied to its working files
-/// and index. A marker the checkout no longer needs — its index entries are no
-/// longer those the miss left (a marker without them: the first missed commit's
-/// parent's), as after following that fix or restoring the files by hand — is
-/// removed, and `None`.
-pub fn missed_marker_fix(repo: &Repo) -> Option<String> {
+/// What the marker says of the trunk checkout now.
+pub enum Missed {
+    /// The index still lacks the missed commits: the fix that catches it up.
+    Live(String),
+    /// The index has taken them, or they cannot be read: the marker is left over.
+    Stale,
+}
+
+/// The marker, read without touching it. It stands for the checkout while any
+/// row the missed commits changed or moved (from the marker's first sha to its
+/// last) reads, in the checkout's staged queue and archive, otherwise than the
+/// last one has it — so a hand fix (the named diff, or the files restored) makes
+/// it stale, whatever else is staged, and a hand edit that leaves one of those
+/// rows behind (a new row staged over the missed archive) keeps it standing.
+/// Its limit: while it stands, a deliberate unarchive of a row the missed
+/// commits themselves archived reads as the miss; any write or `lint --staged`
+/// with the checkout caught up clears it first.
+pub fn missed_marker(repo: &Repo) -> Option<Missed> {
     let text = fs::read_to_string(missed_path(repo)).ok()?;
-    let mut fields = text.split_whitespace();
-    let from = fields.next()?.to_string();
-    let left: Vec<Option<String>> = fields
-        .skip(1)
-        .map(|b| (b != "-").then(|| b.to_string()))
-        .collect();
-    let w = repo.trunk_checkout().ok()??;
-    let tip = git::rev(&repo.primary, &format!("refs/heads/{}", repo.trunk))?;
-    let names = [repo.cfg.file.as_str(), repo.cfg.archive.as_str()];
-    let at = |rev: &str| {
-        names.map(|n| {
-            git::opt(
-                &repo.primary,
-                &["rev-parse", "--verify", "--quiet", &format!("{rev}:{n}")],
-            )
-        })
+    let mut shas = text.split_whitespace();
+    let (Some(from), Some(last)) = (shas.next(), shas.next()) else {
+        return Some(Missed::Stale);
     };
-    let staged = index_entries(repo, &w);
-    let live = git::ok(
-        &repo.primary,
-        &["cat-file", "-e", &format!("{from}^{{commit}}")],
-    ) && staged != at(&tip)
-        && match left.as_slice() {
-            [q, a] => staged == [q.clone(), a.clone()],
-            _ => staged == at(&from),
-        };
-    if !live {
-        clear_missed(repo);
-        return None;
+    let w = repo.trunk_checkout().ok()??;
+    let commit = |c: &str| {
+        git::ok(
+            &repo.primary,
+            &["cat-file", "-e", &format!("{c}^{{commit}}")],
+        )
+    };
+    let Some(tip) = git::rev(&repo.primary, &format!("refs/heads/{}", repo.trunk)) else {
+        return Some(Missed::Stale);
+    };
+    if !commit(from) || !commit(last) {
+        return Some(Missed::Stale);
+    }
+    let names = [repo.cfg.file.as_str(), repo.cfg.archive.as_str()];
+    // A file a side lacks reads as empty.
+    let blob = |dir: &Path, spec: String| {
+        git::raw(dir, &["cat-file", "blob", &spec], &[], None)
+            .ok()
+            .filter(|o| o.ok)
+            .map(|o| o.stdout)
+            .unwrap_or_default()
+    };
+    let at = |rev: &str| names.map(|n| blob(&repo.primary, format!("{rev}:{n}")));
+    let (before, after) = (at(from), at(last));
+    let staged = names.map(|n| blob(&w, format!(":{n}")));
+    let (before, after, staged) = (
+        [before[0].as_str(), before[1].as_str()],
+        [after[0].as_str(), after[1].as_str()],
+        [staged[0].as_str(), staged[1].as_str()],
+    );
+    // Per file, so a row moving between them counts.
+    let mut ids = rows_changed([before[0], ""], [after[0], ""]);
+    ids.extend(rows_changed(["", before[1]], ["", after[1]]));
+    let behind = ids.into_iter().any(|id| row(staged, id) != row(after, id));
+    if !behind {
+        return Some(Missed::Stale);
     }
     let g = format!("git -C {}", shell_word(&w.to_string_lossy()));
     let diff = format!(
@@ -677,7 +692,22 @@ pub fn missed_marker_fix(repo: &Repo) -> Option<String> {
         &tip[..tip.len().min(12)],
         names.map(shell_word).join(" ")
     );
-    Some(format!("{diff} | {g} apply && {diff} | {g} apply --cached"))
+    Some(Missed::Live(format!(
+        "{diff} | {g} apply && {diff} | {g} apply --cached"
+    )))
+}
+
+/// The marker's fix while it stands; a stale marker is removed here, and `None`.
+/// For `lint --staged` only: reads that report (doctor, audit) use
+/// `missed_marker`, and write nothing.
+pub fn missed_marker_fix(repo: &Repo) -> Option<String> {
+    match missed_marker(repo)? {
+        Missed::Live(fix) => Some(fix),
+        Missed::Stale => {
+            clear_missed(repo);
+            None
+        }
+    }
 }
 
 /// Set the checkout's index entries for `(name, blob)` in one `update-index`, so
@@ -1319,7 +1349,7 @@ fn write(
                 .map(|((c, ..), _)| c.name.as_str())
                 .collect();
             mirror_index(repo, w, &changes, &blobs).map_err(|e| {
-                record_missed(repo, w, old, &commit);
+                record_missed(repo, old, &commit);
                 landed(e, &names, true)
             })?;
             clear_missed(repo);
