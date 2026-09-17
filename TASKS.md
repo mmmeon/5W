@@ -35,7 +35,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #84 Duplicate requires keys: the version check reads the first, the config stores the last @upkeep !1
   self-update's pinned() and update-files --pin use the first
   Found by #82's worker: src/config.rs Config::from_toml checks the version pin against the first requires but stores the last; src/upkeep.rs pinned() (self-update) reads the first requires line; update-files --pin rewrites only the first. Make every reader agree with the parser (last wins) — or better, refuse duplicate keys in .5w.toml at parse time with one line naming the key and lines — and make update-files --pin rewrite consistently; test duplicate requires.
-- [ ] #77 change_id drops hunk line numbers @ship !3 branch:ship/task-77
+- [~] #77 change_id drops hunk line numbers @ship !3 branch:ship/task-77 submitted:f856d030e0c6f3d053d1f6310b643eb565f71d25
   so a reviewed hunk applied at a different place in the same file has the same change id
   Found reviewing #11 (pre-existing, affects ship and the gate): git::change_id normalises away hunk line numbers so clean rebases pass; with two identical blocks in a file and no distinguishing context line, inserting the reviewed line into the other block yields byte-identical normalised patches, so ship/ci accept code placed somewhere nobody reviewed. Find a rebase-stable way to pin position (e.g. compare the post-image of each changed file region with more context, or verify the resulting blob of each touched file equals the reviewed commit's blob rebased — 3-way apply of the reviewed diff onto the new base and compare trees), keep a clean rebase passing, and test the two-identical-blocks case.
 
