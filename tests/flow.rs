@@ -5002,6 +5002,18 @@ fn gate_trunk_lets_only_recorded_landings_of_reviewed_changes_onto_the_trunk() {
     let (ok, err) = push(&["main"]);
     assert!(ok, "{err}");
 
+    // A branch that is a symbolic ref to the trunk moves the trunk: judged as the trunk.
+    r.git(
+        &server,
+        &["symbolic-ref", "refs/heads/alias", "refs/heads/main"],
+    );
+    let server_main = r.git(&server, &["rev-parse", "main"]);
+    code("aliased.txt");
+    let (ok, err) = push(&["main:alias"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+    assert_eq!(r.git(&server, &["rev-parse", "main"]), server_main);
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
     // Deleting the trunk, to push an orphan history in its place, is refused; a branch is not.
     r.git(&server, &["config", "receive.denyDeleteCurrent", "false"]);
     let (ok, err) = push(&[":main"]);
@@ -5020,6 +5032,65 @@ fn gate_trunk_lets_only_recorded_landings_of_reviewed_changes_onto_the_trunk() {
     r.git(&r.main, &["merge", "-q", "--no-ff", "--no-edit", "side"]);
     let (ok, err) = push(&["main"]);
     assert!(!ok && err.contains("no landing record covers"), "{err}");
+}
+
+#[test]
+fn gate_trunk_holds_on_a_server_whose_trunk_is_not_main() {
+    let r = Repo::new("gate-master");
+    r.git(&r.main, &["branch", "-m", "main", "master"]);
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let cfg = cfg
+        .replace("trunk = \"main\"", "trunk = \"master\"")
+        .replace("gate_trunk = false", "gate_trunk = true");
+    assert!(cfg.contains("trunk = \"master\"") && cfg.contains("gate_trunk = true"));
+    std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+    let server = r.root.join("server.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            server.to_str().unwrap(),
+        ],
+    );
+    let out = r.ok(&server, &["hook", "install", "pre-receive"]);
+    assert!(out.contains("5w.trunk = master"), "{out}");
+    assert_eq!(r.git(&server, &["config", "5w.trunk"]), "master");
+    r.git(
+        &r.main,
+        &["remote", "add", "origin", server.to_str().unwrap()],
+    );
+    let push = || {
+        let o = r.git_path(
+            &r.main,
+            &path_with_5w(),
+            &["push", "-q", "origin", "master"],
+        );
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+    std::fs::write(r.main.join("code.txt"), "x\n").unwrap();
+    r.git(&r.main, &["add", "code.txt"]);
+    r.git(&r.main, &["commit", "-qm", "code"]);
+    let before = r.git(&server, &["rev-parse", "master"]);
+
+    // Pinned by the hook install, or read from the server's HEAD: the gate holds.
+    let (ok, err) = push();
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+    r.git(&server, &["config", "--unset", "5w.trunk"]);
+    let (ok, err) = push();
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+
+    // A HEAD naming no branch here: refused, naming the setting, not waved through.
+    r.git(&server, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    let (ok, err) = push();
+    assert!(!ok && err.contains("git config 5w.trunk <name>"), "{err}");
+    assert_eq!(r.git(&server, &["rev-parse", "master"]), before);
 }
 
 #[test]

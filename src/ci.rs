@@ -98,6 +98,36 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         bail!("--ref is a push, --branch a change request: give one");
     }
     let p = &repo.primary;
+    // A symbolic ref pushed to moves what it points at: judge that ref.
+    let refname = match refname {
+        Some(r) => {
+            let mut r = r;
+            for _ in 0..8 {
+                match git::opt(p, &["symbolic-ref", "-q", &r]) {
+                    Some(t) if !t.is_empty() && t != r => r = t,
+                    _ => break,
+                }
+            }
+            Some(r)
+        }
+        None => None,
+    };
+    // On a server, a trunk that is not there while other branches are means the
+    // trunk was guessed wrong: nothing would be judged as landing on it.
+    let trunk_head = format!("refs/heads/{}", repo.trunk);
+    if repo.bare
+        && refname.as_ref().is_some_and(|r| *r != trunk_head)
+        && git::rev(p, &trunk_head).is_none()
+        && git::opt(
+            p,
+            &["for-each-ref", "--count=1", "--format=x", "refs/heads/"],
+        )
+        .is_some_and(|o| !o.is_empty())
+    {
+        bail!(
+            "this server has no {trunk_head} to judge pushes against — `git config 5w.trunk <name>` names the trunk"
+        );
+    }
     // The trunk as a plain sha: a bad --trunk would read an empty queue.
     let trunk_ref = match trunk_ref {
         Some(t) => Some(git::rev(p, &t).ok_or_else(|| {

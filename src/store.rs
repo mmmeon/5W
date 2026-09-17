@@ -32,9 +32,19 @@ pub struct Repo {
     pub common: PathBuf,
     pub cfg: Config,
     pub trunk: String,
+    /// A bare repository: a git server, where pushes are judged.
+    pub bare: bool,
 }
 
 pub const CONFIG_FILE: &str = ".5w.toml";
+
+/// The branch HEAD names, even unborn: a bare repository's default branch.
+pub fn head_branch(dir: &Path) -> Option<String> {
+    git::opt(dir, &["symbolic-ref", "-q", "HEAD"])?
+        .strip_prefix("refs/heads/")
+        .filter(|b| !b.is_empty())
+        .map(String::from)
+}
 
 /// Resolve `.` and `..` components without touching the filesystem.
 fn normalize(p: &Path) -> PathBuf {
@@ -84,6 +94,8 @@ impl Repo {
         let guess = std::env::var("FIVEW_TRUNK")
             .ok()
             .or_else(|| git::opt(&primary, &["config", "5w.trunk"]).filter(|s| !s.is_empty()))
+            // A server has no checkout to ask; its HEAD names the default branch.
+            .or_else(|| bare.then(|| head_branch(&primary)).flatten())
             .or_else(|| {
                 git::opt(&primary, &["config", "git-town.main-branch"]).filter(|s| !s.is_empty())
             })
@@ -121,6 +133,7 @@ impl Repo {
             common,
             cfg,
             trunk,
+            bare,
         })
     }
 

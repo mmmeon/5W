@@ -1175,6 +1175,16 @@ pub fn hook(repo: &Repo, args: &[String]) -> Res<()> {
             }
             let script = hook_script(repo, kind);
             std::fs::write(&path, script).map_err(|e| e.to_string())?;
+            // The server's trunk, pinned: a guess that finds no such branch judges no
+            // push as landing on it.
+            if kind == "pre-receive"
+                && repo.bare
+                && git::opt(&repo.primary, &["config", "5w.trunk"]).is_none()
+                && let Some(b) = crate::store::head_branch(&repo.primary)
+            {
+                git::git(&repo.primary, &["config", "5w.trunk", &b])?;
+                println!("hook: 5w.trunk = {b} (the trunk pushes are judged against; from HEAD)");
+            }
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                 .map_err(|e| e.to_string())?;
