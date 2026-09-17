@@ -39,6 +39,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [~] #61 GitLab queue-events: a failed users/:id lookup counts the approver as a non-maker @ci !1 branch:ci/task-61 submitted:5481fe78b024
   and a non-array 200 page loops until timeout
   Found reviewing #10: in ci/gitlab-ci.yml, emails=$(api users/$id | jq ...) || emails='[]' fails open (approver passes the maker check) — use || continue. pages() treats any 200 body as a non-empty page: an error object or proxy HTML loops until the job times out holding resource_group — check jq -e 'type == "array"' per page and cap pages. YAML parses; shellcheck clean.
+- [ ] #62 archive into a missing directory rewrites TASKS.md then fails writing the archive, leaving the moved row in no file @queue !1
+  Found reviewing #60 (pre-existing): with archive = docs/CLOSED.md and no docs/, a checkout archive rewrites the working TASKS.md and then fails 'cannot write docs/CLOSED.md'; the moved row is in no working file. Create the parent directory, or validate every write target before writing anything (write both files, or neither); test it.
 
 ## Done
 
