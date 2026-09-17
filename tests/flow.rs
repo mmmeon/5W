@@ -234,9 +234,22 @@ fn a_peers_uncommitted_row_is_never_swept_into_a_commit() {
 }
 
 #[test]
+fn reject_refuses_work_that_was_never_submitted() {
+    let r = Repo::new("reject-open");
+    r.ok(&r.main, &["add", "x"]);
+    let out = r.fails(&r.main, &["reject", "1", "not good"]);
+    assert!(out.contains("never submitted"), "{out}");
+    assert!(r.line(1).starts_with("- [ ] #1") && !r.line(1).contains("rework:"));
+}
+
+#[test]
 fn reject_reason_survives_every_special_character() {
     let r = Repo::new("reject");
     r.ok(&r.main, &["add", "x"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "1"]);
     let reason = r#"a | b / c "quoted" \ back"#;
     r.ok(&r.main, &["reject", "1", reason]);
     let show = r.ok(&r.main, &["show", "1"]);

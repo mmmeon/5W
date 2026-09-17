@@ -1475,17 +1475,26 @@ fn reject(repo: &Repo, args: &[String]) -> Res<()> {
     if reason.trim().is_empty() {
         bail!("a rejection needs a reason — the next attempt reads it first");
     }
+    let tasks = &repo.cfg.cmd_tasks;
     let q = Q::load(repo)?;
-    if q.get(id)?.state == State::Done {
-        bail!("#{id} is closed; `{} open {id}` first", repo.cfg.cmd_tasks);
+    match q.get(id)?.state {
+        State::Done => bail!("#{id} is closed; `{tasks} open {id}` first"),
+        State::Open => bail!(
+            "#{id} was never submitted, so there is nothing to reject — worker: `{tasks} submit {id} <branch>`"
+        ),
+        State::Review => {}
     }
     let msg = format!("{}: reject #{id}", repo.cfg.commit_prefix);
-    let tasks_cmd = repo.cfg.cmd_tasks.clone();
     store::transact(
         repo,
         |_| msg.clone(),
         &[id],
-        |c| open_only(c, id, &tasks_cmd),
+        |c| {
+            if committed(c, id)?.state != State::Review {
+                bail!("#{id} is not submitted on the trunk");
+            }
+            Ok(())
+        },
         |f, _| {
             f.queue.update(
                 id,

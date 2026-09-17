@@ -385,7 +385,8 @@ text). Differences in behaviour to know about:
 - `ship` refuses when the worktree holds gitignored files it would delete (`--discard-ignored`).
 - A fenced example's id counts toward the next id, so no two lines ever share a number.
 - `ship` needs no cwd, needs no git-town, and can `--sync` and `--squash` itself.
-- `reject` takes the reason as the remaining arguments and accepts any character in it.
+- `reject` requires the task to be submitted, takes the reason as the remaining arguments and accepts
+  any character in it.
 - The branch scans that read rework notes, submissions and ids off every branch are gone: they
   existed for a layout where every branch carried its own queue, which the scripts had already
   abandoned.
