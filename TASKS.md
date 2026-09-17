@@ -33,6 +33,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #11: a reviewed change setting trunk = "x" in .5w.toml makes the real trunk ungated on the next push; the admin's git config 5w.trunk pin is silently overridden. On a bare repo, when 5w.trunk is set and differs from the committed trunk, refuse trunk pushes in one line naming both, or let the pin win; test it.
 - [ ] #80 Fresh server: a branch pushed in the same push that creates the trunk is refused as 'queue edits go on main' @ci !1
   Found reviewing #11 (pre-existing): on an empty server, git push origin main feat judges feat against a trunk that doesn't exist yet, so trunk queue commits it contains are flagged as branch edits. Pushing main first works. Document it in README's migration note, or when the trunk is created in the same push and passes its own check, judge the new branch as if based on it — careful: #76 showed a later git refusal of the trunk update can land the branch unjudged (only safe for creation where refusal leaves no trunk: then git refuses nothing? verify), so documenting may be the right answer; test the chosen behaviour.
+- [ ] #81 Other clones of a non-main-trunk repo only find the trunk while the primary checkout has .5w.toml @queue !1
+  resolve it from the committed config on origin/HEAD or remote branches
+  Found reviewing #78 (pre-existing): 5w.trunk is local git config, so a fresh clone of a master repo gets no pin; Repo::open then finds master only while the primary checkout holds .5w.toml. When the primary checkout lacks .5w.toml, read trunk from .5w.toml on the branch origin/HEAD names (if it resolves), then from refs/heads/main/master candidates that carry .5w.toml; test a clone whose primary checkout is on a branch without the file.
 
 ## Done
 
