@@ -60,12 +60,14 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         .into_iter()
         .find(|r| git::rev(p, r).is_some())
     });
-    let head = git::rev(p, head.as_deref().unwrap_or("HEAD")).ok_or("cannot resolve --head")?;
+    let head = head.unwrap_or_else(|| "HEAD".into());
+    let head = git::rev(p, &head)
+        .ok_or_else(|| format!("ci: --head {head} is not a commit — pass a branch, tag or sha"))?;
     let base = base.filter(|b| !b.bytes().all(|c| c == b'0'));
     let base = match base {
         Some(b) => Some(
             git::rev(p, &b)
-                .ok_or_else(|| format!("cannot resolve --base {b} (is the history complete?)"))?,
+                .ok_or_else(|| format!("ci: --base {b} is not a commit — pass a branch, tag or sha, with full history fetched"))?,
         ),
         None => trunk_ref
             .as_ref()

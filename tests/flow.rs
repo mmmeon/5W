@@ -278,6 +278,8 @@ fn commits_after_submit_block_accept_until_reviewed() {
     assert!(r.ok(&r.main, &["review"]).contains("moved since submit"));
     let out = r.fails(&r.main, &["accept", "1"]);
     assert!(out.contains("after it was submitted"), "{out}");
+    let out = r.fails(&r.main, &["accept", "1", "--at", "^a/x"]);
+    assert_eq!(out, "5w: cannot resolve ^a/x\n");
     r.ok(&r.main, &["accept", "1", "--at", "a/x"]);
 }
 
@@ -1444,6 +1446,40 @@ fn pre_receive_accepts_the_protocol_and_rejects_the_rest() {
 }
 
 #[test]
+fn ci_refuses_a_revision_that_is_not_a_commit_in_one_line() {
+    let r = Repo::new("ci-revs");
+    r.ok(&r.main, &["add", "x"]);
+    r.ok(&r.main, &["add", "y"]);
+    // `^HEAD` resolves to `^<sha>`: as --head it once checked nothing and passed.
+    for rev in ["^HEAD", "nope", "HEAD~1..HEAD"] {
+        assert_eq!(
+            r.fails(&r.main, &["ci", "--head", rev]),
+            format!("5w: ci: --head {rev} is not a commit — pass a branch, tag or sha\n"),
+            "{rev}"
+        );
+        assert_eq!(
+            r.fails(&r.main, &["ci", "--base", rev]),
+            format!(
+                "5w: ci: --base {rev} is not a commit — pass a branch, tag or sha, with full history fetched\n"
+            ),
+            "{rev}"
+        );
+    }
+    // Plain shas and a new ref's all-zeros base still resolve.
+    let (head, prev) = (
+        r.git(&r.main, &["rev-parse", "HEAD"]),
+        r.git(&r.main, &["rev-parse", "HEAD~1"]),
+    );
+    let push = ["--ref", "refs/heads/main", "--head", &head];
+    let out = r.ok(&r.main, &[&["ci", "--base", &prev][..], &push].concat());
+    assert!(out.contains("1 commit(s)"), "{out}");
+    r.ok(
+        &r.main,
+        &[&["ci", "--base", &"0".repeat(40)][..], &push].concat(),
+    );
+}
+
+#[test]
 fn ci_branch_mode_is_the_ship_check() {
     let r = Repo::new("cibranch");
     r.ok(&r.main, &["add", "x", "branch:a/x"]);
@@ -2419,6 +2455,10 @@ fn audit_reads_the_queue_history_and_writes_nothing() {
     }
     assert!(
         r.fails(&r.main, &["audit", "--since", "yesterday-ish"])
+            .contains("not a commit or a date")
+    );
+    assert!(
+        r.fails(&r.main, &["audit", "--since", "^HEAD"])
             .contains("not a commit or a date")
     );
 }

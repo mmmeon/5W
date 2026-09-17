@@ -176,6 +176,9 @@ the same command runs under any CI, in a server hook, and by hand:
   the task is accepted; re-run it after `5w accept`.
 
 A missing or all-zero `--base` means the merge-base with the trunk. The checkout needs full history.
+`--head` and `--base` must each name one commit: a negation such as `^HEAD` or a range is refused,
+not read as an empty range that passes having checked nothing (`accept --at` and `audit --since`
+refuse it too).
 
 | Where                                                                           | How                                                                                                                                                                                                                                  |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

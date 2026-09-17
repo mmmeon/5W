@@ -99,17 +99,14 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             check(&repo.cfg, repo, &old, &new, None, "staged", &mut problems);
         }
         range => {
-            // Resolve each side to a plain sha: rev-parse answers `^HEAD` with
-            // `^<sha>`, which is not a commit to lint.
+            // Resolve each side to a plain sha (git::rev refuses `^HEAD`).
             let commit = |r: &str| {
-                git::rev(&repo.cwd, if r.is_empty() { "HEAD" } else { r })
-                    .filter(|s| s.len() >= 40 && is_sha(Some(s)))
-                    .ok_or_else(|| {
-                        format!(
-                            "lint: {range} is not a commit or a <from>..<to> range ({} lint --help)",
-                            repo.cfg.cmd_tasks
-                        )
-                    })
+                git::rev(&repo.cwd, if r.is_empty() { "HEAD" } else { r }).ok_or_else(|| {
+                    format!(
+                        "lint: {range} is not a commit or a <from>..<to> range ({} lint --help)",
+                        repo.cfg.cmd_tasks
+                    )
+                })
             };
             let list: Vec<String> = match range.split_once("..") {
                 Some((from, to)) => {

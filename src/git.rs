@@ -73,6 +73,8 @@ pub fn branch_exists(dir: &Path, b: &str) -> bool {
     )
 }
 
+/// The commit `r` names, as a full sha — or None. rev-parse answers `^HEAD`
+/// with `^<sha>`, which is not a commit; only a plain sha (SHA-1 or SHA-256) is.
 pub fn rev(dir: &Path, r: &str) -> Option<String> {
     opt(
         dir,
@@ -83,6 +85,7 @@ pub fn rev(dir: &Path, r: &str) -> Option<String> {
             &format!("{r}^{{commit}}"),
         ],
     )
+    .filter(|s| matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 pub fn current_branch(dir: &Path) -> Option<String> {
