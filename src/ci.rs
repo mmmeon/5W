@@ -282,6 +282,22 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     for pr in &problems {
         eprintln!("  {pr}");
     }
+    // A server with no trunk yet judged the branch against nothing: the trunk's own
+    // queue commits, pushed alongside it, read as the branch's. The trunk's creation
+    // can still be refused after this hook, so it is not taken on trust.
+    let queue_edits = format!("queue edits go on {}, not", repo.trunk);
+    if repo.bare
+        && refname.is_some()
+        && off_trunk
+        && trunk_ref.is_none()
+        && problems.iter().any(|pr| pr.contains(&queue_edits))
+    {
+        bail!(
+            "{} finding(s) — {what}; on a new server push {} first, then this branch",
+            problems.len(),
+            repo.trunk
+        );
+    }
     bail!("{} finding(s) — {what}", problems.len())
 }
 

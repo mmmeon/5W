@@ -5585,6 +5585,54 @@ fn gate_trunk_refuses_a_landing_that_put_the_reviewed_hunk_in_an_identical_copy(
 }
 
 #[test]
+fn a_new_server_takes_the_trunk_before_a_branch_that_holds_its_queue_commits() {
+    // A branch is judged against the server's trunk before the push, and git can
+    // still refuse a trunk creation after pre-receive (an update hook): pushed
+    // together into an empty server, the trunk's queue commits read as the branch's.
+    let r = Repo::new("prereceive-new-server");
+    r.ok(&r.main, &["add", "one"]);
+    r.git(&r.main, &["checkout", "-qb", "f/b"]);
+    let server = r.root.join("server.git");
+    r.git(
+        &r.root,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            server.to_str().unwrap(),
+        ],
+    );
+    r.ok(&server, &["hook", "install", "pre-receive"]);
+    r.git(
+        &r.main,
+        &["remote", "add", "origin", server.to_str().unwrap()],
+    );
+    let push = |args: &[&str]| {
+        let o = r.git_path(
+            &r.main,
+            &path_with_5w(),
+            &[&["push", "-q", "origin"], args].concat(),
+        );
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+    let (ok, err) = push(&["main", "f/b"]);
+    assert!(!ok && err.contains("queue edits go on main"), "{err}");
+    assert!(
+        err.contains("on a new server push main first, then this branch"),
+        "{err}"
+    );
+    let (ok, err) = push(&["main"]);
+    assert!(ok, "{err}");
+    let (ok, err) = push(&["f/b"]);
+    assert!(ok, "{err}");
+}
+
+#[test]
 fn pre_receive_does_not_let_a_branch_land_on_a_trunk_update_git_refuses() {
     // git runs pre-receive before its own per-ref checks, and a push that is not
     // atomic applies the refs that pass: judged against the pushed trunk, a branch

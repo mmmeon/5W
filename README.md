@@ -369,7 +369,10 @@ the same command runs under any CI, in a server hook, and by hand:
   brought in by `git merge <trunk>` — are the trunk's and are not judged again. The trunk they are
   judged against is the server's before the push: a hook cannot know whether git will apply a trunk
   update in the same push (a non-fast-forward, an `update` hook), so push the trunk first, then a
-  branch that merged its new tip.
+  branch that merged its new tip. That holds for a new server too: `git push origin main feat` into
+  an empty repository judges `feat` against no trunk, and git can still refuse the trunk's creation
+  after the hook (an `update` hook), so the trunk's queue commits read as
+  `feat`'s and the push is refused, naming the fix — push `main`, then the branches.
 - **A change request:** no queue edits, plus the ship check — an accepted task names the branch, and
   what the branch adds is exactly what was reviewed (a clean rebase passes). The check is red until
   the task is accepted; re-run it after `5w accept`.
