@@ -6561,7 +6561,8 @@ fn queue_writes_take_lanes_names_and_prefix_from_the_committed_trunk_config() {
             String::from_utf8_lossy(&o.stderr).to_string(),
         )
     };
-    let note = ".5w.toml on main has uncommitted edits; queue commands read the committed one — commit it first";
+    let note =
+        ".5w.toml on main has uncommitted edits; 5w reads the committed one — commit it first";
     let (audit, err) = stdout(&["audit", "--json"]);
     assert!(!err.contains(note), "{err}");
     // The trunk checkout's copy renames what the queue is written by, uncommitted:
@@ -6670,7 +6671,7 @@ fn ship_and_wt_prune_read_queue_names_and_gates_from_the_committed_trunk_config(
         .replace("require_task = true", "require_task = false");
     assert!(edited.contains("QUEUE.md") && edited.contains("require_task = false"));
     std::fs::write(r.main.join(".5w.toml"), &edited).unwrap();
-    let note = "(note: .5w.toml on main has uncommitted edits; queue commands read the committed one — commit it first)";
+    let note = "(note: .5w.toml on main has uncommitted edits; 5w reads the committed one — commit it first)";
 
     // wt prune reads the queue the trunk commits: a/x is named there, t/stray is not,
     let o = r.cli(&r.main, &["wt", "prune"]);
@@ -6761,6 +6762,50 @@ fn wt_commands_read_worktrees_settings_from_the_committed_trunk_config() {
     let out = run(&["wt", "rm", "a/x"]);
     assert!(out.contains("unlinked 1 artifact"), "{out}");
     assert!(!dir.exists(), "{out}");
+}
+
+#[test]
+fn the_uncommitted_config_note_prints_before_the_command_changes_anything() {
+    let r = Repo::new("note-before-effects");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let committed = cfg.replace(
+        "links_file = \".worktree-links\"",
+        "links_file = \".worktree-links\"\ninstall = \"echo installing >&2\"",
+    );
+    assert_ne!(committed, cfg);
+    r.commit_in(&r.main, ".5w.toml", &committed);
+    r.ok(&r.main, &["add", "do it"]);
+    // The trunk checkout's copy drops the install command, uncommitted.
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    let note =
+        ".5w.toml on main has uncommitted edits; 5w reads the committed one — commit it first";
+    let stderr = |args: &[&str]| {
+        let o = r.cli(&r.main, args);
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        assert!(o.status.success(), "{args:?}: {err}");
+        assert_eq!(err.matches(note).count(), 1, "{args:?}: {err}");
+        err
+    };
+    let before = |err: &str, what: &str| {
+        let (n, w) = (err.find(note), err.find(what));
+        assert!(w.is_some() && n < w, "{err}");
+    };
+
+    // wt new --install says so before it runs the committed install command,
+    let err = stderr(&["wt", "new", "a/x", "--install"]);
+    before(&err, "installing");
+    // as wt install does,
+    let dir = r.wt("a/x");
+    let err = stderr(&["wt", "install", &dir.to_string_lossy()]);
+    before(&err, "installing");
+    // a refusal still says it on its one line,
+    let err = r.refuses(&r.main, &["wt", "new", "a/x"]);
+    assert!(
+        err.contains("branch a/x already exists") && err.contains(&format!("(note: {note})")),
+        "{err}"
+    );
+    // and a queue write says it once.
+    stderr(&["done", "1", "--self"]);
 }
 
 #[test]

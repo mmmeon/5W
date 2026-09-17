@@ -809,8 +809,10 @@ narrows hundreds of branches to the possible copies in one git call.
 
 `.5w.toml` at the repo root, read from the trunk. An edit takes effect for queue commands, `audit`,
 `ship`, the `wt` commands and the hook once it is committed on the trunk: until then they read the committed copy and say
-`.5w.toml on <trunk> has uncommitted edits; queue commands read the committed one — commit it
-first`, and a lane only the edit names is refused as such. Every key is optional; see
+`.5w.toml on <trunk> has uncommitted edits; 5w reads the committed one — commit it first` —
+before the command changes anything (a queue write, a worktree, a link, the install command, a
+rebase), or at the end of one that changes nothing, or on a refusal's one line — and a lane only
+the edit names is refused as such. Every key is optional; see
 [templates/5w.toml](templates/5w.toml) for the defaults and
 [examples/ara.toml](examples/ara.toml) for a full configuration with an extra non-delegable lane
 that keeps its own section, a custom brief footer and a review checklist. A key given twice in the

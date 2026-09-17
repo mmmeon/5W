@@ -98,6 +98,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     // committed config, as queue commands and the server read them, noting an
     // uncommitted edit. A broken trunk config reads as `open_for_repair` did.
     let (judged, note) = crate::lint::under_committed_rules(repo);
+    crate::lint::hold_note(note);
     let repo = judged.as_ref().unwrap_or(repo);
     let res = match accepted {
         true => ship_accepted(repo, o),
@@ -109,7 +110,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             )),
         },
     };
-    crate::lint::noted(note, res)
+    crate::lint::noted(res)
 }
 
 /// Every branch an accepted task names that still exists, parents before their
@@ -390,6 +391,7 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
                 repo.cfg.cmd_wt
             )
         };
+        crate::lint::say_note();
         let before = git::rev(p, &format!("refs/heads/{branch}")).ok_or("cannot resolve branch")?;
         let o = match sync_upstream(repo, &all, &before)? {
             Some(up) => {
@@ -472,6 +474,7 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
     }
 
     // --- fast-forward first: until it succeeds nothing has changed ------------------------
+    crate::lint::say_note();
     let ff = match &trunk_wt {
         Some(w) => {
             git::raw(w, &["merge", "--ff-only", "--quiet", &land], &[], None).and_then(|o| {

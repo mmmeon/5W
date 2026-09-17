@@ -520,7 +520,7 @@ pub fn run(repo: &Repo, cmd: &str, args: &[String]) -> Res<()> {
         "doctor" => (None, None),
         _ => crate::lint::under_committed_rules(repo),
     };
-    let note = note.filter(|_| !store::batching());
+    crate::lint::hold_note(note.filter(|_| !store::batching()));
     let repo = judged.as_ref().unwrap_or(repo);
     let res = match cmd {
         "ready" => ready(repo, args),
@@ -546,7 +546,7 @@ pub fn run(repo: &Repo, cmd: &str, args: &[String]) -> Res<()> {
         "batch" => batch(repo, args),
         _ => bail!("unknown command: {cmd} (5w help)"),
     };
-    crate::lint::noted(note, res)
+    crate::lint::noted(res)
 }
 
 fn arg<'a>(args: &'a [String], i: usize, usage: &str) -> Res<&'a str> {

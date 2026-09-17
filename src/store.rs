@@ -1667,6 +1667,7 @@ fn write(
         .iter()
         .any(|(c, new, _, _)| *new != &c.committed && !(c.old_blob.is_none() && new.is_empty()));
     if changed {
+        crate::lint::say_note();
         // Under the queue lock, a private index already there is one a killed
         // run (say, at the pinentry during commit-tree) left behind: it goes.
         remove_stale(&repo.common, INDEX, "", 1);

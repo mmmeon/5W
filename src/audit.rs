@@ -764,7 +764,8 @@ fn ids(v: &[u64]) -> String {
 /// the doctor block — which notes an uncommitted edit, as `5w doctor` does.
 pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     let (judged, note) = crate::lint::under_committed_rules(repo);
-    crate::lint::noted(note, run_under(judged.as_ref().unwrap_or(repo), args))
+    crate::lint::hold_note(note);
+    crate::lint::noted(run_under(judged.as_ref().unwrap_or(repo), args))
 }
 
 fn run_under(repo: &Repo, args: &[String]) -> Res<()> {

@@ -55,7 +55,8 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         return dispatch(repo, cmd, rest);
     }
     let (judged, note) = crate::lint::under_committed_rules(repo);
-    crate::lint::noted(note, dispatch(judged.as_ref().unwrap_or(repo), cmd, rest))
+    crate::lint::hold_note(note);
+    crate::lint::noted(dispatch(judged.as_ref().unwrap_or(repo), cmd, rest))
 }
 
 fn dispatch(repo: &Repo, cmd: &str, rest: &[String]) -> Res<()> {
@@ -183,6 +184,7 @@ fn new(repo: &Repo, rest: &[String]) -> Res<()> {
     if dir.exists() {
         bail!("{} already exists", dir.display());
     }
+    crate::lint::say_note();
     // Branch off the parent's tip and record the lineage git-town reads. Not
     // `git town append`: that moves the current worktree onto the child.
     git::git(&repo.primary, &["branch", &branch, &parent])?;
@@ -235,6 +237,7 @@ pub fn add_worktree(repo: &Repo, branch: &str, do_install: bool) -> Res<()> {
     if dir.exists() {
         bail!("{} already exists", dir.display());
     }
+    crate::lint::say_note();
     fs::create_dir_all(repo.wt_root()).map_err(|e| e.to_string())?;
     git::git(
         &repo.primary,
@@ -545,6 +548,7 @@ fn prune(repo: &Repo, yes: bool) -> Res<()> {
         );
         return Ok(());
     }
+    crate::lint::say_note();
     for (b, tip, w) in &go {
         // Checked again at the moment of removal: anything that changed since the
         // scan stops the run, and children went first, so no parent is left dangling.
@@ -692,6 +696,7 @@ pub fn link(repo: &Repo, dest: &Path) -> Res<usize> {
     if dest == fs::canonicalize(&repo.primary).unwrap_or(repo.primary.clone()) {
         bail!("refusing to link into the primary worktree");
     }
+    crate::lint::say_note();
     let (mut n, mut present) = (0, 0);
     for pat in patterns(repo) {
         let found = expand(&repo.primary, &pat);
@@ -730,6 +735,7 @@ pub fn link(repo: &Repo, dest: &Path) -> Res<usize> {
 
 /// Remove only the links that point into the primary — never anything real.
 fn unlink(repo: &Repo, dest: &Path) -> Res<usize> {
+    crate::lint::say_note();
     let mut n = 0;
     for pat in patterns(repo) {
         for rel in expand(&repo.primary, &pat) {
@@ -778,6 +784,7 @@ pub fn install(repo: &Repo, dest: &Path) -> Res<()> {
     if dirs.is_empty() {
         println!("wt: nothing to install");
     }
+    crate::lint::say_note();
     for d in dirs {
         println!("wt: {cmd}  (in {})", d.display());
         let st = Command::new("sh")
@@ -1114,6 +1121,7 @@ fn discard_copy(repo: &Repo, branch: &str) -> Res<()> {
         );
     }
     // Everything is checked above; from here on only the compared paths change.
+    crate::lint::say_note();
     let env = [("GIT_LITERAL_PATHSPECS", "1")];
     let tracked: Vec<&str> = (work.iter())
         .filter(|(_, (old, _))| old.is_some())
@@ -1160,6 +1168,7 @@ fn discard_copy(repo: &Repo, branch: &str) -> Res<()> {
 }
 
 fn setup(repo: &Repo) -> Res<()> {
+    crate::lint::say_note();
     let p = &repo.primary;
     if let Err(e) = crate::lint::hook(repo, &["install".to_string()]) {
         println!("wt: pre-commit hook not installed: {e}");

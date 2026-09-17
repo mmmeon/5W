@@ -714,7 +714,7 @@ pub fn under_committed_rules(repo: &Repo) -> (Option<Repo>, Option<String>) {
     let edited = (repo.cfg.checkout_text.as_deref()).filter(|t| plain(t) != plain(&text));
     let note = edited.map(|_| {
         format!(
-            "{} on {} has uncommitted edits; queue commands read the committed one — commit it first",
+            "{} on {} has uncommitted edits; 5w reads the committed one — commit it first",
             crate::store::CONFIG_FILE,
             repo.committed_trunk
         )
@@ -723,17 +723,41 @@ pub fn under_committed_rules(repo: &Repo) -> (Option<Repo>, Option<String>) {
     (Some(with_config(repo, cfg)), note)
 }
 
-/// `res` with `under_committed_rules`' note: on stderr after a success, and
-/// on a refusal's one line unless it already names the uncommitted config.
-pub fn noted(note: Option<String>, res: Res<()>) -> Res<()> {
-    let Some(n) = note else { return res };
-    match res {
-        Ok(()) => {
+/// `under_committed_rules`' note, held from the start of a command until it
+/// changes something (`say_note`) or ends (`noted`).
+static NOTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn take_note() -> Option<String> {
+    NOTE.lock().map(|mut n| n.take()).unwrap_or_default()
+}
+
+/// Hold `under_committed_rules`' note for the command about to run.
+pub fn hold_note(note: Option<String>) {
+    if let (Some(n), Ok(mut held)) = (note, NOTE.lock()) {
+        *held = Some(n);
+    }
+}
+
+/// Print the held note, once: before a command's first change — a queue write,
+/// a worktree, a link, the install command, a rebase — so it is read before
+/// what the committed config does, not after.
+pub fn say_note() {
+    if let Some(n) = take_note() {
+        eprintln!("5w: {n}");
+    }
+}
+
+/// `res` with the held note, if nothing printed it yet: on stderr after a
+/// success, and on a refusal's one line unless it already names the
+/// uncommitted config.
+pub fn noted(res: Res<()>) -> Res<()> {
+    match (res, take_note()) {
+        (Ok(()), Some(n)) => {
             eprintln!("5w: {n}");
             Ok(())
         }
-        Err(e) if e.contains("uncommitted") => Err(e),
-        Err(e) => Err(format!("{e} (note: {n})")),
+        (Err(e), Some(n)) if !e.contains("uncommitted") => Err(format!("{e} (note: {n})")),
+        (res, _) => res,
     }
 }
 
