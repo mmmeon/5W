@@ -37,6 +37,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   hook install pre-receive on a bare server: with FIVEW_TRUNK set and 5w.trunk unset it pins HEAD's branch and the broken-config note names it instead of the FIVEW_TRUNK trunk that outranks it; and an empty 5w.trunk = "" counts as a pin for install (no re-pin) while store.rs treats it as unset, so the hook judges unpinned. Pin/name the trunk the store would resolve, and treat an empty pin as unset. Found in review of #91.
 - [ ] #97 A conflicting config repair is told to ship the repair instead of to rebase it
   While the trunk .5w.toml is broken, ship of a real repair branch forked before the break usually conflicts in the merged-result check and refuses with "ship the repair", when the fix is to rebase the repair onto the trunk first. Name the rebase when the merge conflicts. Found in review of #86.
+- [ ] #98 Server and client resolve queue names from different fallback configs on a broken trunk
+  On a trunk whose .5w.toml has a syntax error, the server judge (ci/pre-receive, #83) takes queue file/archive/commit_prefix from the last config that parses as TOML (even if 5w rejects it), while the client repair open (#86) takes them from the last config 5w accepts. After two consecutive breaks that also renamed queue names, client landing records and server judgement disagree. Use one shared resolution for both. Found in review of #86.
 
 ## Done
 
