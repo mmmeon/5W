@@ -7830,6 +7830,127 @@ fn a_ci_note_over_a_broken_config_names_the_trunk_read_and_claims_only_a_real_re
 }
 
 #[test]
+fn a_push_repairing_a_broken_config_that_renames_the_trunk_is_judged_onto_the_trunk_read() {
+    let r = Repo::new("config-broken-rename-push");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("trunk = \"main\""));
+    r.git(&r.main, &["branch", "a/x"]);
+    // The break names another trunk; b/y, off it, commits the fix.
+    let broken = cfg.replace("trunk = \"main\"", "trunk = \"x\"") + "bogus = 1\n";
+    std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+    r.git(
+        &r.main,
+        &["commit", "--no-verify", "-qam", "break the config"],
+    );
+    r.git(&r.main, &["branch", "b/y"]);
+    r.git(&r.main, &["branch", "c/z"]);
+    let side = r.root.join("side");
+    r.git(
+        &r.main,
+        &["worktree", "add", "-q", side.to_str().unwrap(), "b/y"],
+    );
+    std::fs::write(side.join(".5w.toml"), &cfg).unwrap();
+    r.git(&side, &["commit", "--no-verify", "-qam", "fix the config"]);
+    r.git(&side, &["checkout", "-q", "c/z"]);
+    r.commit_in(&side, "code.txt", "x\n");
+    let forge = r.root.join("forge.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            forge.to_str().unwrap(),
+        ],
+    );
+    let ci = ci_clone(&r, &forge, "ci");
+    let push = |to: &str, b: &str| {
+        r.cli(
+            &ci,
+            &[
+                "ci",
+                "--ref",
+                to,
+                "--base",
+                "origin/main",
+                "--head",
+                &format!("origin/{b}"),
+            ],
+        )
+    };
+
+    // The repair pushed onto the trunk the config was read from is judged, and passes.
+    let o = push("refs/heads/main", "b/y");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        o.status.success() && err.contains("main's .5w.toml is unreadable; this push repairs it"),
+        "{err}"
+    );
+    // Plain code onto it is refused, naming that trunk, not the one the break names.
+    let o = push("refs/heads/main", "c/z");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success()
+            && err.contains("main's .5w.toml is unreadable")
+            && err.contains("push a commit that fixes .5w.toml to main")
+            && !err.contains("to x"),
+        "{err}"
+    );
+    // The repair pushed to the name the break gives is no trunk push: refused.
+    let o = push("refs/heads/x", "b/y");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("push a commit that fixes .5w.toml to main"),
+        "{err}"
+    );
+    // A change request of plain code names that trunk too.
+    let o = r.cli(&ci, &["ci", "--branch", "c/z", "--head", "origin/c/z"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success()
+            && err.contains("fix .5w.toml on c/z, or push a commit that fixes it to main"),
+        "{err}"
+    );
+
+    // Judged as a push onto that trunk, the repair of a gated trunk needs a landing.
+    let gated = broken.replace("gate_trunk = false", "gate_trunk = true");
+    assert_ne!(gated, broken);
+    std::fs::write(r.main.join(".5w.toml"), &gated).unwrap();
+    r.git(
+        &r.main,
+        &["commit", "--no-verify", "-qam", "gate, still broken"],
+    );
+    r.git(&r.main, &["branch", "d/w"]);
+    r.git(&side, &["checkout", "-q", "d/w"]);
+    std::fs::write(side.join(".5w.toml"), &cfg).unwrap();
+    r.git(
+        &side,
+        &["commit", "--no-verify", "-qam", "repair and ungate"],
+    );
+    let fp = forge.to_str().unwrap();
+    r.git(&r.main, &["push", "-q", fp, "main", "d/w"]);
+    r.git(
+        &ci,
+        &[
+            "fetch",
+            "-q",
+            "origin",
+            "+main:main",
+            "d/w:refs/remotes/origin/d/w",
+        ],
+    );
+    let o = push("refs/heads/main", "d/w");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success()
+            && err.contains("this push repairs it")
+            && err.contains("no landing record covers"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_ci_clone_reads_an_archive_renamed_in_place_at_the_trunk_it_checks_against() {
     let r = Repo::new("config-archive-in-place-ci");
     // The archive was once OLD.md: a clone whose main stayed there reads that name.

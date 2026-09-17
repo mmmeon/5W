@@ -513,7 +513,9 @@ config that parses (or none) runs the ship check under that config, with the tru
 archive and commit prefix as above, and `require_task` read from the trunk like `gate_trunk` (on,
 unless the trunk's config says `false`) — so the change request that repairs the config can pass
 its required check, and one that renames the queue or drops `require_task` gains nothing. Any
-other `--branch` is refused naming the fix: fix `.5w.toml` on the branch, or on the trunk. `--event
+other `--branch` is refused naming the fix: fix `.5w.toml` on the branch, or on the trunk. Off a
+server, that trunk — for a push job's `--ref` too — is the branch the config was read from, not one
+the break names. `--event
 submit|accept` stays refused until the trunk is repaired: an event writes the queue with every
 setting but those few at its default, and a server whose `5w ci` guards the trunk refuses the queue
 commit anyway, as a push that does not repair it.

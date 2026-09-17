@@ -158,7 +158,10 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     let repaired;
     let repo = match &repo.broken {
         Some(err) if !zeros(&head) => {
-            let onto = refname.as_deref() == Some(format!("refs/heads/{}", repo.trunk).as_str());
+            // Off a server, the trunk is the one the config was read from: the name
+            // the break gives may be no branch at all. A server keeps its own trunk.
+            let read = read_trunk(repo);
+            let onto = refname.as_deref() == Some(format!("refs/heads/{read}").as_str());
             // A tip that is not there is the fix to name, not the config.
             let h = head.as_deref().unwrap_or("HEAD");
             let tip = git::rev(p, h).ok_or_else(|| {
@@ -206,7 +209,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 primary: repo.primary.clone(),
                 common: repo.common.clone(),
                 cfg,
-                trunk: repo.trunk.clone(),
+                trunk: read.to_string(),
                 bare: repo.bare,
                 pin: repo.pin.clone(),
                 broken: None,
@@ -443,12 +446,24 @@ fn unreadable(repo: &Repo, err: &str, branch: Option<&str>) -> String {
     } else if let Some(b) = branch {
         format!(
             "fix .5w.toml on {b}, or push a commit that fixes it to {}",
-            repo.trunk
+            read_trunk(repo)
         )
     } else {
-        format!("push a commit that fixes .5w.toml to {}", repo.trunk)
+        format!("push a commit that fixes .5w.toml to {}", read_trunk(repo))
     };
-    format!("{}'s .5w.toml is unreadable — {err} — {fix}", repo.trunk)
+    format!(
+        "{}'s .5w.toml is unreadable — {err} — {fix}",
+        read_trunk(repo)
+    )
+}
+
+/// The trunk a broken config is judged on: off a server, the one it was read
+/// from; on one, the trunk the server resolves (its pin, or the name read).
+fn read_trunk(repo: &Repo) -> &str {
+    match &repo.broken_at {
+        Some((t, _)) if !repo.bare => t,
+        _ => &repo.trunk,
+    }
 }
 
 /// A commit of the pushed span: its tree, parents and subject.
