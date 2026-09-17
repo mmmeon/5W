@@ -700,36 +700,61 @@ fn committed_trunk(p: &std::path::Path, commit: Option<&str>) -> Option<String> 
 /// with the repair, as a checkout's reads refuse it (store: `no_archive`). The
 /// names here are the trunk's, even under a pushed config that parses.
 fn archive_at(repo: &Repo, rev: &str, tip: Option<&str>) -> Res<String> {
-    let (p, file) = (&repo.primary, crate::store::CONFIG_FILE);
-    let new = &repo.cfg.archive;
+    let p = &repo.primary;
+    let names = tip.map(|t| trunk_config(p, t));
+    let new = names
+        .as_ref()
+        .map_or(&repo.cfg.archive, |(c, _)| &c.archive);
     if let Some(a) = git::opt(p, &["show", &format!("{rev}:{new}")]) {
         return Ok(a);
     }
-    let Some(tip) = tip else {
-        return Ok(String::new());
-    };
-    let Some(text) = git::opt(p, &["show", &format!("{tip}:{file}")]) else {
-        return Ok(String::new());
-    };
-    let Err(e) = crate::config::Config::from_toml(&text) else {
+    let (Some(tip), Some((broken, Some(e)))) = (tip, names) else {
         return Ok(String::new());
     };
     // Whether `rev` still holds the old archive; the names are those `tip`'s broken
     // config gives (`store::restore_fix`), as a checkout's reads name them, on the
     // trunk they were read on.
-    let broken = crate::store::broken_names(p, &text, Some(tip));
     let t = repo.broken_at.as_ref().map_or(&repo.trunk, |(t, _)| t);
     let at_rev = crate::store::last_accepted_config(p, tip).is_some_and(|c| {
         c.archive != broken.archive
             && git::ok(p, &["cat-file", "-e", &format!("{rev}:{}", c.archive)])
     });
     let gate = || setting_on(p, Some(tip), "gate_trunk");
+    let e = e.as_str();
     match at_rev
-        .then(|| crate::store::restore_fix(p, t, tip, &broken, gate(), &e, "archive"))
+        .then(|| crate::store::restore_fix(p, t, tip, &broken, gate(), e, "archive"))
         .flatten()
     {
         Some(fix) => bail!("{fix}"),
         None => Ok(String::new()),
+    }
+}
+
+/// The queue file, archive and `require_task` trunk commit `tip` gives, as its gate
+/// reads them: its config where it parses; over a broken one (its error given),
+/// the names it says (`store::broken_names`) and `require_task` failing closed;
+/// with none, the defaults. Never a local branch's or the working tree's config.
+fn trunk_config(p: &std::path::Path, tip: &str) -> (crate::config::Config, Option<String>) {
+    use crate::config::Config;
+    let Some(text) = git::opt(
+        p,
+        &["show", &format!("{tip}:{}", crate::store::CONFIG_FILE)],
+    ) else {
+        return (Config::default(), None);
+    };
+    match Config::from_toml(&text) {
+        Ok(c) => (c, None),
+        Err(e) => {
+            let names = crate::store::broken_names(p, &text, Some(tip));
+            let require_task = setting_on(p, Some(tip), "require_task");
+            (
+                Config {
+                    require_task,
+                    ..names
+                },
+                Some(e),
+            )
+        }
     }
 }
 
@@ -838,8 +863,11 @@ fn ship_check(
     out: &mut Vec<String>,
 ) -> Res<()> {
     let p = &repo.primary;
+    // The queue as the trunk checked against names it, not as a stale local
+    // trunk or the branch's own checkout does.
+    let (cfg, _) = trunk_config(p, trunk);
     // A link's blob is its target's path, which parses as an empty queue.
-    let links: Vec<_> = [&repo.cfg.file, &repo.cfg.archive]
+    let links: Vec<_> = [&cfg.file, &cfg.archive]
         .into_iter()
         .filter(|f| {
             git::opt(p, &["ls-tree", "--full-tree", trunk, "--", f])
@@ -863,13 +891,13 @@ fn ship_check(
             return Ok(());
         }
     };
-    let rows: Vec<_> = queue::parse(&show(&repo.cfg.file))
+    let rows: Vec<_> = queue::parse(&show(&cfg.file))
         .into_iter()
         .chain(queue::parse(&archive))
         .filter(|t| t.branch.as_deref() == Some(branch))
         .collect();
     if rows.is_empty() {
-        if repo.cfg.require_task {
+        if cfg.require_task {
             out.push(format!(
                 "{branch}: no task names it, and require_task is on"
             ));

@@ -7474,6 +7474,130 @@ fn the_server_names_an_archive_renamed_in_place_not_the_task() {
 }
 
 #[test]
+fn a_ci_check_reads_the_queue_and_require_task_at_the_trunk_it_checks_against() {
+    let r = Repo::new("ci-stale-trunk-config");
+    // Once the queue was OLDQ.md, the archive OLD.md, and no task was required.
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("file = \"TASKS.md\"") && cfg.contains("require_task = false"));
+    r.git(&r.main, &["mv", "TASKS.md", "OLDQ.md"]);
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        cfg.replace("file = \"TASKS.md\"", "file = \"OLDQ.md\"")
+            .replace("archive = \"DONE.md\"", "archive = \"OLD.md\""),
+    )
+    .unwrap();
+    r.git(&r.main, &["commit", "-qam", "queue in OLDQ.md"]);
+    let stale = r.git(&r.main, &["rev-parse", "HEAD"]);
+    r.git(&r.main, &["mv", "OLDQ.md", "TASKS.md"]);
+    let required = cfg.replace("require_task = false", "require_task = true");
+    std::fs::write(r.main.join(".5w.toml"), &required).unwrap();
+    r.git(
+        &r.main,
+        &["commit", "-qam", "queue in TASKS.md, tasks required"],
+    );
+    let trunk = r.git(&r.main, &["rev-parse", "HEAD"]);
+    // b/y is submitted, not accepted; c/z, which no task names, turns require_task off.
+    r.ok(&r.main, &["add", "y", "branch:b/y"]);
+    r.ok(&r.main, &["wt", "new", "b/y"]);
+    r.commit_in(&r.wt("b/y"), "y.txt", "y\n");
+    r.ok(&r.main, &["submit", "1", "b/y"]);
+    r.git(&r.main, &["branch", "c/z", &trunk]);
+    let side = r.root.join("side");
+    r.git(
+        &r.main,
+        &["worktree", "add", "-q", side.to_str().unwrap(), "c/z"],
+    );
+    r.commit_in(&side, ".5w.toml", &cfg);
+    let tip = r.git(&r.main, &["rev-parse", "HEAD"]);
+    let forge = r.root.join("forge.git");
+    let fp = forge.to_str().unwrap();
+    r.git(
+        &r.root,
+        &["clone", "-q", "--bare", r.main.to_str().unwrap(), fp],
+    );
+    let clone = |name: &str, at: &str| {
+        let dir = r.root.join(name);
+        r.git(&r.root, &["clone", "-q", fp, dir.to_str().unwrap()]);
+        r.git(&dir, &["checkout", "-q", "--detach", at]);
+        dir
+    };
+    let refused = |dir: &Path, b: &str, trunk: &str| {
+        let o = r.cli(
+            dir,
+            &[
+                "ci",
+                "--branch",
+                b,
+                "--head",
+                &format!("origin/{b}"),
+                "--trunk",
+                trunk,
+            ],
+        );
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(!o.status.success(), "{b} at {trunk}: {out}");
+        out
+    };
+    let unaccepted = |out: &str| out.contains("#1: not accepted yet");
+    let unnamed = |out: &str| out.contains("c/z: no task names it, and require_task is on");
+
+    // A persistent clone whose local main stayed at the old config: --trunk speaks.
+    let ci = clone("ci", "origin/b/y");
+    r.git(&ci, &["update-ref", "refs/heads/main", &stale]);
+    let out = refused(&ci, "b/y", "origin/main");
+    assert!(unaccepted(&out), "{out}");
+    r.git(&ci, &["checkout", "-q", "--detach", "origin/c/z"]);
+    let out = refused(&ci, "c/z", "origin/main");
+    assert!(unnamed(&out), "{out}");
+
+    // A clone with no main at all, checked against a sha: not the branch's own config.
+    let bare = clone("ci-sha", "origin/c/z");
+    for gone in [
+        "refs/heads/main",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ] {
+        r.git(&bare, &["update-ref", "-d", "--no-deref", gone]);
+    }
+    let out = refused(&bare, "c/z", &tip);
+    assert!(unnamed(&out), "{out}");
+    let out = refused(&bare, "b/y", &tip);
+    assert!(unaccepted(&out), "{out}");
+
+    // Accepted and archived, b/y passes: its row is read from the trunk's archive.
+    r.ok(&r.main, &["accept", "1"]);
+    r.ok(&r.main, &["archive"]);
+    r.git(&r.main, &["push", "-q", fp, "main"]);
+    r.git(&ci, &["fetch", "-q", "origin"]);
+    r.git(&ci, &["checkout", "-q", "--detach", "origin/b/y"]);
+    let o = r.cli(
+        &ci,
+        &[
+            "ci",
+            "--branch",
+            "b/y",
+            "--head",
+            "origin/b/y",
+            "--trunk",
+            "origin/main",
+        ],
+    );
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(
+        o.status.success() && out.contains("#1 accepted at"),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_ci_clone_reads_an_archive_renamed_in_place_at_the_trunk_it_checks_against() {
     let r = Repo::new("config-archive-in-place-ci");
     // The archive was once OLD.md: a clone whose main stayed there reads that name.

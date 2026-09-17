@@ -412,8 +412,9 @@ refused, not read as an empty range that passes having checked nothing, or as a 
 queue that passes an unreviewed branch (`accept --at` and `audit --since` refuse it too). Without
 `--trunk`, the trunk is `refs/heads/<trunk>`, else `refs/remotes/origin/<trunk>` — over a broken
 trunk config, the tip of the branch it was read from (the pin, or the branch guessed for it), not a
-trunk it names. Whether that trunk's config broke and renamed the archive in place is read at that
-commit, not at a local branch that may be stale.
+trunk it names. The queue file, archive and `require_task` a `--branch` check reads are that
+commit's (a broken one's names, with `require_task` on unless it says `false`), not a stale local
+branch's or the checkout's own `.5w.toml`, as is whether its config broke renaming the archive in place.
 
 | Where                                                                           | How                                                                                                                                                                                                                                  |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
