@@ -17,7 +17,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #2 Create the report label on mmmeon/5W so 5w report send can apply it @report !1 >restricted
 - [ ] #3 Release 0.1.3: queue commits and squashes signed when the repository signs @release !1 >restricted
 - [ ] #8 Run the aarch64 release binary on real arm64 hardware @release !1 >manual
-- [~] #9 self-update and version --latest: opt-in, the pinned version by default, checksums and signature verified @upkeep !2 rework:"any text signed by the embedded key passes as SHA256SUMS (a signed commit message installed an arbitrary binary): parse sums strictly, pin the release fingerprint, reject bad/expired/revoked/multiple signatures; gate FIVEW_RELEASE_KEY; pass the URL safely with size/time limits; stop test leaks" branch:upkeep/task-9 submitted:c02d6dee354b
 - [ ] #10 Forge events as queue transitions: a change request submits, an approving review accepts, from a CI job @ci !3
 - [ ] #11 Gate code pushed straight to the trunk: record the landed range at ship so pre-receive can match it to a review @ci !4
 - [ ] #16 Move git calls behind named operations in src/git.rs: no raw git argv outside it, output unchanged @vcs !3
@@ -117,3 +116,4 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [x] #19 Batch accept (accept 4 5 6) and ship --accepted: land every accepted branch bottom of stack first @queue !2 branch:queue/task-19 submitted:cb26ea1932e4 via:review reviewed:cb26ea1932e4
   stop at the first refusal
   A supervisor round of 8 accepted tasks meant 8 accepts and 8 ships with the stack order (#12 before #13, #14 before #15) worked out by hand. Each accept keeps its own checks; ship --accepted keeps every ship refusal.
+- [x] #9 self-update and version --latest: opt-in, the pinned version by default, checksums and signature verified @upkeep !2 branch:upkeep/task-9 submitted:c02d6dee354b via:review reviewed:c02d6dee354b
