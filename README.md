@@ -428,6 +428,16 @@ broken config naming a trunk an unpinned server has no branch for names the pin 
 the hook: `5w hook install pre-receive` notes the broken config and that only the repair will be
 accepted (`5w hook install` in a checkout still refuses — fix the file there).
 
+A forge's check is judged the same way: `5w ci --branch` on a change request whose head commits a
+config that parses (or none) runs the ship check under that config, with the trunk's queue file,
+archive and commit prefix as above, and `require_task` read from the trunk like `gate_trunk` (on,
+unless the trunk's config says `false`) — so the change request that repairs the config can pass
+its required check, and one that renames the queue or drops `require_task` gains nothing. Any
+other `--branch` is refused naming the fix: fix `.5w.toml` on the branch, or on the trunk. `--event
+submit|accept` stays refused until the trunk is repaired: an event writes the queue with every
+setting but those few at its default, and a server whose `5w ci` guards the trunk refuses the queue
+commit anyway, as a push that does not repair it.
+
 The wrappers install exactly the version the project pins (see *Staying current*), verified —
 [ci/install-5w.sh](ci/install-5w.sh), inlined.
 

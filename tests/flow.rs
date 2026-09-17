@@ -5948,6 +5948,104 @@ fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
 }
 
 #[test]
+fn a_change_request_repairing_a_broken_trunk_config_passes_its_branch_check() {
+    let r = Repo::new("config-bricked-pr");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+        .unwrap()
+        .replace("require_task = false", "require_task = true");
+    assert!(cfg.contains("require_task = true") && cfg.contains("file = \"TASKS.md\""));
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "require a task"]);
+    r.ok(&r.main, &["add", "fix the config", "branch:a/x"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let fix = r.wt("a/x");
+    let broken = cfg.replace("[sections]\n", "[sections]\ntrunk = \"main\"\n");
+    std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+    r.git(&r.main, &["commit", "-qam", "break the config"]);
+    r.git(&fix, &["merge", "-q", "--ff-only", "main"]);
+    r.commit_in(&fix, ".5w.toml", &cfg);
+    // Two more change requests off the broken trunk: plain code, and a repair that
+    // renames the queue and drops require_task to edit the queue unseen.
+    r.git(&r.main, &["branch", "b/y"]);
+    r.git(&r.main, &["branch", "c/z"]);
+    let side = r.root.join("side");
+    r.git(
+        &r.main,
+        &["worktree", "add", "-q", side.to_str().unwrap(), "b/y"],
+    );
+    r.commit_in(&side, "code.txt", "x\n");
+    r.git(&side, &["checkout", "-q", "c/z"]);
+    let tasks = std::fs::read_to_string(side.join("TASKS.md")).unwrap();
+    assert!(tasks.contains("- [ ] #1"), "{tasks}");
+    std::fs::write(side.join("TASKS.md"), tasks.replace("- [ ] #1", "- [x] #1")).unwrap();
+    std::fs::write(
+        side.join(".5w.toml"),
+        cfg.replace("file = \"TASKS.md\"", "file = \"Q.md\"")
+            .replace("require_task = true", "require_task = false"),
+    )
+    .unwrap();
+    r.git(
+        &side,
+        &["commit", "-qam", "repair, and call the queue Q.md"],
+    );
+
+    let forge = r.root.join("forge.git");
+    let fp = forge.to_str().unwrap();
+    r.git(
+        &r.root,
+        &["clone", "-q", "--bare", r.main.to_str().unwrap(), fp],
+    );
+    let ci = ci_clone(&r, &forge, "ci");
+    let run = |b: &str| {
+        let o = r.cli(
+            &ci,
+            &["ci", "--branch", b, "--head", &format!("origin/{b}")],
+        );
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        (o.status.success(), out)
+    };
+
+    // The repair is judged, not refused: its task is not accepted yet.
+    let (ok, out) = run("a/x");
+    assert!(!ok && out.contains("not accepted yet"), "{out}");
+    // Plain code is refused in one line, naming the fix.
+    let err = r.refuses(&ci, &["ci", "--branch", "b/y", "--head", "origin/b/y"]);
+    assert!(
+        err.contains("unknown key sections.trunk")
+            && err.contains("fix .5w.toml on b/y, or push a commit that fixes it to main"),
+        "{err}"
+    );
+    // So is an event: it would commit to a trunk no 5w can read.
+    let err = r.refuses(&ci, &["ci", "--event", "submit", "--branch", "a/x"]);
+    assert!(err.contains("unknown key sections.trunk"), "{err}");
+    // A repair renaming the queue is told by the trunk's names and require_task.
+    let (ok, out) = run("c/z");
+    assert!(
+        !ok && out.contains("queue edits go on main")
+            && out.contains("c/z: no task names it, and require_task is on"),
+        "{out}"
+    );
+
+    // Accepted (the queue commit written as a working 5w would), the repair passes.
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    r.ok(&r.main, &["submit", "1", "a/x"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.git(&r.main, &["checkout", "--", ".5w.toml"]);
+    assert_eq!(
+        r.git(&r.main, &["show", "main:.5w.toml"]).trim(),
+        broken.trim()
+    );
+    r.git(&r.main, &["push", "-q", fp, "main"]);
+    r.git(&ci, &["fetch", "-q", "origin", "+main:main"]);
+    let (ok, out) = run("a/x");
+    assert!(ok && out.contains("#1 accepted at"), "{out}");
+}
+
+#[test]
 fn gate_trunk_given_twice_reads_as_the_last() {
     let r = Repo::new("gate-twice");
     let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();

@@ -71,7 +71,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     }
     if let Some(e) = event {
         if let Some(err) = &repo.broken {
-            return Err(unreadable(repo, err));
+            return Err(unreadable(repo, err, None));
         }
         if base.is_some() || refname.is_some() || trunk_ref.is_some() {
             bail!("--event takes --branch, --head, --at and --task, not --base, --ref or --trunk");
@@ -115,16 +115,29 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         }
         None => None,
     };
+    // The trunk as a plain sha: a bad --trunk would read an empty queue.
+    let trunk_ref = match trunk_ref {
+        Some(t) => Some(git::rev(p, &t).ok_or_else(|| {
+            format!("ci: --trunk {t} is not a commit — pass a branch, tag or sha")
+        })?),
+        None => [
+            format!("refs/heads/{}", repo.trunk),
+            format!("refs/remotes/origin/{}", repo.trunk),
+        ]
+        .into_iter()
+        .find_map(|r| git::rev(p, &r)),
+    };
     // A trunk whose config does not parse would refuse every push, the fix too:
-    // judge a trunk push whose tip commits a config that parses under that config
-    // (the gate reads each commit's own, unreadable as on); refuse the rest.
+    // judge a trunk push, or a change request, whose tip commits a config that
+    // parses under that config (the gate reads each commit's own, unreadable as
+    // on; require_task the trunk's, likewise); refuse the rest.
     let zeros = |r: &Option<String>| r.as_ref().is_some_and(|r| r.bytes().all(|c| c == b'0'));
     let repaired;
     let repo = match &repo.broken {
         Some(err) if !zeros(&head) => {
             let onto = refname.as_deref() == Some(format!("refs/heads/{}", repo.trunk).as_str());
             let tip = git::rev(p, head.as_deref().unwrap_or("HEAD"));
-            let cfg = match tip.filter(|_| onto) {
+            let cfg = match tip.filter(|_| onto || branch.is_some()) {
                 Some(t) => {
                     match git::opt(p, &["show", &format!("{t}:{}", crate::store::CONFIG_FILE)]) {
                         Some(text) => crate::config::Config::from_toml(&text).ok(),
@@ -134,16 +147,19 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 None => None,
             };
             let Some(mut cfg) = cfg else {
-                return Err(unreadable(repo, err));
+                return Err(unreadable(repo, err, branch.as_deref()));
             };
             // Queue edits and landings are told by the names the trunk had, never
             // by the pushed config: a repair naming code its queue would ungate it.
             cfg.file = repo.cfg.file.clone();
             cfg.archive = repo.cfg.archive.clone();
             cfg.commit_prefix = repo.cfg.commit_prefix.clone();
+            // Nor may a change request's config drop the review its check asks for.
+            cfg.require_task = setting_on(p, trunk_ref.as_deref(), "require_task");
             eprintln!(
-                "5w ci: {}'s .5w.toml is unreadable; this push repairs it and is judged under the one it commits",
-                repo.trunk
+                "5w ci: {}'s .5w.toml is unreadable; this {} repairs it and is judged under the one it commits",
+                repo.trunk,
+                if onto { "push" } else { "change request" }
             );
             repaired = Repo {
                 cwd: repo.cwd.clone(),
@@ -193,18 +209,6 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             gated.then_some(h)
         }
         None => None,
-    };
-    // The trunk as a plain sha: a bad --trunk would read an empty queue.
-    let trunk_ref = match trunk_ref {
-        Some(t) => Some(git::rev(p, &t).ok_or_else(|| {
-            format!("ci: --trunk {t} is not a commit — pass a branch, tag or sha")
-        })?),
-        None => [
-            format!("refs/heads/{}", repo.trunk),
-            format!("refs/remotes/origin/{}", repo.trunk),
-        ]
-        .into_iter()
-        .find_map(|r| git::rev(p, &r)),
     };
     if zeros(&head) {
         // A deletion carries no commits. Under the gate the trunk's is refused: a
@@ -377,7 +381,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
 }
 
 /// The refusal on a repository whose trunk config does not parse, naming the fix.
-fn unreadable(repo: &Repo, err: &str) -> String {
+fn unreadable(repo: &Repo, err: &str, branch: Option<&str>) -> String {
     let fix = if err.contains("requires 5w") {
         format!(
             "upgrade 5w{}",
@@ -391,6 +395,11 @@ fn unreadable(repo: &Repo, err: &str) -> String {
         let head = crate::store::head_branch(&repo.primary).unwrap_or_else(|| "<name>".into());
         format!(
             "it names trunk {}, which this server has no branch for: `git config 5w.trunk {head}`, then push a commit that fixes .5w.toml to {head}",
+            repo.trunk
+        )
+    } else if let Some(b) = branch {
+        format!(
+            "fix .5w.toml on {b}, or push a commit that fixes it to {}",
             repo.trunk
         )
     } else {
@@ -542,22 +551,7 @@ fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> 
         &[],
         Some(&input),
     )?;
-    // None: the text does not parse.
-    let read = |text: &str| -> Option<bool> {
-        let kv = crate::config::parse_toml(text).ok()?;
-        // The last `gate_trunk`, as the config reads a key given twice.
-        let says = |b: bool| {
-            kv.iter()
-                .rev()
-                .find(|(k, _)| k == "gate_trunk")
-                .is_some_and(|(_, v)| matches!(v, crate::config::Val::Bool(x) if *x == b))
-        };
-        Some(if crate::config::Config::from_toml(text).is_ok() {
-            says(true)
-        } else {
-            !says(false)
-        })
-    };
+    let read = |text: &str| says_on(text, "gate_trunk");
     let mut blobs: HashMap<String, Option<bool>> = HashMap::new();
     for (c, l) in commits.iter().zip(o.stdout.lines()) {
         let setting = match l.split_once(' ') {
@@ -583,6 +577,38 @@ fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> 
         on.insert(c.clone(), setting);
     }
     Ok(on)
+}
+
+/// Whether a config text turns a boolean `key` on, failing closed: a config the
+/// parser reads but rejects counts as on unless it says false. None: the text
+/// does not parse.
+fn says_on(text: &str, key: &str) -> Option<bool> {
+    let kv = crate::config::parse_toml(text).ok()?;
+    // The last one, as the config reads a key given twice.
+    let says = |b: bool| {
+        kv.iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .is_some_and(|(_, v)| matches!(v, crate::config::Val::Bool(x) if *x == b))
+    };
+    Some(if crate::config::Config::from_toml(text).is_ok() {
+        says(true)
+    } else {
+        !says(false)
+    })
+}
+
+/// A boolean `key` as `commit`'s config says it, read as `gate_settings` reads
+/// `gate_trunk`: text that does not parse by the newest config on its first-parent
+/// line that does, on when none does or there is no commit.
+fn setting_on(p: &std::path::Path, commit: Option<&str>, key: &str) -> bool {
+    let Some(c) = commit else { return true };
+    match git::opt(p, &["show", &format!("{c}:{}", crate::store::CONFIG_FILE)]) {
+        Some(text) => says_on(&text, key)
+            .or_else(|| crate::store::last_readable_config(p, c).and_then(|t| says_on(&t, key)))
+            .unwrap_or(true),
+        None => false,
+    }
 }
 
 /// The `trunk` a commit's `.5w.toml` names, read as the config reads it.
