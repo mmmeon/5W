@@ -1043,11 +1043,36 @@ fn init_takes_the_checked_out_branch_as_the_trunk() {
             .starts_with("chore(tasks)")
     );
     assert!(r.tasks().contains("x"));
+    // Recorded in git config, so a primary checkout without .5w.toml still finds it.
+    assert!(out.contains("git config 5w.trunk master"), "{out}");
+    assert_eq!(r.git(&r.main, &["config", "5w.trunk"]), "master");
+    let first = r.git(&r.main, &["rev-list", "--max-parents=0", "HEAD"]);
+    r.git(&r.main, &["switch", "-q", "-c", "old", &first]);
+    r.ok(&r.main, &["add", "y"]);
+    assert!(r.git(&r.main, &["show", "master:TASKS.md"]).contains("y"));
 
     let m = Repo::uninit("init-main", "main");
-    assert!(m.ok(&m.main, &["init"]).contains("committed on main"));
+    let out = m.ok(&m.main, &["init"]);
+    assert!(out.contains("committed on main"), "{out}");
+    assert!(!out.contains("5w.trunk"), "{out}");
     let cfg = std::fs::read_to_string(m.main.join(".5w.toml")).unwrap();
     assert!(cfg.contains("trunk = \"main\""), "{cfg}");
+    assert_eq!(
+        m.git(&m.main, &["config", "--default", "-", "5w.trunk"]),
+        "-"
+    );
+
+    // From a linked worktree on a feature branch: the primary's branch is the trunk.
+    let w = Repo::uninit("init-linked", "master");
+    let side = w.root.join("side");
+    w.git(
+        &w.main,
+        &["worktree", "add", "-q", "-b", "f/y", side.to_str().unwrap()],
+    );
+    let out = w.ok(&side, &["init"]);
+    assert!(out.contains("committed on master"), "{out}");
+    let cfg = std::fs::read_to_string(w.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("trunk = \"master\""), "{cfg}");
 }
 
 #[test]
@@ -1074,6 +1099,42 @@ fn init_off_a_branch_takes_origin_head_and_refuses_a_feature_branch() {
     let cfg = std::fs::read_to_string(clone.join(".5w.toml")).unwrap();
     assert!(cfg.contains("trunk = \"master\""), "{cfg}\n{out}");
     assert!(out.contains("not on master"), "{out}");
+
+    // The remote renamed master to main: after a prune origin/HEAD still names
+    // origin/master, which no longer exists, and is ignored.
+    origin.git(&origin.main, &["branch", "-m", "master", "main"]);
+    let stale = |name: &str| {
+        let c = origin.root.join(name);
+        origin.git(
+            &origin.root,
+            &[
+                "clone",
+                "-q",
+                "--no-checkout",
+                origin.main.to_str().unwrap(),
+                c.to_str().unwrap(),
+            ],
+        );
+        origin.git(
+            &c,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/master",
+            ],
+        );
+        c
+    };
+    let on_main = stale("stale-main");
+    origin.git(&on_main, &["checkout", "-q", "main"]);
+    let out = origin.ok(&on_main, &["init"]);
+    assert!(out.contains("committed on main"), "{out}");
+    let detached = stale("stale-detached");
+    origin.git(&detached, &["checkout", "-q", "--detach", "origin/main"]);
+    origin.git(&detached, &["branch", "-D", "main"]);
+    let out = origin.ok(&detached, &["init"]);
+    let cfg = std::fs::read_to_string(detached.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("trunk = \"main\""), "{cfg}\n{out}");
 }
 
 #[test]

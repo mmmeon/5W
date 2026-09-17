@@ -165,6 +165,15 @@ fn dispatch(args: Vec<String>) -> Res<()> {
 /// the tool creates files rather than editing a line.
 fn init(repo: &Repo) -> Res<()> {
     let trunk = init_trunk(repo)?;
+    // Commands find a trunk other than main through this, wherever the primary
+    // worktree is checked out; `.5w.toml` alone is read only from main or the primary.
+    if !repo.bare
+        && trunk != "main"
+        && git::opt(&repo.primary, &["config", "5w.trunk"]).as_deref() != Some(trunk.as_str())
+    {
+        git::git(&repo.primary, &["config", "5w.trunk", &trunk])?;
+        println!("init: git config 5w.trunk {trunk}");
+    }
     let checkout = git::worktree_of(&repo.primary, &trunk)?;
     let p = checkout.as_ref().unwrap_or(&repo.primary);
     let mut created = Vec::new();
@@ -220,10 +229,12 @@ fn init(repo: &Repo) -> Res<()> {
 }
 
 /// The trunk `init` writes: one named already (`.5w.toml`, `FIVEW_TRUNK`,
-/// `5w.trunk`), else the branch checked out here, else what `origin/HEAD` or
-/// `git-town.main-branch` names, else `main`. A checked-out branch that one of
-/// those two contradicts is a feature branch, and the queue does not live there:
-/// refused, unless the trunk they name is checked out elsewhere to commit on.
+/// `5w.trunk`), else the branch the primary worktree has checked out, else what
+/// `origin/HEAD` or `git-town.main-branch` names, else `main`. Those two count
+/// only when the branch they name exists: a remote's rename leaves `origin/HEAD`
+/// pointing at a pruned branch. A checked-out branch they contradict is a feature
+/// branch, and the queue does not live there: refused, unless the trunk they name
+/// is checked out elsewhere to commit on.
 fn init_trunk(repo: &Repo) -> Res<String> {
     let named = repo.cfg.trunk.is_some()
         || std::env::var("FIVEW_TRUNK").is_ok()
@@ -231,22 +242,24 @@ fn init_trunk(repo: &Repo) -> Res<String> {
     if named || repo.bare {
         return Ok(repo.trunk.clone());
     }
-    let origin = git::opt(
-        &repo.cwd,
-        &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
-    )
-    .and_then(|r| r.strip_prefix("refs/remotes/origin/").map(String::from))
-    .filter(|b| !b.is_empty())
-    .map(|b| (b, "origin/HEAD"));
+    let p = &repo.primary;
+    let exists = |b: &String| {
+        git::rev(p, &format!("refs/heads/{b}")).is_some()
+            || git::rev(p, &format!("refs/remotes/origin/{b}")).is_some()
+    };
+    let origin = git::opt(p, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])
+        .and_then(|r| r.strip_prefix("refs/remotes/origin/").map(String::from))
+        .filter(|b| !b.is_empty() && exists(b))
+        .map(|b| (b, "origin/HEAD"));
     let other = origin.or_else(|| {
-        git::opt(&repo.cwd, &["config", "git-town.main-branch"])
-            .filter(|s| !s.is_empty())
+        git::opt(p, &["config", "git-town.main-branch"])
+            .filter(|b| !b.is_empty() && exists(b))
             .map(|b| (b, "git-town.main-branch"))
     });
-    Ok(match (store::head_branch(&repo.cwd), other) {
+    Ok(match (store::head_branch(p), other) {
         (Some(here), Some((there, _))) if here == there => here,
         (Some(here), Some((there, from))) => {
-            if git::worktree_of(&repo.primary, &there)?.is_none() {
+            if git::worktree_of(p, &there)?.is_none() {
                 return Err(format!(
                     "{here} is not the trunk ({from} names {there}) — `git switch {there}`, then `5w init`; or `git config 5w.trunk {here}`"
                 ));
