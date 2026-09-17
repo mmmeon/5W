@@ -149,10 +149,15 @@ symlink on the trunk rather than reading the link as an empty queue. A temporary
 git dir (`5w-write-<pid>-<n>-<file>`, `5w-index-<pid>`) is removed by the next write, under the lock. If the checkout cannot take a change the trunk already has
 (its `index.lock` held), the refusal names the rows committed and a fix that applies that commit's
 own diff to the working files and index, keeping anything else in them (`--3way` where a hand
-edit is in the way). Left so, the next write catches the checkout up first (`checkout caught up:
+edit is in the way); both index entries change in one `update-index`, so a failure leaves neither
+moved and that diff applies. Left so, the next write usually catches the checkout up first (`checkout caught up:
 #2`): where its index entries are a recent trunk commit's files exactly, the index takes the
 trunk's, and each working row changed since takes the trunk's version unless edited there by
-hand. Writers take a lock, so
+hand. Not after a repo's first archive: the checkout's queue still holds the rows the trunk's new
+archive has, so every command refuses on duplicate ids before a write can run, and that refusal
+names the same diff to apply. While the queue or archive is in conflict in the trunk checkout
+(unmerged, mid-merge), writes refuse until it is resolved and `git add`ed: one would collapse the
+conflict to a single entry and leave the markers in the file. Writers take a lock, so
 parallel `add`s mint distinct ids, and state checks read the committed queue under that lock — a
 hand-edited `[~]` in a working copy does not make a task acceptable. A command that names an
 uncommitted row commits it; `add` mints past uncommitted rows, so when a higher id is committed

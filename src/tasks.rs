@@ -185,6 +185,10 @@ impl<'a> Q<'a> {
             .map(|a| a.id)
             .collect();
         if !dup.is_empty() || !cross.is_empty() {
+            // Conflict markers hold both sides' rows: the conflict is the fix.
+            if let Some(w) = repo.trunk_checkout()? {
+                store::refuse_unmerged(repo, &w)?;
+            }
             let mut parts = Vec::new();
             for (id, a, b) in dup {
                 parts.push(format!("#{id} lines {a} and {b} of {}", repo.cfg.file));
@@ -195,8 +199,15 @@ impl<'a> Q<'a> {
                     repo.cfg.file, repo.cfg.archive
                 ));
             }
+            let missed = match store::missed_commit_fix(repo) {
+                Some(fix) => format!(
+                    "; the trunk checkout missed a commit to {}, and `{fix}` catches it up (add --3way to each apply where a hand edit is in the way)",
+                    repo.trunk
+                ),
+                None => String::new(),
+            };
             return Err(format!(
-                "duplicate ids — fix before anything else: {}",
+                "duplicate ids — fix before anything else: {}{missed}",
                 parts.join("; ")
             ));
         }

@@ -3091,6 +3091,80 @@ fn an_archive_whose_checkout_index_is_locked_says_it_committed_and_keeps_a_hand_
 }
 
 #[test]
+fn a_first_archive_the_checkout_missed_names_the_fix_in_the_duplicate_ids_refusal() {
+    let r = Repo::new("first-archive-behind");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    std::fs::write(r.main.join(".git/index.lock"), "").unwrap();
+    r.refuses(&r.main, &["archive"]);
+    std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
+
+    // The checkout still has #1 in its queue and no archive of its own, so every
+    // read sees #1 twice before any write could catch it up: the refusal names
+    // the diff that does.
+    let err = r.refuses(&r.main, &["ready"]);
+    assert!(
+        err.contains("duplicate ids") && err.contains("#1 in both TASKS.md and DONE.md"),
+        "{err}"
+    );
+    assert!(
+        err.contains("diff ") && err.contains("| git -C") && err.contains("apply --cached"),
+        "{err}"
+    );
+    follow_fix(&r, &err);
+    r.ok(&r.main, &["ready"]);
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    let done = std::fs::read_to_string(r.main.join("DONE.md")).unwrap();
+    assert!(done.contains("- [x] #1 first"), "{done}");
+}
+
+#[test]
+fn a_checkout_index_update_that_fails_changes_neither_queue_entry() {
+    let r = Repo::new("index-both-or-neither");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    // A git that refuses to stage the archive in the checkout's own index: an
+    // update of both entries that takes the queue's alone leaves #1 in neither.
+    let real = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8_lossy(&real.stdout).trim().to_string();
+    let dir = r.root.join("fake-git");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("git"),
+        format!(
+            "#!/bin/sh\n\
+             if [ -z \"$GIT_INDEX_FILE\" ]; then case \" $* \" in *\" update-index \"*)\n\
+             case \" $* \" in *\" --index-info \"*) in=$(cat)\n\
+             case $in in *DONE.md*) echo 'busy' >&2; exit 1;; esac\n\
+             printf '%s\\n' \"$in\" | exec {real} \"$@\";;\n\
+             *DONE.md*) echo 'busy' >&2; exit 1;; esac;; esac; fi\n\
+             exec {real} \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        dir.join("git"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let mut c = Command::new(bin5w());
+    c.args(["archive"]).current_dir(&r.main);
+    env(&mut c, &r.root);
+    c.env("PATH", format!("{}:{}", dir.display(), path_with_5w()));
+    let err = refusal(&c.output().unwrap(), &["archive"]);
+    assert!(err.contains("committed #1 to main"), "{err}");
+
+    // Neither entry moved, so the fix's diff applies to both.
+    follow_fix(&r, &err);
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+}
+
+#[test]
 fn a_write_after_a_locked_index_catches_the_checkout_up_to_the_trunk() {
     let r = Repo::new("catch-up");
     r.ok(&r.main, &["add", "first"]);
@@ -3167,6 +3241,57 @@ fn catching_the_checkout_up_leaves_a_row_edited_there_by_hand() {
         t.contains("- [ ] #1 first, reworded") && t.contains("#2 second"),
         "{t}"
     );
+}
+
+/// A trunk checkout mid-merge with TASKS.md in conflict: the side branch
+/// rewords #1, the trunk replaces its line with `ours`.
+fn queue_in_conflict(name: &str, ours: &str) -> Repo {
+    let r = Repo::new(name);
+    r.ok(&r.main, &["add", "first"]);
+    let side = r.root.join("side");
+    r.git(
+        &r.main,
+        &["worktree", "add", "-qb", "side", side.to_str().unwrap()],
+    );
+    let theirs = r
+        .tasks()
+        .replace("- [ ] #1 first\n", "- [ ] #1 first, theirs\n");
+    std::fs::write(side.join("TASKS.md"), theirs).unwrap();
+    r.git(&side, &["commit", "-qam", "theirs", "--no-verify"]);
+    let ours = r.tasks().replace("- [ ] #1 first\n", ours);
+    std::fs::write(r.main.join("TASKS.md"), ours).unwrap();
+    r.git(&r.main, &["commit", "-qam", "ours", "--no-verify"]);
+    let mut c = Command::new("git");
+    c.args(["merge", "-q", "side"]).current_dir(&r.main);
+    env(&mut c, &r.root);
+    assert!(!c.output().unwrap().status.success());
+    assert_ne!(r.git(&r.main, &["ls-files", "-u", "--", "TASKS.md"]), "");
+    r
+}
+
+fn is_conflict_refusal(err: &str) {
+    assert!(
+        err.starts_with("5w: TASKS.md has an unresolved conflict in ")
+            && err.ends_with("; resolve it (git add) first\n"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_queue_write_refuses_while_the_queue_has_an_unresolved_conflict() {
+    // Ours drops the row: the markers hold one #1, so reads pass.
+    let r = queue_in_conflict("queue-conflict", "");
+    let head = r.git(&r.main, &["rev-parse", "main"]);
+    // Taken as it is, the write would collapse the conflict's stages into one
+    // entry and leave the markers in the file.
+    is_conflict_refusal(&r.refuses(&r.main, &["add", "second"]));
+    assert_eq!(r.git(&r.main, &["rev-parse", "main"]), head);
+    assert_ne!(r.git(&r.main, &["ls-files", "-u", "--", "TASKS.md"]), "");
+    assert!(r.tasks().contains("<<<<<<<") && !r.tasks().contains("#2 second"));
+
+    // Both sides keep a #1: the conflict, not its duplicate, is what to fix.
+    let r = queue_in_conflict("queue-conflict-dup", "- [ ] #1 first, ours\n");
+    is_conflict_refusal(&r.refuses(&r.main, &["ready"]));
 }
 
 #[test]

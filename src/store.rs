@@ -362,6 +362,9 @@ fn begin(repo: &Repo) -> Res<(Lock, String, Option<PathBuf>, Copies, Copies)> {
         bail!("no trunk branch {}", repo.trunk)
     };
     let checkout = repo.trunk_checkout()?;
+    if let Some(w) = checkout.as_deref() {
+        refuse_unmerged(repo, w)?;
+    }
     for name in [&repo.cfg.file, &repo.cfg.archive] {
         refuse_link(repo, checkout.as_deref(), &old, name)?;
         if let Some(w) = checkout.as_deref() {
@@ -433,35 +436,12 @@ fn catch_up(
     {
         return Ok((q, a));
     }
-    // The nearest earlier trunk commit whose files the index holds.
-    let revs = git::opt(
-        &repo.primary,
-        &[
-            "rev-list",
-            "--first-parent",
-            &format!("--max-count={CATCH_UP_DEPTH}"),
-            &format!("{old}^"),
-        ],
-    )
-    .unwrap_or_default();
-    let query: String = revs
-        .lines()
-        .flat_map(|c| [format!("{c}:{}\n", q.name), format!("{c}:{}\n", a.name)])
-        .collect();
-    if query.is_empty() {
-        return Ok((q, a));
-    }
-    let o = git::raw(
-        &repo.primary,
-        &["cat-file", "--batch-check=%(objectname)"],
-        &[],
-        Some(&query),
-    )?;
-    let blob = |l: &str| (!l.ends_with(" missing")).then(|| l.to_string());
-    let lines: Vec<&str> = o.stdout.lines().collect();
-    let Some(seen) = lines
-        .chunks(2)
-        .find(|p| p.len() == 2 && blob(p[0]) == q.staged_blob && blob(p[1]) == a.staged_blob)
+    let Some((_, seen)) = held_commit(
+        repo,
+        old,
+        [&q.name, &a.name],
+        [&q.staged_blob, &a.staged_blob],
+    )?
     else {
         return Ok((q, a));
     };
@@ -471,7 +451,8 @@ fn catch_up(
             None => String::new(),
         })
     };
-    let (sq, sa) = (text(blob(seen[0]))?, text(blob(seen[1]))?);
+    let [bq, ba] = seen;
+    let (sq, sa) = (text(bq)?, text(ba)?);
     // Per file, so a row moving between them counts.
     let mut ids = rows_changed([&sq, ""], [&q.committed, ""]);
     ids.extend(rows_changed(["", &sa], ["", &a.committed]));
@@ -520,20 +501,12 @@ fn catch_up(
                 .finish()
                 .map_err(|(e, _)| e)?;
         }
-        for c in [&q, &a] {
-            if let (Some(b), true) = (&c.old_blob, c.staged_blob != c.old_blob) {
-                git::git(
-                    w,
-                    &[
-                        "update-index",
-                        "--add",
-                        "--cacheinfo",
-                        &format!("100644,{b},{}", c.name),
-                    ],
-                )?;
-            }
-        }
-        Ok(())
+        let entries: Vec<(&str, &str)> = [&q, &a]
+            .into_iter()
+            .filter(|c| c.staged_blob != c.old_blob)
+            .filter_map(|c| Some((c.name.as_str(), c.old_blob.as_deref()?)))
+            .collect();
+        update_index(w, &entries)
     })();
     if healed.is_ok() {
         let rows: Vec<String> = ids.iter().map(|id| format!("#{id}")).collect();
@@ -545,6 +518,116 @@ fn catch_up(
     ))
 }
 
+/// The nearest earlier trunk commit, within `CATCH_UP_DEPTH` of `old` along its
+/// first parents, whose blobs at `names` are exactly `staged` (`None`: the
+/// commit lacks the file): the commit and its blobs.
+fn held_commit(
+    repo: &Repo,
+    old: &str,
+    names: [&str; 2],
+    staged: [&Option<String>; 2],
+) -> Res<Option<(String, [Option<String>; 2])>> {
+    let revs = git::opt(
+        &repo.primary,
+        &[
+            "rev-list",
+            "--first-parent",
+            &format!("--max-count={CATCH_UP_DEPTH}"),
+            &format!("{old}^"),
+        ],
+    )
+    .unwrap_or_default();
+    let query: String = revs
+        .lines()
+        .flat_map(|c| names.map(|n| format!("{c}:{n}\n")))
+        .collect();
+    if query.is_empty() {
+        return Ok(None);
+    }
+    let o = git::raw(
+        &repo.primary,
+        &["cat-file", "--batch-check=%(objectname)"],
+        &[],
+        Some(&query),
+    )?;
+    let blob = |l: &str| (!l.ends_with(" missing")).then(|| l.to_string());
+    let lines: Vec<&str> = o.stdout.lines().collect();
+    Ok(lines
+        .chunks(2)
+        .zip(revs.lines())
+        .find(|(p, _)| p.len() == 2 && &blob(p[0]) == staged[0] && &blob(p[1]) == staged[1])
+        .map(|(p, c)| (c.to_string(), [blob(p[0]), blob(p[1])])))
+}
+
+/// Where the trunk checkout missed a trunk commit — its index entries are an
+/// earlier trunk commit's queue files exactly — the fix that applies the trunk's
+/// diff since to its working files and index. A read can refuse there before any
+/// write gets to catch it up: after a repo's first archive, the checkout's queue
+/// still holds the rows the trunk's new archive has.
+pub fn missed_commit_fix(repo: &Repo) -> Option<String> {
+    let w = repo.trunk_checkout().ok()??;
+    let old = git::rev(&repo.primary, &format!("refs/heads/{}", repo.trunk))?;
+    let names = [repo.cfg.file.as_str(), repo.cfg.archive.as_str()];
+    let at = |rev: &str, n: &str| {
+        git::opt(
+            &repo.primary,
+            &["rev-parse", "--verify", "--quiet", &format!("{rev}:{n}")],
+        )
+    };
+    let staged = names.map(|n| {
+        git::opt(&w, &["ls-files", "-s", "--", n])
+            .and_then(|l| l.split_whitespace().nth(1).map(String::from))
+    });
+    if staged[0].is_none() || staged == names.map(|n| at(&old, n)) {
+        return None;
+    }
+    let (seen, _) = held_commit(repo, &old, names, [&staged[0], &staged[1]]).ok()??;
+    let g = format!("git -C {}", shell_word(&w.to_string_lossy()));
+    let diff = format!(
+        "{g} diff {}..{} -- {}",
+        &seen[..seen.len().min(12)],
+        &old[..old.len().min(12)],
+        names.map(shell_word).join(" ")
+    );
+    Some(format!("{diff} | {g} apply && {diff} | {g} apply --cached"))
+}
+
+/// Set the checkout's index entries for `(name, blob)` in one `update-index`, so
+/// the queue's and the archive's change together or neither does: a row moving
+/// between them is in exactly one.
+fn update_index(w: &Path, entries: &[(&str, &str)]) -> Res<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let input: String = entries
+        .iter()
+        .map(|(name, blob)| format!("100644 {blob}\t{}\n", quote_path(name)))
+        .collect();
+    let o = git::raw(w, &["update-index", "--index-info"], &[], Some(&input))?;
+    if !o.ok {
+        bail!("git update-index --index-info: {}", o.stderr.trim());
+    }
+    Ok(())
+}
+
+/// A path as `--index-info` reads it: C-quoted where a raw one would misparse.
+fn quote_path(name: &str) -> String {
+    if !name.starts_with('"') && !name.contains(['\n', '\\']) {
+        return name.to_string();
+    }
+    let mut q = String::from("\"");
+    for ch in name.chars() {
+        match ch {
+            '"' => q.push_str("\\\""),
+            '\\' => q.push_str("\\\\"),
+            '\n' => q.push_str("\\n"),
+            c => q.push(c),
+        }
+    }
+    q.push('"');
+    q
+}
+
 /// Which file of the two a row is in, its section, and its lines.
 fn row(texts: [&str; 2], id: u64) -> Option<(usize, Option<String>, Vec<String>)> {
     texts.iter().enumerate().find_map(|(f, text)| {
@@ -553,6 +636,21 @@ fn row(texts: [&str; 2], id: u64) -> Option<(usize, Option<String>, Vec<String>)
         let t = queue::parse(text).into_iter().find(|t| t.id == id)?;
         Some((f, t.section, d.lines[at..at + len].to_vec()))
     })
+}
+
+/// Refuse where the trunk checkout's index holds the queue or its archive in
+/// conflict stages: a write would collapse them into one entry and leave the
+/// markers in the working file.
+pub fn refuse_unmerged(repo: &Repo, checkout: &Path) -> Res<()> {
+    for name in [&repo.cfg.file, &repo.cfg.archive] {
+        if git::opt(checkout, &["ls-files", "-u", "--", name]).is_some_and(|l| !l.is_empty()) {
+            bail!(
+                "{name} has an unresolved conflict in {}; resolve it (git add) first",
+                checkout.display()
+            )
+        }
+    }
+    Ok(())
 }
 
 /// Refuse a queue write where the trunk tracks `name` as a symlink: a commit to
@@ -1410,7 +1508,7 @@ type Change<'a> = (
 /// text with the edit applied. Only entries that differ are touched; returns
 /// whether any was.
 fn mirror_index(repo: &Repo, w: &Path, changes: &[Change], blobs: &[Option<String>]) -> Res<bool> {
-    let mut touched = false;
+    let mut entries = Vec::new();
     for ((c, _, _, new_staged), blob) in changes.iter().zip(blobs) {
         // A planned staged copy is staged whole, even where the entry matched the
         // commit: a row moving between the files moves in both entries or neither.
@@ -1429,18 +1527,11 @@ fn mirror_index(repo: &Repo, w: &Path, changes: &[Change], blobs: &[Option<Strin
         if c.staged_blob.as_ref() == Some(&entry) {
             continue;
         }
-        git::git(
-            w,
-            &[
-                "update-index",
-                "--add",
-                "--cacheinfo",
-                &format!("100644,{entry},{}", c.name),
-            ],
-        )?;
-        touched = true;
+        entries.push((c.name.as_str(), entry));
     }
-    Ok(touched)
+    let entries: Vec<(&str, &str)> = entries.iter().map(|(n, b)| (*n, b.as_str())).collect();
+    update_index(w, &entries)?;
+    Ok(!entries.is_empty())
 }
 
 fn hash_blob(repo: &Repo, content: &str) -> Res<String> {
