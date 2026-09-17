@@ -27,7 +27,9 @@ commits. A trunk other than `main` is also recorded as `git config 5w.trunk <tru
 it): commands find `.5w.toml` on `main` or in the primary checkout. The pin is local, so where
 neither has the file (a clone whose primary checkout is on another branch) they read `trunk` from the
 `.5w.toml` committed on the branch `origin/HEAD` names, then on `main` or `master`, local then
-`origin/`, counting only a `trunk` that names an existing branch.
+`origin/`, counting only a `trunk` that names an existing branch. Where the trunk exists only as
+`origin/<trunk>` (no local branch), reads show the queue committed there and writes refuse, naming
+`git branch <trunk> origin/<trunk>`.
 
 To uninstall: `cargo uninstall fivew` (the package is `fivew`, the binary `5w`), or delete the release
 binary from wherever you put it. A repository keeps its committed `.5w.toml`, `TASKS.md`,

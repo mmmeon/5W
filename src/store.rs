@@ -304,12 +304,30 @@ impl Repo {
         {
             return Ok(Some(s));
         }
-        self.committed_file(name)
+        if self.local_trunk() {
+            return self.committed_file(name);
+        }
+        // A fresh clone may have the trunk only as origin's: read the queue there.
+        let spec = format!("refs/remotes/origin/{}:{name}", self.trunk);
+        Ok(git::opt(&self.primary, &["show", &spec]))
+    }
+
+    fn local_trunk(&self) -> bool {
+        git::rev(&self.primary, &format!("refs/heads/{}", self.trunk)).is_some()
+    }
+
+    /// The fix for a trunk that exists only as origin's, when it does.
+    fn origin_only_fix(&self) -> Option<String> {
+        let t = &self.trunk;
+        (!self.local_trunk()
+            && git::rev(&self.primary, &format!("refs/remotes/origin/{t}")).is_some())
+        .then(|| format!("no local branch {t} — `git branch {t} origin/{t}`"))
     }
 
     pub fn load(&self) -> Res<String> {
         match self.load_file(&self.cfg.file)? {
             Some(s) => Ok(s),
+            None if let Some(fix) = self.origin_only_fix() => bail!("{fix}"),
             None => bail!(
                 "no {} on {} — `{} init`",
                 self.cfg.file,
@@ -499,7 +517,10 @@ fn begin(repo: &Repo) -> Res<(Lock, String, Option<PathBuf>, Copies, Copies)> {
     let lock = lock(repo)?;
     let trunk_ref = format!("refs/heads/{}", repo.trunk);
     let Some(old) = git::rev(&repo.primary, &trunk_ref) else {
-        bail!("no trunk branch {}", repo.trunk)
+        match repo.origin_only_fix() {
+            Some(fix) => bail!("{fix}"),
+            None => bail!("no trunk branch {}", repo.trunk),
+        }
     };
     let checkout = repo.trunk_checkout()?;
     if let Some(w) = checkout.as_deref() {

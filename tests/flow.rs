@@ -1131,6 +1131,35 @@ fn a_clone_finds_a_non_main_trunk_from_committed_config() {
 }
 
 #[test]
+fn a_clone_without_a_local_trunk_reads_origin_and_names_the_branch_fix() {
+    // The trunk exists only as origin/<trunk>: reads see its queue, writes name
+    // the local branch to create, and nothing suggests `init`.
+    let origin = Repo::uninit("clone-no-local", "master");
+    origin.ok(&origin.main, &["init"]);
+    origin.ok(&origin.main, &["add", "x"]);
+    let first = origin.git(&origin.main, &["rev-list", "--max-parents=0", "HEAD"]);
+    let c = origin.root.join("clone");
+    origin.git(
+        &origin.root,
+        &[
+            "clone",
+            "-q",
+            origin.main.to_str().unwrap(),
+            c.to_str().unwrap(),
+        ],
+    );
+    origin.git(&c, &["switch", "-q", "-c", "old", &first]);
+    origin.git(&c, &["branch", "-q", "-D", "master"]);
+    assert!(origin.ok(&c, &["ready"]).contains("x"));
+    let msg = origin.refuses(&c, &["add", "y"]);
+    assert!(!msg.contains("init"), "{msg}");
+    assert!(msg.contains("git branch master origin/master"), "{msg}");
+    origin.git(&c, &["branch", "master", "origin/master"]);
+    origin.ok(&c, &["add", "y"]);
+    assert!(origin.git(&c, &["show", "master:TASKS.md"]).contains("y"));
+}
+
+#[test]
 fn init_off_a_branch_takes_origin_head_and_refuses_a_feature_branch() {
     let origin = Repo::uninit("init-origin", "master");
     let clone = origin.root.join("clone");
