@@ -414,7 +414,8 @@ queue that passes an unreviewed branch (`accept --at` and `audit --since` refuse
 trunk config, the tip of the branch it was read from (the pin, or the branch guessed for it), not a
 trunk it names. The queue file, archive and `require_task` a `--branch` check reads are that
 commit's (a broken one's names, with `require_task` on unless it says `false`), not a stale local
-branch's or the checkout's own `.5w.toml`, as is whether its config broke renaming the archive in place.
+branch's or the checkout's own `.5w.toml`, as is whether its config broke renaming the queue or archive
+in place — refused with the repair, not read as no task. Its summary names that trunk.
 
 | Where                                                                           | How                                                                                                                                                                                                                                  |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

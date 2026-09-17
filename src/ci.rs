@@ -115,6 +115,14 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         }
         None => None,
     };
+    // The trunk the summary names: --trunk as given, else where a broken config
+    // was read, else the trunk.
+    let into = trunk_ref.clone().unwrap_or_else(|| {
+        repo.broken_at
+            .as_ref()
+            .map_or(&repo.trunk, |(t, _)| t)
+            .clone()
+    });
     // The trunk as a plain sha: a bad --trunk would read an empty queue. Over a
     // broken config, the tip its names were read at, not the trunk it names.
     let trunk_ref = match trunk_ref {
@@ -360,7 +368,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     }
 
     let what = match (&branch, &refname) {
-        (Some(b), _) => format!("{b} into {}", repo.trunk),
+        (Some(b), _) => format!("{b} into {into}"),
         (_, Some(r)) => format!("push to {r}"),
         _ => "range".into(),
     };
@@ -865,7 +873,7 @@ fn ship_check(
     let p = &repo.primary;
     // The queue as the trunk checked against names it, not as a stale local
     // trunk or the branch's own checkout does.
-    let (cfg, _) = trunk_config(p, trunk);
+    let (cfg, broken) = trunk_config(p, trunk);
     // A link's blob is its target's path, which parses as an empty queue.
     let links: Vec<_> = [&cfg.file, &cfg.archive]
         .into_iter()
@@ -883,7 +891,24 @@ fn ship_check(
         }
         return Ok(());
     }
-    let show = |f: &str| git::opt(p, &["show", &format!("{trunk}:{f}")]).unwrap_or_default();
+    // A queue a broken config renamed in place, read as empty, would stop naming
+    // the branch's task and pass it as unreviewed: refused with the repair, as the
+    // archive is (`archive_at`), on the trunk its names were read on.
+    let queue = match git::opt(p, &["show", &format!("{trunk}:{}", cfg.file)]) {
+        Some(q) => q,
+        None => {
+            let t = repo.broken_at.as_ref().map_or(&repo.trunk, |(t, _)| t);
+            let gate = setting_on(p, Some(trunk), "gate_trunk");
+            if let Some(fix) = broken
+                .as_deref()
+                .and_then(|e| crate::store::restore_fix(p, t, trunk, &cfg, gate, e, "file"))
+            {
+                out.push(format!("{branch}: {fix}"));
+                return Ok(());
+            }
+            String::new()
+        }
+    };
     let archive = match archive_at(repo, trunk, Some(trunk)) {
         Ok(a) => a,
         Err(why) => {
@@ -891,7 +916,7 @@ fn ship_check(
             return Ok(());
         }
     };
-    let rows: Vec<_> = queue::parse(&show(&cfg.file))
+    let rows: Vec<_> = queue::parse(&queue)
         .into_iter()
         .chain(queue::parse(&archive))
         .filter(|t| t.branch.as_deref() == Some(branch))

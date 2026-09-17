@@ -7598,6 +7598,71 @@ fn a_ci_check_reads_the_queue_and_require_task_at_the_trunk_it_checks_against() 
 }
 
 #[test]
+fn a_ci_check_refuses_a_queue_renamed_in_place_rather_than_reading_no_task() {
+    let r = Repo::new("config-queue-in-place-ci");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    assert!(cfg.contains("file = \"TASKS.md\"") && cfg.contains("require_task = false"));
+    // #1 names a/x, submitted and not accepted.
+    r.ok(&r.main, &["add", "first", "branch:a/x"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    r.commit_in(&r.wt("a/x"), "f", "1\n");
+    r.ok(&r.main, &["submit", "1", "a/x"]);
+    // One break renames the queue in place and names another trunk.
+    let broken = cfg
+        .replace("file = \"TASKS.md\"", "file = \"Q2.md\"")
+        .replace("trunk = \"main\"", "trunk = \"x\"")
+        + "bogus = 1\n";
+    std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+    r.git(
+        &r.main,
+        &["commit", "--no-verify", "-qam", "break the config"],
+    );
+    let forge = r.root.join("forge.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            forge.to_str().unwrap(),
+        ],
+    );
+    let ci = ci_clone(&r, &forge, "ci");
+    let run = |args: &[&str]| {
+        let o = r.cli(
+            &ci,
+            &[&["ci", "--branch", "a/x", "--head", "origin/a/x"], args].concat(),
+        );
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        (o.status.success(), out)
+    };
+    let blames_the_config = |out: &str| {
+        out.contains(".5w.toml on main is broken")
+            && out.contains("names the queue Q2.md, not TASKS.md")
+            && out.contains("file = \"TASKS.md\"")
+            && !out.contains("unreviewed change")
+            && !out.contains("no task names")
+    };
+
+    // Read empty, the queue would drop #1's row and pass a/x as unreviewed: refused
+    // with the repair, the summary naming the trunk checked against, not x.
+    let (ok, out) = run(&[]);
+    assert!(!ok && blames_the_config(&out), "{out}");
+    assert!(
+        out.contains("a/x into main") && !out.contains("into x"),
+        "{out}"
+    );
+    let (ok, out) = run(&["--trunk", "origin/main"]);
+    assert!(!ok && blames_the_config(&out), "{out}");
+    assert!(out.contains("a/x into origin/main"), "{out}");
+}
+
+#[test]
 fn a_ci_clone_reads_an_archive_renamed_in_place_at_the_trunk_it_checks_against() {
     let r = Repo::new("config-archive-in-place-ci");
     // The archive was once OLD.md: a clone whose main stayed there reads that name.
