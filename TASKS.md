@@ -34,6 +34,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #28: ship --bogus, ci 'unexpected', update-files, and tasks.rs 'text first' / 'unexpected' refusals print the error then a usage block on following lines (now all red on a colour terminal). CLAUDE.md: refusals one line naming the fix. Replace the block with a pointer such as '(5w <cmd> --help)', which #25 made print only that command's usage; test each.
 - [ ] #50 Decide: a signing subkey used only for releases, separate from the commit-signing subkey @release !3 >owner
   Found reviewing #9: subkey 3491A839212CC7DB signs every commit and tag and SHA256SUMS. Any text an agent gets signed (a commit message) is a valid signature by the release key; #9 mitigates with strict SHA256SUMS parsing, but a release-only subkey (and self-update pinning it) removes the class. Needs key generation, SIGNING_KEY.asc update, ci/sign-release.sh and install-5w.sh changes.
+- [ ] #51 Record full commit shas for submitted: and reviewed: @queue !2
+  and clear inherited GIT_DIR/GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY-style env in git::raw
+  Found reviewing #19. (1) submitted:/reviewed: hold 12-hex short shas; a colliding prefix makes rev-parse ambiguous (refusal) and could stand in for a garbage-collected reviewed commit (~2^48 work). Record full shas going forward; keep reading short ones in existing rows; check lint and PROTOCOL.md's field description. (2) git::raw inherits GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES from the caller (or from git when a hook runs 5w); decide which 5w must clear so its checks read the repository it resolved, and test a hook-invoked 5w still works.
 
 ## Done
 
