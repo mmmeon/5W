@@ -670,12 +670,7 @@ fn committed_config(repo: &Repo) -> Option<Result<Config, (String, Config)>> {
                 .and_then(|t| crate::config::parse_toml(&t).ok())
         })
         .unwrap_or_default();
-    let said = |key: &str| {
-        kv.iter().rev().find_map(|(k, v)| match v {
-            crate::config::Val::Str(t) if k == key => Some(t.clone()),
-            _ => None,
-        })
-    };
+    let said = |key: &str| crate::store::said(&repo.primary, &kv, Some(&tip), key);
     let d = Config::default();
     Some(Err((
         err,

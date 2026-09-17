@@ -1422,6 +1422,7 @@ fn a_committed_config_value_with_a_control_character_is_read_by_the_last_one_lin
         ("trunk = \"ma\\nin\"", "trunk", ""),
         ("trunk = \"ma\\tin\"", "trunk", ""),
         ("file = \"QUE\\nUE.md\"", "file", ""),
+        ("commit_prefix = \"cho\\tre\"", "commit_prefix", ""),
         ("file = \"QUE\\nUE.md\"", "file", "shiny = 1\n"),
     ]
     .into_iter()
@@ -1444,7 +1445,8 @@ fn a_committed_config_value_with_a_control_character_is_read_by_the_last_one_lin
         r.ok(&r.main, &["submit", "1", "f/code"]);
         let line = match key {
             "trunk" => "trunk = \"main\"",
-            _ => "file = \"QUEUE.md\"",
+            "file" => "file = \"QUEUE.md\"",
+            _ => "commit_prefix = \"chore(tasks)\"",
         };
         let at = good.lines().position(|l| l == line).unwrap() + 1;
         std::fs::write(r.main.join(".5w.toml"), good.replace(line, bad)).unwrap();
@@ -1463,11 +1465,13 @@ fn a_committed_config_value_with_a_control_character_is_read_by_the_last_one_lin
             assert!(err.contains(&want), "{bad} {cmd:?}: {want:?} in {err:?}");
             assert!(!err.contains("ma\tin"), "{err:?}");
         }
-        // A repair is told by that value, not the default.
+        // A repair is told by that value, not the default: staged with the
+        // checkout's copy still broken, and with it fixed too.
         if extra.is_empty() {
             let broken = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
             std::fs::write(r.main.join(".5w.toml"), &good).unwrap();
             r.git(&r.main, &["add", ".5w.toml"]);
+            r.ok(&r.main, &["lint", "--staged"]);
             std::fs::write(r.main.join(".5w.toml"), broken).unwrap();
             r.ok(&r.main, &["lint", "--staged"]);
             r.git(&r.main, &["reset", "-q", "--hard"]);

@@ -109,7 +109,12 @@ fn last_config_where(dir: &Path, commit: &str, ok: impl Fn(&str) -> bool) -> Opt
 /// last string `kv` gives it. One holding a control character, which no config
 /// takes, names nothing: the newest config on `tip`'s first-parent line whose
 /// value is one line says it instead. None: neither says one.
-fn said(dir: &Path, kv: &[(String, Val)], tip: Option<&str>, key: &str) -> Option<String> {
+pub(crate) fn said(
+    dir: &Path,
+    kv: &[(String, Val)],
+    tip: Option<&str>,
+    key: &str,
+) -> Option<String> {
     let last = |kv: &[(String, Val)]| {
         kv.iter().rev().find_map(|(k, v)| match v {
             Val::Str(t) if k == key => Some(t.clone()),
