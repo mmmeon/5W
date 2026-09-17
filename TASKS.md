@@ -28,7 +28,7 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [~] #81 Other clones of a non-main-trunk repo only find the trunk while the primary checkout has .5w.toml @queue !1 branch:queue/task-81 submitted:db48dffbb7ba832bffcdf878ca92f60698bf48af
   resolve it from the committed config on origin/HEAD or remote branches
   Found reviewing #78 (pre-existing): 5w.trunk is local git config, so a fresh clone of a master repo gets no pin; Repo::open then finds master only while the primary checkout holds .5w.toml. When the primary checkout lacks .5w.toml, read trunk from .5w.toml on the branch origin/HEAD names (if it resolves), then from refs/heads/main/master candidates that carry .5w.toml; test a clone whose primary checkout is on a branch without the file.
-- [ ] #84 Duplicate requires keys: the version check reads the first, the config stores the last @upkeep !1
+- [~] #84 Duplicate requires keys: the version check reads the first, the config stores the last @upkeep !1 branch:upkeep/task-84 submitted:ee84b4850b75c8d19429c0ca7c8f5fab977e427f
   self-update's pinned() and update-files --pin use the first
   Found by #82's worker: src/config.rs Config::from_toml checks the version pin against the first requires but stores the last; src/upkeep.rs pinned() (self-update) reads the first requires line; update-files --pin rewrites only the first. Make every reader agree with the parser (last wins) — or better, refuse duplicate keys in .5w.toml at parse time with one line naming the key and lines — and make update-files --pin rewrite consistently; test duplicate requires.
 - [ ] #85 Forge CI on a broken trunk config: ci --event and --branch refuse outright @ci !1
