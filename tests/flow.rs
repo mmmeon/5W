@@ -6591,7 +6591,8 @@ fn queue_writes_take_lanes_names_and_prefix_from_the_committed_trunk_config() {
     // as doctor does, reading the checkout as it stands.
     let out = r.fails(&r.main, &["doctor"]);
     assert!(
-        out.contains(&format!("no QUEUE.md on main — `5w init` (note: {note})")),
+        out.contains("no QUEUE.md on main: only the uncommitted .5w.toml names it (main commits TASKS.md) — commit .5w.toml on main with the queue renamed, or revert it")
+            && !out.contains("note:"),
         "{out}"
     );
 
@@ -6647,6 +6648,71 @@ fn queue_writes_take_lanes_names_and_prefix_from_the_committed_trunk_config() {
     assert!(!err.contains("uncommitted"), "{err}");
     assert!(!r.ok(&r.main, &["doctor"]).contains("uncommitted"));
     r.lint_history();
+}
+
+#[test]
+fn ship_and_wt_prune_read_queue_names_and_gates_from_the_committed_trunk_config() {
+    let r = Repo::new("ship-committed-config");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let required = cfg.replace("require_task = false", "require_task = true");
+    assert_ne!(required, cfg);
+    r.commit_in(&r.main, ".5w.toml", &required);
+    r.ok(&r.main, &["add", "do it"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    r.commit_in(&r.wt("a/x"), "x.txt", "x\n");
+    r.ok(&r.wt("a/x"), &["submit", "1"]);
+    r.ok(&r.main, &["wt", "new", "a/untasked"]);
+    r.commit_in(&r.wt("a/untasked"), "u.txt", "u\n");
+    r.ok(&r.main, &["wt", "new", "t/stray"]);
+    // The trunk checkout's copy renames the queue file and drops require_task, uncommitted.
+    let edited = required
+        .replace("file = \"TASKS.md\"", "file = \"QUEUE.md\"")
+        .replace("require_task = true", "require_task = false");
+    assert!(edited.contains("QUEUE.md") && edited.contains("require_task = false"));
+    std::fs::write(r.main.join(".5w.toml"), &edited).unwrap();
+    let note = "(note: .5w.toml on main has uncommitted edits; queue commands read the committed one — commit it first)";
+
+    // wt prune reads the queue the trunk commits: a/x is named there, t/stray is not,
+    let o = r.cli(&r.main, &["wt", "prune"]);
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert!(o.status.success(), "{out}{err}");
+    assert!(
+        out.contains("remove t/stray") && !out.contains("a/x"),
+        "{out}"
+    );
+    assert!(err.contains("uncommitted edits"), "{err}");
+    // ship its review gate and require_task,
+    let err = r.refuses(&r.main, &["ship", "a/untasked"]);
+    assert!(
+        err.contains("no task names branch:a/untasked and require_task is on")
+            && err.contains(note),
+        "{err}"
+    );
+    let err = r.refuses(&r.main, &["ship", "a/x"]);
+    assert!(
+        err.contains("not accepted: #1 [~]") && err.contains(note),
+        "{err}"
+    );
+    // and doctor, reading the checkout, names the fix for the rename it cannot read by.
+    let err = r.refuses(&r.main, &["doctor"]);
+    assert!(
+        err.contains("no QUEUE.md on main: only the uncommitted .5w.toml names it (main commits TASKS.md) — commit .5w.toml on main with the queue renamed, or revert it")
+            && !err.contains("init"),
+        "{err}"
+    );
+
+    // Reverted, both run as before, without the note.
+    std::fs::write(r.main.join(".5w.toml"), &required).unwrap();
+    let err = r.refuses(&r.main, &["ship", "a/untasked"]);
+    assert!(!err.contains("note"), "{err}");
+    let out = r.ok(&r.main, &["wt", "prune", "--yes"]);
+    assert!(
+        out.contains("t/stray") && !out.contains("uncommitted"),
+        "{out}"
+    );
 }
 
 #[test]

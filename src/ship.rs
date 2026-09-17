@@ -93,16 +93,23 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         if o.force {
             bail!("--accepted ships only accepted work; --force one branch by name");
         }
-        return ship_accepted(repo, o);
     }
-    let branch = match branch.or_else(|| git::current_branch(&repo.cwd)) {
-        Some(b) => b,
-        None => bail!(
-            "not on a branch: name the one to ship ({} ship --help)",
-            repo.cfg.cmd_tasks
-        ),
+    // The review gate, the queue names and the gate settings are the trunk's
+    // committed config, as queue commands and the server read them, noting an
+    // uncommitted edit. A broken trunk config reads as `open_for_repair` did.
+    let (judged, note) = crate::lint::under_committed_rules(repo);
+    let repo = judged.as_ref().unwrap_or(repo);
+    let res = match accepted {
+        true => ship_accepted(repo, o),
+        false => match branch.or_else(|| git::current_branch(&repo.cwd)) {
+            Some(b) => ship(repo, &b, &o),
+            None => Err(format!(
+                "not on a branch: name the one to ship ({} ship --help)",
+                repo.cfg.cmd_tasks
+            )),
+        },
     };
-    ship(repo, &branch, &o)
+    crate::lint::noted(note, res)
 }
 
 /// Every branch an accepted task names that still exists, parents before their
@@ -205,6 +212,8 @@ fn ship_accepted(repo: &Repo, mut o: Opts) -> Res<()> {
         }
         let r = Repo::open_for_repair()
             .map_err(|e| format!("stopped after {b}: {e} (shipped {})", shipped.join(" ")))?;
+        // Read under the config the trunk now commits, as the run started.
+        let r = crate::lint::under_committed_rules(&r).0.unwrap_or(r);
         let (was, now) = (&repo.cfg, &r.cfg);
         if r.trunk != repo.trunk
             || now.file != was.file

@@ -357,10 +357,12 @@ Hand edits are checked, not trusted:
   <rev>` and `<from>..<to>` in a checkout judge under that committed config too, and so do the queue
   commands and `audit`: lanes and their kinds (`add`/`set` validation, `delegate`, `done`'s close),
   `default_lane`, `commit_prefix`, sections, the queue and archive files and the trunk they commit
-  to — as do the texts a brief prints, and `audit`'s doctor block. `5w doctor` reads the checkout
-  as it stands. While the trunk checkout's copy differs from the committed one, these commands say
-  so (on stderr, or on a refusal's line) and `doctor` notes it. A trunk that commits none, or one
-  that does not parse, is read under the checkout's.
+  to — as do the texts a brief prints, and `audit`'s doctor block — and `ship` and `wt prune`: the
+  queue and archive they read, `commit_prefix`, `require_task` and `gate_trunk`. `5w doctor` reads
+  the checkout as it stands. While the trunk checkout's copy differs from the committed one, these
+  commands say so (on stderr, or on a refusal's line) and `doctor` notes it; a queue file only that
+  copy names is refused with the fix, committing `.5w.toml`, not `init`. A trunk that commits none,
+  or one that does not parse, is read under the checkout's.
   Where `5w` is not installed the hook lets the commit through with a warning to follow
   PROTOCOL.md; `5w lint <range>` catches what that let through, later.
 - **A hook's environment.** git runs a hook with `GIT_DIR` set in a linked worktree and
@@ -796,8 +798,8 @@ narrows hundreds of branches to the possible copies in one git call.
 
 ## Configuration
 
-`.5w.toml` at the repo root, read from the trunk. An edit takes effect for queue commands, `audit`
-and the hook once it is committed on the trunk: until then they read the committed copy and say
+`.5w.toml` at the repo root, read from the trunk. An edit takes effect for queue commands, `audit`,
+`ship`, `wt prune` and the hook once it is committed on the trunk: until then they read the committed copy and say
 `.5w.toml on <trunk> has uncommitted edits; queue commands read the committed one — commit it
 first`, and a lane only the edit names is refused as such. Every key is optional; see
 [templates/5w.toml](templates/5w.toml) for the defaults and

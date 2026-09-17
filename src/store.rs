@@ -530,12 +530,20 @@ impl Repo {
         match self.load_file(&self.cfg.file)? {
             Some(s) => Ok(s),
             None if let Some(fix) = self.origin_only_fix() => bail!("{fix}"),
-            None => bail!(
-                "no {} on {} — `{} init`",
-                self.cfg.file,
-                self.trunk,
-                self.cfg.cmd_tasks
+            None => bail!("{}", self.no_queue()),
+        }
+    }
+
+    /// The refusal for a queue file the trunk does not have: `init`, unless only
+    /// the trunk checkout's uncommitted config renames it.
+    fn no_queue(&self) -> String {
+        let (name, t) = (&self.cfg.file, &self.trunk);
+        match crate::lint::committed_rules(self) {
+            Some(c) if self.cfg.checkout_text.is_some() && c.file != *name => format!(
+                "no {name} on {t}: only the uncommitted {CONFIG_FILE} names it ({t} commits {}) — commit {CONFIG_FILE} on {t} with the queue renamed, or revert it",
+                c.file
             ),
+            _ => format!("no {name} on {t} — `{} init`", self.cfg.cmd_tasks),
         }
     }
 

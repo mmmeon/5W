@@ -993,8 +993,8 @@ fn doctor(repo: &Repo) -> Res<()> {
     // A checkout config doctor cannot read the queue by may be an uncommitted edit.
     let d =
         doctor_findings(repo).map_err(|e| match crate::lint::under_committed_rules(repo).1 {
-            Some(n) => format!("{e} (note: {n})"),
-            None => e,
+            Some(n) if !e.contains("uncommitted") => format!("{e} (note: {n})"),
+            _ => e,
         })?;
     for p in &d.problems {
         println!("  {p}");

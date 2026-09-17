@@ -77,14 +77,19 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             }
             remove(repo, branch.ok_or(usage)?, force)
         }
-        "prune" => match rest {
-            [] => prune(repo, false),
-            [y] if y == "--yes" => prune(repo, true),
-            _ => match rest.iter().find(|a| a.starts_with("--") && *a != "--yes") {
-                Some(f) => Err(unknown_flag(repo, cmd, f)),
-                None => bail!("usage: 5w wt prune [--yes]"),
-            },
-        },
+        "prune" => {
+            let yes = match rest {
+                [] => false,
+                [y] if y == "--yes" => true,
+                _ => match rest.iter().find(|a| a.starts_with("--") && *a != "--yes") {
+                    Some(f) => return Err(unknown_flag(repo, cmd, f)),
+                    None => bail!("usage: 5w wt prune [--yes]"),
+                },
+            };
+            // The branches the queue names, by the queue names the trunk commits.
+            let (judged, note) = crate::lint::under_committed_rules(repo);
+            crate::lint::noted(note, prune(judged.as_ref().unwrap_or(repo), yes))
+        }
         "link" => link(repo, &target(repo, rest)?).map(|_| ()),
         "install" => install(repo, &target(repo, rest)?),
         "setup" => setup(repo),
