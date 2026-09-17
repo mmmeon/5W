@@ -36,6 +36,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [ ] #87 hook install pre-receive refuses on a repository whose trunk config is broken @ci !1
   so a server cloned after the break can't install the hook that takes the repair
   Found reviewing #83: 5w hook install opens the config strictly. Let hook install (pre-receive) open leniently like ci's open_lenient (it only needs the trunk name for 5w.trunk), with a one-line note that the trunk config is broken and the hook will accept only a repair; test installing on a bare clone of a broken trunk.
+- [ ] #88 A clone with only origin/<trunk> (no local trunk branch) gets 'no TASKS.md on <trunk> — 5w init' @queue !1
+  wrongly suggesting init
+  Found reviewing #81 (pre-existing): queue commands read TASKS.md only from the local trunk branch; a fresh clone where the trunk exists only as origin/<trunk> refuses with a hint to run init. Either read the queue from origin/<trunk> for reads and name 'git switch <trunk>' / 'git branch <trunk> origin/<trunk>' for writes, or at least name that fix instead of init; test a clone checked out on another branch.
 
 ## Done
 
