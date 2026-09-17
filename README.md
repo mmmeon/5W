@@ -386,9 +386,13 @@ queue that passes an unreviewed branch (`accept --at` and `audit --since` refuse
 branch the bare repository's `HEAD` names (then `git-town.main-branch`, then `main`); `.5w.toml`'s
 `trunk` read from that branch has the last word, except over a pin (`FIVEW_TRUNK` or `5w.trunk`):
 a committed rename must not move the gate off the branch the server guards. A push to the pinned
-trunk whose `.5w.toml` names another trunk is refused, naming both — renaming the trunk on a server
-is its admin's step. `5w hook install pre-receive` records `5w.trunk` from `HEAD` when it is unset —
-set it by hand if the trunk is renamed. A server with branches but no
+trunk whose `.5w.toml` names another trunk is refused, naming both and the pin to change
+(`FIVEW_TRUNK` when that is the pin, since `git config` cannot outrank it) — renaming the trunk on a
+server is its admin's step. `5w hook install pre-receive` records `5w.trunk` from `HEAD` when it is unset —
+set it by hand if the trunk is renamed. `HEAD` itself is no pin (a stale one would refuse every push):
+while `gate_trunk` is on and nothing pins the trunk, every push warns, naming `git config 5w.trunk
+<HEAD's branch>`, and a push to `HEAD`'s branch whose `.5w.toml` renames the trunk away from it is
+refused, landed or not. A server with branches but no
 branch of that name refuses every push to another branch, naming `git config 5w.trunk <name>`: a
 wrong guess would judge no push as landing on the trunk. A pushed ref that is a symbolic ref (an
 alias left by a rename) is judged as the branch it points at.

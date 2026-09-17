@@ -128,6 +128,25 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             "this server has no {trunk_head} to judge pushes against — `git config 5w.trunk <name>` names the trunk"
         );
     }
+    // Unpinned, a server's trunk is its HEAD's branch unless that branch commits
+    // another name, so a landed rename would move the gate off it. HEAD is no pin
+    // (a stale one would refuse every push): warn, and refuse the rename below.
+    let unpinned = match (repo.bare && repo.pin.is_none())
+        .then(|| crate::store::head_branch(p))
+        .flatten()
+    {
+        Some(h) => {
+            let tip = git::rev(p, &format!("refs/heads/{h}"));
+            let gated = gate_settings(repo, tip.as_slice())?.values().any(|on| *on);
+            if gated && refname.is_some() {
+                eprintln!(
+                    "5w ci: warning: no trunk pin on this server — `git config 5w.trunk {h}` keeps a committed rename from moving the gate"
+                );
+            }
+            gated.then_some(h)
+        }
+        None => None,
+    };
     // The trunk as a plain sha: a bad --trunk would read an empty queue.
     let trunk_ref = match trunk_ref {
         Some(t) => Some(git::rev(p, &t).ok_or_else(|| {
@@ -219,8 +238,27 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
         .and_then(|c| c.trunk)
         .filter(|t| t != pinned)
     {
+        // The fix is where the pin came from: git config does not outrank the variable.
+        let fix = if how.starts_with("FIVEW_TRUNK=") {
+            format!("FIVEW_TRUNK={named}")
+        } else {
+            format!("`git config 5w.trunk {named}`")
+        };
         problems.push(format!(
-            "{}: .5w.toml has trunk = \"{named}\" but this server pins {how} — keep trunk = \"{pinned}\", or `git config 5w.trunk {named}` on the server once {named} is its trunk",
+            "{}: .5w.toml has trunk = \"{named}\" but this server pins {how} — keep trunk = \"{pinned}\", or {fix} on the server once {named} is its trunk",
+            short(&head)
+        ));
+    }
+    // Unpinned and gated, a push to HEAD's branch that commits another trunk name
+    // would ungate it: refused, whether or not a landing covers it.
+    if let Some(h) = unpinned
+        .as_ref()
+        .filter(|h| refname.as_deref() == Some(format!("refs/heads/{h}").as_str()))
+        && committed_trunk(p, base.as_deref()).is_none_or(|t| t == *h)
+        && let Some(named) = committed_trunk(p, Some(&head)).filter(|t| t != h)
+    {
+        problems.push(format!(
+            "{}: .5w.toml renames the trunk {h} to \"{named}\" on a server with no trunk pin — keep trunk = \"{h}\"; renaming is the admin's step: `git config 5w.trunk {named}` first",
             short(&head)
         ));
     }
@@ -416,6 +454,24 @@ fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> 
         on.insert(c.clone(), setting);
     }
     Ok(on)
+}
+
+/// The `trunk` a commit's `.5w.toml` names, if it names one.
+fn committed_trunk(p: &std::path::Path, commit: Option<&str>) -> Option<String> {
+    let text = git::opt(
+        p,
+        &[
+            "show",
+            &format!("{}:{}", commit?, crate::store::CONFIG_FILE),
+        ],
+    )?;
+    crate::config::parse_toml(&text)
+        .ok()?
+        .into_iter()
+        .find_map(|(k, v)| match v {
+            crate::config::Val::Str(t) if k == "trunk" => Some(t),
+            _ => None,
+        })
 }
 
 /// The commits a landing record covers, when it holds: see `trunk_gate`.

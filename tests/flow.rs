@@ -5295,6 +5295,94 @@ fn a_committed_trunk_rename_does_not_ungate_the_trunk_a_server_pins() {
 }
 
 #[test]
+fn an_unpinned_gated_server_warns_and_refuses_a_trunk_rename() {
+    let r = Repo::new("gate-nopin");
+    r.git(&r.main, &["branch", "-m", "main", "master"]);
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let gated = cfg
+        .replace("trunk = \"main\"", "trunk = \"master\"")
+        .replace("gate_trunk = false", "gate_trunk = true");
+    assert!(gated.contains("trunk = \"master\"") && gated.contains("gate_trunk = true"));
+    std::fs::write(r.main.join(".5w.toml"), &gated).unwrap();
+    r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+    let server = r.root.join("server.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            server.to_str().unwrap(),
+        ],
+    );
+    r.ok(&server, &["hook", "install", "pre-receive"]);
+    r.git(&server, &["config", "--unset", "5w.trunk"]);
+    r.git(
+        &r.main,
+        &["remote", "add", "origin", server.to_str().unwrap()],
+    );
+    let push = |trunk_env: Option<&str>, args: &[&str]| {
+        let mut c = Command::new("git");
+        c.args([&["push", "-q", "origin"], args].concat())
+            .current_dir(&r.main);
+        env(&mut c, &r.root);
+        if let Some(t) = trunk_env {
+            c.env("FIVEW_TRUNK", t);
+        }
+        let o = c.output().unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+
+    // Every push to a gated server with no pin warns, naming the pin to set.
+    r.git(&r.main, &["checkout", "-qb", "side"]);
+    std::fs::write(r.main.join("side.txt"), "x\n").unwrap();
+    r.git(&r.main, &["add", "side.txt"]);
+    r.git(&r.main, &["commit", "-qm", "side"]);
+    let (ok, err) = push(None, &["side"]);
+    assert!(ok, "{err}");
+    assert!(err.contains("`git config 5w.trunk master`"), "{err}");
+    r.git(&r.main, &["checkout", "-q", "master"]);
+
+    // A push to HEAD's branch that commits another trunk name is refused as a
+    // rename, not only as an unlanded change: landed, it would ungate master.
+    let before = r.git(&server, &["rev-parse", "master"]);
+    let renamed = gated.replace("trunk = \"master\"", "trunk = \"x\"");
+    std::fs::write(r.main.join(".5w.toml"), renamed).unwrap();
+    r.git(&r.main, &["commit", "-qam", "trunk is x"]);
+    let (ok, err) = push(None, &["master"]);
+    assert!(
+        !ok && err.contains("renames the trunk master to \"x\""),
+        "{err}"
+    );
+    assert!(err.contains("`git config 5w.trunk x` first"), "{err}");
+    assert_eq!(r.git(&server, &["rev-parse", "master"]), before);
+
+    // Pinned by git config: no warning, and the #79 mismatch names git config.
+    r.git(&server, &["config", "5w.trunk", "master"]);
+    let (ok, err) = push(None, &["master"]);
+    assert!(!ok && !err.contains("warning"), "{err}");
+    assert!(
+        err.contains("`git config 5w.trunk x` on the server"),
+        "{err}"
+    );
+
+    // Pinned by FIVEW_TRUNK, which git config cannot outrank: the fix names it.
+    r.git(&server, &["config", "--unset", "5w.trunk"]);
+    let (ok, err) = push(Some("master"), &["master"]);
+    assert!(!ok && !err.contains("warning"), "{err}");
+    assert!(
+        err.contains("FIVEW_TRUNK=master") && err.contains("or FIVEW_TRUNK=x on the server"),
+        "{err}"
+    );
+    assert!(!err.contains("git config 5w.trunk"), "{err}");
+    assert_eq!(r.git(&server, &["rev-parse", "master"]), before);
+}
+
+#[test]
 fn pre_receive_does_not_let_a_branch_land_on_a_trunk_update_git_refuses() {
     // git runs pre-receive before its own per-ref checks, and a push that is not
     // atomic applies the refs that pass: judged against the pushed trunk, a branch
