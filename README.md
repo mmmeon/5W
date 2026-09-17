@@ -264,7 +264,9 @@ commits; merge instead, or ship again.
   parse is read as the newest one on its first-parent line that does, and as on when none does; one
   the config rejects counts as on unless it says `gate_trunk = false`). History from before the
   enabling commit, and that commit, pass as they are;
-  a branch from before it is still new to the trunk, and turning the gate off is a gated change.
+  a branch from before it is still new to the trunk, and turning the gate off is a gated change. A
+  record counts for the judged commits it covers even when itself not judged (a push that turns
+  the gate on, then off, lands the gate-off commit under a record made after it).
 - **The reviewed commit must be on the server.** Shipped as reviewed, it is what landed. After
   `--sync` or `--squash` it is not on the trunk: keep its branch pushed, or push it with the trunk
   (`git push origin main <sha>:refs/5w/reviewed/11`) — ship names it.

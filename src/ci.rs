@@ -494,16 +494,34 @@ fn trunk_gate(
             .all(|n| n == repo.cfg.file || n == repo.cfg.archive))
     };
     let prefix = format!("{}: land #", repo.cfg.commit_prefix);
+    let record_of = |k: &Commit| -> Option<String> {
+        k.subject
+            .strip_prefix(&prefix)
+            .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .map(String::from)
+    };
     let mut covered: HashSet<String> = HashSet::new();
+    // A record the gate does not judge (its first parent has the gate off) still
+    // covers the judged commits it lands, as when a push turns the gate on, then
+    // off: it is held to the same checks, and its failure is told only when code
+    // it could have covered is left uncovered.
+    let judged_set: HashSet<&str> = judged.iter().map(String::as_str).collect();
+    let mut unjudged_failures: Vec<String> = Vec::new();
+    for c in range.iter().filter(|c| !judged_set.contains(c.as_str())) {
+        let Some(k) = commits.get(c) else { continue };
+        let Some(id) = record_of(k) else { continue };
+        match landing(repo, c, k, &id, &commits, &in_range) {
+            Ok(landed) => covered.extend(landed),
+            Err(why) => {
+                unjudged_failures.push(format!("{}: land #{id} covers nothing — {why}", short(c)))
+            }
+        }
+    }
     let mut need: Vec<&String> = Vec::new();
     for c in &judged {
         let Some(k) = commits.get(c) else { continue };
-        if let Some(id) = k
-            .subject
-            .strip_prefix(&prefix)
-            .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        {
-            match landing(repo, c, k, id, &commits, &in_range) {
+        if let Some(id) = record_of(k) {
+            match landing(repo, c, k, &id, &commits, &in_range) {
                 Ok(landed) => covered.extend(landed),
                 Err(why) => out.push(format!("{}: land #{id} covers nothing — {why}", short(c))),
             }
@@ -526,7 +544,11 @@ fn trunk_gate(
             need.push(c);
         }
     }
-    for c in need.into_iter().filter(|c| !covered.contains(*c)) {
+    let uncovered: Vec<&String> = need.into_iter().filter(|c| !covered.contains(*c)).collect();
+    if !uncovered.is_empty() {
+        out.extend(unjudged_failures);
+    }
+    for c in uncovered {
         out.push(format!(
             "{}: code on {} that no landing record covers — ship it from an accepted branch (gate_trunk)",
             short(c),
