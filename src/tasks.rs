@@ -1036,13 +1036,23 @@ pub fn doctor_findings(repo: &Repo) -> Res<Doctor> {
     {
         say(e);
     }
+    let mut cross = false;
     for a in &archived {
         if tasks.iter().any(|t| t.id == a.id) {
+            cross = true;
             say(format!(
                 "#{} is in both {} and {}",
                 a.id, repo.cfg.file, repo.cfg.archive
             ));
         }
+    }
+    // After a missed first archive the checkout's index lacks the archive too:
+    // an ordinary commit there would take it off the trunk.
+    if cross && let Some(fix) = store::missed_commit_fix(repo) {
+        say(format!(
+            "the trunk checkout missed a commit to {} (a commit there would undo it) — `{fix}` catches it up",
+            repo.trunk
+        ));
     }
     let ids: HashSet<u64> = tasks.iter().chain(&archived).map(|t| t.id).collect();
     let cfg = &repo.cfg;

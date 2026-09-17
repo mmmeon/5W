@@ -39,7 +39,8 @@ If `5w` is installed, use it instead of editing.
 
 Never:
 
-- change or delete a closed row, other than reopening or archiving it;
+- change or delete a closed row, other than reopening or archiving it, or move an archived row
+  back into `TASKS.md`;
 - delete any row, or reuse or renumber an id;
 - close, submit or accept a `decision` row unless you are the owner, or a `manual` row nobody did
   by hand;

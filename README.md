@@ -155,7 +155,9 @@ moved and that diff applies. Left so, the next write usually catches the checkou
 trunk's, and each working row changed since takes the trunk's version unless edited there by
 hand. Not after a repo's first archive: the checkout's queue still holds the rows the trunk's new
 archive has, so every command refuses on duplicate ids before a write can run, and that refusal
-names the same diff to apply. While the queue or archive is in conflict in the trunk checkout
+names the same diff to apply. Its index lacks the archive too, so an ordinary `git commit` there
+would take the archive off the trunk: `5w doctor` names that diff as well, and `lint` (the pre-commit
+hook, a push) refuses the closed rows it would move back into the queue. While the queue or archive is in conflict in the trunk checkout
 (unmerged, mid-merge), writes refuse until it is resolved and `git add`ed: one would collapse the
 conflict to a single entry and leave the markers in the file. `5w doctor` names such a conflict, a git conflict
 marker line in either file (outside ``` fences), and an id repeated within the archive as well as
@@ -229,7 +231,7 @@ Hand edits are checked, not trusted:
   `rework:`, and nothing else gains one. A `submitted:` or `reviewed:` written or changed is a full sha
   (a 12-digit prefix passes only in a submit or accept commit, as releases through 0.1.3 wrote them);
   a prefix is read only while it names exactly one commit, and one under 7 digits never. Closed rows are immutable except to reopen, reflow (`split`)
-  or archive; no row is deleted, no id reused and none in both files (in a merge's tree too); a queue edit is its own commit on the trunk. A
+  or archive, and an archived row never moves back to the queue; no row is deleted, no id reused and none in both files (in a merge's tree too); a queue edit is its own commit on the trunk. A
   single edit's subject (`chore(tasks): set #4 level 1`) names the only row its commit may change, and
   a batch's names exactly the rows it changes; a line rewritten to read the same is no change. Every
   commit `5w` itself makes passes it — a `reject` commit may gain `rework:` from any state, as

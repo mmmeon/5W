@@ -123,6 +123,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 archive: show_index(repo, &env, &repo.cfg.archive),
             };
             check(&repo.cfg, repo, &old, &new, None, "staged", &mut problems);
+            unarchived(repo, &old, &new, "staged", &mut problems);
         }
         range => {
             // Resolve each side to a plain sha (git::rev refuses `^HEAD`).
@@ -224,8 +225,44 @@ pub fn commits_on(
             short,
             problems,
         );
+        unarchived(repo, &old, &new, short, problems);
     }
     Ok(())
+}
+
+/// A closed row the old archive holds that the new queue holds instead: never
+/// a tool edit (an archived row cannot be reopened), but what a trunk checkout
+/// that missed a repo's first archive stages — its index lacks the archive, so
+/// committing it takes the archive off the trunk. The staged check names the
+/// diff that catches the checkout up.
+fn unarchived(repo: &Repo, old: &Snap, new: &Snap, at: &str, out: &mut Vec<String>) {
+    let (_, oa) = old.tasks();
+    let (nq, na) = new.tasks();
+    let back: Vec<u64> = oa
+        .iter()
+        .filter(|t| nq.iter().any(|n| n.id == t.id) && !na.iter().any(|n| n.id == t.id))
+        .map(|t| t.id)
+        .collect();
+    if back.is_empty() {
+        return;
+    }
+    let fix = match at == "staged" {
+        true => crate::store::missed_commit_fix(repo)
+            .map(|f| {
+                format!(
+                    "; the trunk checkout missed a commit to {}, and `{f}` catches it up",
+                    repo.trunk
+                )
+            })
+            .unwrap_or_default(),
+        false => String::new(),
+    };
+    for id in back {
+        out.push(format!(
+            "{at} #{id}: archived in {}, back in {} — an archived row stays archived{fix}",
+            repo.cfg.archive, repo.cfg.file
+        ));
+    }
 }
 
 /// A merge changes no file against itself as git lists one, so the rows of its

@@ -3145,6 +3145,72 @@ fn a_first_archive_the_checkout_missed_names_the_fix_in_the_duplicate_ids_refusa
 }
 
 #[test]
+fn a_commit_over_a_missed_first_archive_does_not_delete_the_archive() {
+    let r = Repo::new("first-archive-commit");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["add", "second"]);
+    r.ok(&r.main, &["done", "1", "--self"]);
+    r.ok(&r.main, &["hook", "install"]);
+    std::fs::write(r.main.join(".git/index.lock"), "").unwrap();
+    r.refuses(&r.main, &["archive"]);
+    std::fs::remove_file(r.main.join(".git/index.lock")).unwrap();
+    // The checkout's index still holds the queue before the archive, and no
+    // archive: committed as it stands, it would take DONE.md off main and put
+    // #1 back in TASKS.md.
+    assert_eq!(
+        r.git(&r.main, &["status", "--porcelain", "--", "DONE.md"]),
+        "D  DONE.md"
+    );
+    let commit = |args: &[&str]| {
+        let mut c = Command::new("git");
+        c.args(args).current_dir(&r.main);
+        env(&mut c, &r.root);
+        let o = c.output().unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+    // The queue files alone pass every other rule: the hook refuses the move back
+    // and names the diff that catches the checkout up.
+    let (ok, err) = commit(&["commit", "-qm", "wip"]);
+    assert!(!ok, "{err}");
+    assert!(
+        err.contains("#1: archived in DONE.md, back in TASKS.md") && err.contains("apply --cached"),
+        "{err}"
+    );
+    std::fs::write(r.main.join("README"), "changed\n").unwrap();
+    let (ok, err) = commit(&["commit", "-qam", "unrelated"]);
+    assert!(!ok && err.contains("back in TASKS.md"), "{err}");
+    assert!(
+        r.git(&r.main, &["ls-tree", "--name-only", "main"])
+            .contains("DONE.md")
+    );
+    let out = String::from_utf8_lossy(&r.cli(&r.main, &["doctor"]).stdout).to_string();
+    assert!(
+        out.contains("#1 is in both") && out.contains("apply --cached"),
+        "{out}"
+    );
+
+    // A commit that skipped the hook is caught by linting it.
+    let (ok, err) = commit(&[
+        "commit",
+        "-qm",
+        "wip",
+        "--no-verify",
+        "--",
+        "DONE.md",
+        "TASKS.md",
+    ]);
+    assert!(ok, "{err}");
+    let err = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(
+        err.contains("#1: archived in DONE.md, back in TASKS.md"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_checkout_index_update_that_fails_changes_neither_queue_entry() {
     let r = Repo::new("index-both-or-neither");
     r.ok(&r.main, &["add", "first"]);
