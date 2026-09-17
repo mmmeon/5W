@@ -205,6 +205,25 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
 
     let mut problems = Vec::new();
     lint::commits_on(repo, &range, &|_| onto_trunk, &mut problems)?;
+    // A server's pinned trunk stays the trunk (store: `Repo::open`); a push that
+    // leaves it committing another name is refused rather than let the two part.
+    if let Some((pinned, how)) = repo
+        .pin
+        .as_ref()
+        .filter(|_| onto_trunk && !range.is_empty())
+        && let Some(named) = git::opt(
+            p,
+            &["show", &format!("{head}:{}", crate::store::CONFIG_FILE)],
+        )
+        .and_then(|s| crate::config::Config::from_toml(&s).ok())
+        .and_then(|c| c.trunk)
+        .filter(|t| t != pinned)
+    {
+        problems.push(format!(
+            "{}: .5w.toml has trunk = \"{named}\" but this server pins {how} — keep trunk = \"{pinned}\", or `git config 5w.trunk {named}` on the server once {named} is its trunk",
+            short(&head)
+        ));
+    }
     if onto_trunk {
         trunk_gate(repo, base.as_deref(), &span, &range, &mut problems)?;
     }

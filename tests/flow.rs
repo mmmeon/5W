@@ -5212,6 +5212,89 @@ fn gate_trunk_holds_on_a_server_whose_trunk_is_not_main() {
 }
 
 #[test]
+fn a_committed_trunk_rename_does_not_ungate_the_trunk_a_server_pins() {
+    let r = Repo::new("gate-pin");
+    r.git(&r.main, &["branch", "-m", "main", "master"]);
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let gated = cfg
+        .replace("trunk = \"main\"", "trunk = \"master\"")
+        .replace("gate_trunk = false", "gate_trunk = true");
+    assert!(gated.contains("trunk = \"master\"") && gated.contains("gate_trunk = true"));
+    std::fs::write(r.main.join(".5w.toml"), &gated).unwrap();
+    r.git(&r.main, &["commit", "-qam", "gate the trunk"]);
+    let server = r.root.join("server.git");
+    r.git(
+        &r.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            r.main.to_str().unwrap(),
+            server.to_str().unwrap(),
+        ],
+    );
+    r.ok(&server, &["hook", "install", "pre-receive"]);
+    r.git(
+        &r.main,
+        &["remote", "add", "origin", server.to_str().unwrap()],
+    );
+    let push = |args: &[&str]| {
+        let o = r.git_path(
+            &r.main,
+            &path_with_5w(),
+            &[&["push", "-q", "origin"], args].concat(),
+        );
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+    let rename = |to: &str| {
+        let renamed = gated.replace("trunk = \"master\"", &format!("trunk = \"{to}\""));
+        std::fs::write(r.main.join(".5w.toml"), renamed).unwrap();
+        r.git(&r.main, &["commit", "-qam", &format!("trunk is {to}")]);
+    };
+
+    // Unpinned, changing the committed trunk is a gated change like any code.
+    r.git(&server, &["config", "--unset", "5w.trunk"]);
+    rename("x");
+    let (ok, err) = push(&["master"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+
+    // Pinned, a push that would commit another trunk name is refused, naming both.
+    r.git(&server, &["config", "5w.trunk", "master"]);
+    let (ok, err) = push(&["master"]);
+    assert!(
+        !ok && err.contains("trunk = \"x\"") && err.contains("5w.trunk = master"),
+        "{err}"
+    );
+
+    // Say the rename landed anyway (before the pin, or before this check) and a
+    // branch x exists: the pin still names the trunk, and plain code stays gated.
+    let hook = server.join("hooks/pre-receive");
+    std::fs::rename(&hook, server.join("hook-off")).unwrap();
+    r.git(&r.main, &["branch", "x"]);
+    let (ok, err) = push(&["master", "x"]);
+    assert!(ok, "{err}");
+    std::fs::rename(server.join("hook-off"), &hook).unwrap();
+    let before = r.git(&server, &["rev-parse", "master"]);
+    std::fs::write(r.main.join("straight.txt"), "x\n").unwrap();
+    r.git(&r.main, &["add", "straight.txt"]);
+    r.git(&r.main, &["commit", "-qm", "code"]);
+    let (ok, err) = push(&["master"]);
+    assert!(!ok && err.contains("trunk = \"x\""), "{err}");
+    assert!(err.contains("no landing record covers"), "{err}");
+    assert_eq!(r.git(&server, &["rev-parse", "master"]), before);
+    r.git(&r.main, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    // Restoring the pinned name agrees with the pin: judged by the gate alone.
+    rename("master");
+    let (ok, err) = push(&["master"]);
+    assert!(!ok && err.contains("no landing record covers"), "{err}");
+    assert!(!err.contains("5w.trunk = master"), "{err}");
+}
+
+#[test]
 fn pre_receive_does_not_let_a_branch_land_on_a_trunk_update_git_refuses() {
     // git runs pre-receive before its own per-ref checks, and a push that is not
     // atomic applies the refs that pass: judged against the pushed trunk, a branch

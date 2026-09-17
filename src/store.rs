@@ -34,6 +34,9 @@ pub struct Repo {
     pub trunk: String,
     /// A bare repository: a git server, where pushes are judged.
     pub bare: bool,
+    /// On a server, the trunk its admin names (`FIVEW_TRUNK` or `5w.trunk`) and
+    /// how: it wins over a committed `trunk`, which `ci` refuses to disagree with.
+    pub pin: Option<(String, String)>,
 }
 
 pub const CONFIG_FILE: &str = ".5w.toml";
@@ -90,10 +93,19 @@ impl Repo {
         // The config belongs to the trunk: read it from the trunk's checkout,
         // else the trunk's commit, else the primary (before `init` commits it).
         // The trunk's own name is needed to find it, so resolve that first from
-        // git config, and let the config override it.
-        let guess = std::env::var("FIVEW_TRUNK")
+        // git config, and let the config override it (not a server's pin).
+        let pin = std::env::var("FIVEW_TRUNK")
             .ok()
-            .or_else(|| git::opt(&primary, &["config", "5w.trunk"]).filter(|s| !s.is_empty()))
+            .filter(|s| !s.is_empty())
+            .map(|t| (t.clone(), format!("FIVEW_TRUNK={t}")))
+            .or_else(|| {
+                git::opt(&primary, &["config", "5w.trunk"])
+                    .filter(|s| !s.is_empty())
+                    .map(|t| (t.clone(), format!("5w.trunk = {t}")))
+            });
+        let guess = pin
+            .as_ref()
+            .map(|(t, _)| t.clone())
             // A server has no checkout to ask; its HEAD names the default branch.
             .or_else(|| bare.then(|| head_branch(&primary)).flatten())
             .or_else(|| {
@@ -126,7 +138,13 @@ impl Repo {
             Some(s) => Config::from_toml(&s)?,
             None => Config::default(),
         };
-        let trunk = cfg.trunk.clone().unwrap_or(guess);
+        // A committed rename must not move a server's gate off the branch its
+        // admin pinned: there the pin wins, and `ci` refuses the disagreement.
+        let pin = pin.filter(|_| bare);
+        let trunk = match &pin {
+            Some((t, _)) => t.clone(),
+            None => cfg.trunk.clone().unwrap_or(guess),
+        };
         Ok(Repo {
             cwd,
             primary,
@@ -134,6 +152,7 @@ impl Repo {
             cfg,
             trunk,
             bare,
+            pin,
         })
     }
 
