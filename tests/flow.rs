@@ -1590,6 +1590,88 @@ fn doctor_names_a_trunk_copy_of_a_branch_and_discard_copy_takes_only_an_exact_on
     assert!(!r.ok(&r.main, &["doctor"]).contains("discard-copy"));
 }
 
+#[test]
+fn doctor_survives_what_the_copy_check_cannot_hash() {
+    use std::os::unix::ffi::OsStrExt;
+    let r = Repo::new("copy-unhashable");
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    r.commit_in(&r.wt("a/x"), "README", "changed\n");
+    std::fs::write(r.main.join("README"), "changed\n").unwrap();
+    // An untracked nested repository, and a file whose name is not UTF-8.
+    let nested = r.main.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    r.git(&nested, &["init", "-q"]);
+    assert!(r.ok(&r.main, &["doctor"]).contains("ok"));
+    std::fs::write(
+        r.main.join(std::ffi::OsStr::from_bytes(b"bad-\xff-name")),
+        "x\n",
+    )
+    .unwrap();
+    let doc = r.ok(&r.main, &["doctor"]);
+    assert!(doc.contains("ok"), "{doc}");
+    assert!(!doc.contains("discard-copy"), "{doc}");
+    assert!(r.ok(&r.main, &["audit"]).contains("doctor"));
+    let out = r.fails(&r.main, &["wt", "discard-copy", "a/x"]);
+    assert!(out.contains("nothing discarded"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(r.main.join("README")).unwrap(),
+        "changed\n"
+    );
+    assert!(nested.join(".git").exists());
+}
+
+#[test]
+fn discard_copy_refuses_a_file_that_becomes_a_directory_or_back() {
+    let r = Repo::new("copy-filedir");
+    std::fs::write(r.main.join(".gitignore"), "*.log\n").unwrap();
+    std::fs::write(r.main.join("gone"), "file\n").unwrap();
+    std::fs::create_dir_all(r.main.join("d")).unwrap();
+    std::fs::write(r.main.join("d/x"), "x\n").unwrap();
+    r.git(&r.main, &["add", "-A"]);
+    r.git(&r.main, &["commit", "-qm", "base"]);
+
+    // gone: a file on the trunk, a directory on the branch.
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    std::fs::remove_file(wt.join("gone")).unwrap();
+    std::fs::create_dir_all(wt.join("gone")).unwrap();
+    std::fs::write(wt.join("gone/q"), "q\n").unwrap();
+    r.git(&wt, &["add", "-A"]);
+    r.git(&wt, &["commit", "-qm", "file to dir"]);
+    std::fs::remove_file(r.main.join("gone")).unwrap();
+    std::fs::create_dir_all(r.main.join("gone")).unwrap();
+    std::fs::write(r.main.join("gone/q"), "q\n").unwrap();
+    std::fs::write(r.main.join("gone/p.log"), "mine\n").unwrap();
+    assert!(!r.ok(&r.main, &["doctor"]).contains("discard-copy"));
+    let out = r.fails(&r.main, &["wt", "discard-copy", "a/x"]);
+    assert!(out.contains("nothing discarded"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(r.main.join("gone/p.log")).unwrap(),
+        "mine\n"
+    );
+    assert!(r.main.join("gone/q").exists());
+    std::fs::remove_dir_all(r.main.join("gone")).unwrap();
+    r.git(&r.main, &["checkout", "--", "gone"]);
+
+    // d: a directory on the trunk, a symlink on the branch.
+    r.ok(&r.main, &["wt", "new", "b/y"]);
+    let wt = r.wt("b/y");
+    std::fs::remove_dir_all(wt.join("d")).unwrap();
+    std::os::unix::fs::symlink("README", wt.join("d")).unwrap();
+    r.git(&wt, &["add", "-A"]);
+    r.git(&wt, &["commit", "-qm", "dir to link"]);
+    std::fs::remove_dir_all(r.main.join("d")).unwrap();
+    std::os::unix::fs::symlink("README", r.main.join("d")).unwrap();
+    assert!(!r.ok(&r.main, &["doctor"]).contains("discard-copy"));
+    let out = r.fails(&r.main, &["wt", "discard-copy", "b/y"]);
+    assert!(out.contains("nothing discarded"), "{out}");
+    let status = r.git(&r.main, &["status", "--porcelain"]);
+    assert!(
+        status.contains(" D d/x") && status.contains("?? d"),
+        "{status}"
+    );
+}
+
 // --- audit: how a repository has used 5W ------------------------------------------------
 
 impl Repo {

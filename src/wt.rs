@@ -25,7 +25,7 @@ usage: 5w wt <command> [args]
   install [<path>]            Run the configured install command
   setup                       Configure git (and git-town, if present). Idempotent
   discard-copy <branch>       Discard the trunk checkout's uncommitted changes when they
-                              are exactly <branch>'s diff, byte for byte; else refuse
+                              are exactly <branch>'s diff (as git would stage them); else refuse
 
 Links are shared, not copied: a write through one hits the primary's file.";
 
@@ -457,10 +457,10 @@ fn branch_changes(repo: &Repo, branch: &str) -> Res<Changes> {
     Ok(raw_changes(&out))
 }
 
-/// The checkout's uncommitted changes against HEAD, untracked files included, with
-/// each working file's blob hashed as `git add` would (and nothing written). `None`
-/// when a path is partly staged: its staged content is in neither HEAD nor the file.
-fn working_changes(dir: &Path) -> Res<Option<Changes>> {
+/// The checkout's uncommitted changes against HEAD, untracked files included, each
+/// working file hashed as `git add` would stage it (and nothing written). An error
+/// is any reason the changes cannot be compared or discarded safely.
+fn working_changes(dir: &Path) -> Res<Changes> {
     let names = |args: &[&str]| -> Res<std::collections::HashSet<String>> {
         Ok(git::git(dir, args)?
             .split('\0')
@@ -470,8 +470,8 @@ fn working_changes(dir: &Path) -> Res<Option<Changes>> {
     };
     let staged = names(&["diff", "--cached", "--name-only", "-z", "--no-renames"])?;
     let unstaged = names(&["diff", "--name-only", "-z", "--no-renames"])?;
-    if staged.intersection(&unstaged).next().is_some() {
-        return Ok(None);
+    if let Some(p) = staged.intersection(&unstaged).next() {
+        bail!("{p} is partly staged");
     }
     let raw = git::git(
         dir,
@@ -493,74 +493,136 @@ fn working_changes(dir: &Path) -> Res<Option<Changes>> {
         let old = v.remove(p).and_then(|(o, _)| o);
         v.insert(p.to_string(), (old, Some((String::new(), String::new()))));
     }
+    // A file that turns into a directory, or back: restoring one side would take
+    // whatever else lives under that path with it, ignored files included.
+    for p in v.keys() {
+        if p.contains(['\u{fffd}', '\n']) {
+            bail!("cannot compare the path {p:?}");
+        }
+        let mut a = p.as_str();
+        while let Some((parent, _)) = a.rsplit_once('/') {
+            if v.contains_key(parent) {
+                bail!("{parent} and {p} both change: a file becomes a directory");
+            }
+            a = parent;
+        }
+    }
     // Hash what is on disk now; the index's idea of a working file may be stale.
-    for (p, (_, new)) in v.iter_mut() {
+    let mut plain = Vec::new();
+    for (p, (old, new)) in v.iter_mut() {
+        if old.as_ref().is_some_and(|o| o.0 == "160000") {
+            bail!("{p} is a submodule");
+        }
         let Some(n) = new else { continue };
         let file = dir.join(p);
         let meta = fs::symlink_metadata(&file).map_err(|e| format!("{p}: {e}"))?;
-        let o = if meta.file_type().is_symlink() {
+        if meta.file_type().is_symlink() {
             let target = fs::read_link(&file).map_err(|e| format!("{p}: {e}"))?;
-            n.0 = "120000".into();
-            git::raw(
+            let o = git::raw(
                 dir,
                 &["hash-object", "--stdin"],
                 &[],
                 Some(&target.to_string_lossy()),
-            )?
-        } else {
+            )?;
+            if !o.ok {
+                bail!("cannot hash {p}");
+            }
+            *n = ("120000".into(), o.stdout.trim().to_string());
+        } else if meta.is_file() {
             use std::os::unix::fs::PermissionsExt;
-            n.0 = if meta.permissions().mode() & 0o111 != 0 {
-                "100755".into()
+            let mode = if meta.permissions().mode() & 0o111 != 0 {
+                "100755"
             } else {
-                "100644".into()
+                "100644"
             };
-            git::raw(dir, &["hash-object", "--", p], &[], None)?
-        };
-        if !o.ok {
-            bail!("git hash-object {p}: {}", o.stderr.trim());
+            *n = (mode.into(), String::new());
+            plain.push((p.clone(), n));
+        } else {
+            bail!("{p} is not a file");
         }
-        n.1 = o.stdout.trim().to_string();
     }
-    Ok(Some(v))
+    if !plain.is_empty() {
+        let list: String = plain.iter().map(|(p, _)| format!("{p}\n")).collect();
+        let o = git::raw(dir, &["hash-object", "--stdin-paths"], &[], Some(&list))?;
+        let shas: Vec<&str> = o.stdout.lines().collect();
+        if !o.ok || shas.len() != plain.len() {
+            bail!("cannot hash the changed files");
+        }
+        for ((_, n), sha) in plain.iter_mut().zip(shas) {
+            n.1 = sha.to_string();
+        }
+    }
+    Ok(v)
 }
 
-/// Branches whose whole diff the trunk checkout holds uncommitted, byte for byte —
-/// with the checkout. Such a copy blocks shipping the branch and is safe to discard.
-pub fn copies(repo: &Repo) -> Res<Option<(PathBuf, Vec<String>)>> {
-    let Some(dir) = repo.trunk_checkout()? else {
-        return Ok(None);
-    };
-    if !git::dirty(&dir)? {
-        return Ok(None);
-    }
-    let Some(work) = working_changes(&dir)? else {
-        return Ok(None);
-    };
-    let mut found = Vec::new();
-    for b in git::git(
+/// Branches whose tips hold every changed path as the checkout does: one git call
+/// for all of them, so the full diff runs only for the few that could be a copy.
+fn candidates(repo: &Repo, work: &Changes) -> Res<Vec<String>> {
+    let branches: Vec<String> = git::git(
         &repo.primary,
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
     )?
     .lines()
-    {
-        if b == repo.trunk {
-            continue;
-        }
-        if let Ok(c) = branch_changes(repo, b)
-            && c == work
-        {
-            found.push(b.to_string());
+    .filter(|b| *b != repo.trunk)
+    .map(String::from)
+    .collect();
+    let mut query = String::new();
+    for b in &branches {
+        for p in work.keys() {
+            query.push_str(&format!("refs/heads/{b}:{p}\n"));
         }
     }
-    Ok(Some((dir, found)))
+    let o = git::raw(
+        &repo.primary,
+        &["cat-file", "--batch-check=%(objectname)"],
+        &[],
+        Some(&query),
+    )?;
+    let lines: Vec<&str> = o.stdout.lines().collect();
+    if !o.ok || lines.len() != branches.len() * work.len() {
+        bail!("git cat-file --batch-check: {}", o.stderr.trim());
+    }
+    Ok(branches
+        .into_iter()
+        .zip(lines.chunks(work.len()))
+        .filter(|(_, got)| {
+            work.values()
+                .zip(got.iter())
+                .all(|((_, new), g)| match new {
+                    Some((_, sha)) => sha == g,
+                    None => g.ends_with(" missing"),
+                })
+        })
+        .map(|(b, _)| b)
+        .collect())
+}
+
+/// Branches whose whole diff the trunk checkout holds uncommitted, exactly — with
+/// the checkout. Such a copy blocks shipping the branch and is safe to discard.
+/// Anything that stops the comparison means no copy: doctor must never fail on it.
+fn copies(repo: &Repo) -> Option<(PathBuf, Vec<String>)> {
+    let dir = repo.trunk_checkout().ok()??;
+    if !git::dirty(&dir).ok()? {
+        return None;
+    }
+    let work = working_changes(&dir).ok()?;
+    if work.is_empty() {
+        return None;
+    }
+    let found = candidates(repo, &work)
+        .ok()?
+        .into_iter()
+        .filter(|b| branch_changes(repo, b).is_ok_and(|c| c == work))
+        .collect();
+    Some((dir, found))
 }
 
 /// Doctor's notes: each branch the trunk checkout holds an uncommitted copy of.
-pub fn copy_notes(repo: &Repo) -> Res<Vec<String>> {
-    let Some((dir, found)) = copies(repo)? else {
-        return Ok(Vec::new());
+pub fn copy_notes(repo: &Repo) -> Vec<String> {
+    let Some((dir, found)) = copies(repo) else {
+        return Vec::new();
     };
-    Ok(found
+    found
         .iter()
         .map(|b| {
             format!(
@@ -568,7 +630,7 @@ pub fn copy_notes(repo: &Repo) -> Res<Vec<String>> {
                 dir.display()
             )
         })
-        .collect())
+        .collect()
 }
 
 fn discard_copy(repo: &Repo, branch: &str) -> Res<()> {
@@ -581,13 +643,13 @@ fn discard_copy(repo: &Repo, branch: &str) -> Res<()> {
             repo.trunk
         )
     };
-    let Some(work) = working_changes(&dir)? else {
-        bail!(
-            "{} has files partly staged; nothing discarded — `git -C {} diff` to see them",
+    let work = working_changes(&dir).map_err(|e| {
+        format!(
+            "{}: {e}; nothing discarded — `git -C {} status` to see it",
             dir.display(),
             dir.display()
         )
-    };
+    })?;
     if work.is_empty() {
         bail!(
             "{} has no uncommitted changes; nothing to discard",
@@ -602,6 +664,7 @@ fn discard_copy(repo: &Repo, branch: &str) -> Res<()> {
             repo.trunk
         );
     }
+    // Everything is checked above; from here on only the compared paths change.
     let env = [("GIT_LITERAL_PATHSPECS", "1")];
     let tracked: Vec<&str> = (work.iter())
         .filter(|(_, (old, _))| old.is_some())
@@ -611,6 +674,14 @@ fn discard_copy(repo: &Repo, branch: &str) -> Res<()> {
         .filter(|(_, (old, _))| old.is_none())
         .map(|(p, _)| p.as_str())
         .collect();
+    if !added.is_empty() {
+        let mut args = vec!["rm", "--cached", "-q", "--ignore-unmatch", "--"];
+        args.extend(&added);
+        let o = git::raw(&dir, &args, &env, None)?;
+        if !o.ok {
+            bail!("git rm --cached: {}", o.stderr.trim());
+        }
+    }
     if !tracked.is_empty() {
         let mut args = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
         args.extend(&tracked);
@@ -620,15 +691,6 @@ fn discard_copy(repo: &Repo, branch: &str) -> Res<()> {
         }
     }
     for p in added {
-        let o = git::raw(
-            &dir,
-            &["rm", "--cached", "-q", "--ignore-unmatch", "--", p],
-            &env,
-            None,
-        )?;
-        if !o.ok {
-            bail!("git rm --cached {p}: {}", o.stderr.trim());
-        }
         let file = dir.join(p);
         fs::remove_file(&file).map_err(|e| format!("{p}: {e}"))?;
         // Directories the branch added go with their last file.

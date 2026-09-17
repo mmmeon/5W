@@ -352,10 +352,13 @@ configures both.
 A branch's change copied into the trunk checkout and left uncommitted — a worker that edited the
 wrong directory, a patch applied to try it — blocks shipping that branch. `5w doctor` names each
 branch whose whole diff (`main...branch`) the trunk checkout's uncommitted changes equal exactly,
-untracked new files included, and `5w wt discard-copy <branch>` discards them: it refuses unless
-every changed path, both sides of it and its mode match the branch's diff byte for byte and no path
-is partly staged, then restores those files from `HEAD` and deletes the ones the branch adds.
-Anything else in the checkout makes it refuse, so nothing that is not in the branch is lost.
+untracked new files included, and `5w wt discard-copy <branch>` discards them. Files compare as git
+would stage them (so a line-ending conversion is not a difference), each path's before and after and
+its mode. It refuses on any other change in the checkout, a partly staged file, a path that becomes
+a directory or back (restoring it would take ignored files under it along), a submodule or anything
+it cannot hash — checking all of that before it touches a file — then restores those files from
+`HEAD` and deletes the ones the branch adds. Doctor stays quiet about what it cannot compare, and
+narrows hundreds of branches to the possible copies in one git call.
 
 ## Configuration
 
