@@ -170,18 +170,18 @@ impl Repo {
 
     /// Worktree root for new branches, with `.` and `..` resolved lexically so every path
     /// printed under it is clean. Lexical, not `fs::canonicalize`: symlinks stay as written.
+    /// A relative root, from `$FIVEW_WT_ROOT` or `worktrees.root`, is read from the primary
+    /// checkout whatever the current directory, so checks and `git worktree add` agree.
     pub fn wt_root(&self) -> PathBuf {
-        let root = if let Some(r) = std::env::var_os("FIVEW_WT_ROOT") {
-            PathBuf::from(r)
-        } else {
-            self.configured_wt_root()
+        let root = match std::env::var_os("FIVEW_WT_ROOT") {
+            Some(r) => self.primary.join(r),
+            None => self.configured_wt_root(),
         };
         normalize(&root)
     }
 
     fn configured_wt_root(&self) -> PathBuf {
         match &self.cfg.wt_root {
-            Some(r) if Path::new(r).is_absolute() => PathBuf::from(r),
             Some(r) => self.primary.join(r),
             None => {
                 let name = self

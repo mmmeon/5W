@@ -1576,6 +1576,49 @@ fn worktree_paths_are_normalized() {
 }
 
 #[test]
+fn relative_wt_root_env_is_read_from_the_primary_checkout() {
+    let r = Repo::new("wt-env-rel");
+    r.ok(&r.main, &["wt", "new", "a/first"]);
+    let sub = r.wt("a/first").join("deep/er");
+    std::fs::create_dir_all(&sub).unwrap();
+    let run = |cwd: &Path, args: &[&str]| {
+        let mut c = Command::new(bin5w());
+        c.args(args).current_dir(cwd);
+        env(&mut c, &r.root);
+        c.env("FIVEW_WT_ROOT", "../wt-rel");
+        let o = c.output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout).to_string();
+        assert!(
+            o.status.success(),
+            "{args:?}: {out}{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        out
+    };
+    // From a subdirectory of another worktree: lands under <primary>/../wt-rel, where `wt path` says.
+    run(&sub, &["wt", "new", "a/second", "--from", "main"]);
+    let want = r.root.join("wt-rel/a-second");
+    assert!(want.join("README").exists(), "not at {}", want.display());
+    assert_eq!(
+        run(&sub, &["wt", "path", "a/second"]).trim(),
+        want.to_str().unwrap()
+    );
+    assert_eq!(
+        run(&r.main, &["wt", "path", "a/second"]).trim(),
+        want.to_str().unwrap()
+    );
+    // The refusal check looks at the same directory git would use.
+    std::fs::create_dir_all(r.root.join("wt-rel/a-third")).unwrap();
+    let mut c = Command::new(bin5w());
+    c.args(["wt", "new", "a/third"]).current_dir(&sub);
+    env(&mut c, &r.root);
+    c.env("FIVEW_WT_ROOT", "../wt-rel");
+    let o = c.output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains("exists"), "{err}");
+}
+
+#[test]
 fn wt_rm_finds_force_anywhere_in_the_arguments() {
     let r = Repo::new("wt-rm-force");
     r.ok(&r.main, &["wt", "new", "a/x"]);
