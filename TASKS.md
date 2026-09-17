@@ -35,6 +35,9 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #60: with #1 open in the working TASKS.md and closed in main's DONE.md, 5w reopen 1 succeeds and main ends with #1 in both files; every command then refuses 'duplicate ids', yet 5w lint (without --staged) exits 0. reopen must refuse when the id is in the archive (name moving the block back); lint on a commit/range must flag an id present in both files. Test both.
 - [ ] #67 This repository's PROTOCOL.md is stamped 0.1.2: refresh it with update-files so doctor is clean @upkeep !1
   5w doctor here notes 'PROTOCOL.md is from 0.1.2; this is 0.1.3 — 5w update-files'. Many branches edited PROTOCOL.md and templates/PROTOCOL.md in step; confirm update-files only changes the stamp line (diff), commit it on a branch, and check doctor reports ok with no PROTOCOL note. The local pre-commit hook note is machine-local (.git/hooks), not part of the change.
+- [ ] #68 Queue symlink leftovers: a working-tree-only link redirects queue writes outside the repo @queue !1
+  ci ship_check reads a trunk link as an empty queue; the refusal suggests copying a non-queue target
+  Found reviewing #65 (pre-existing): (1) TASKS.md replaced locally (untracked) by a symlink → 5w add writes through it, possibly to a file outside the repository, and leaves ' T TASKS.md'; refuse queue writes when the checkout's queue file is a symlink, one line. (2) ci ship_check reads <trunk>:TASKS.md without checking the mode, so a link already on trunk reads as an empty queue ('no task names X … ok'): refuse/flag it. (3) When the trunk link points at a non-.md file, #65's refusal suggests 'cp src/main.rs TASKS.md'; name reverting the commit that re-pointed it instead. Tests for each.
 
 ## Done
 
