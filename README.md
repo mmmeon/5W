@@ -237,6 +237,9 @@ The queue is read by agents, so every read is priced in tokens.
   steps and the rules, and names the sections the text cites (`refs: client/FINDINGS.md #779`) so the
   worker reads those rather than whole files. `review` prints its checklist once, on
   `--checklist`.
+- **Help is per command.** `5w <command> --help` prints that command's entry from the listing (and
+  the `filters`, `out` or `ids` line it refers to), not the whole listing; bare `5w --help` prints
+  all of it. `wt`, `ship`, `lint`, `ci`, `report` and `audit` print their own usage.
 
 ### Measuring output
 

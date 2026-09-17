@@ -50,6 +50,45 @@ filters  @area !level >lane — or area:x level:n lane:x (no quoting)
 out      --json  --ids  --limit N  --full
 ids      14 or #14. Output is compact when not on a terminal or FIVEW_AGENT=1.";
 
+/// One command's help: its entry from `USAGE`, and the footer lines that entry
+/// refers to (filters, out, ids), so the two can never drift. `None` for a
+/// command `USAGE` does not list.
+pub fn command_usage(cmd: &str) -> Option<String> {
+    let cmd = match cmd {
+        "list" => "ls",
+        "reopen" => "open",
+        c => c,
+    };
+    let (body, footer) = USAGE.split_once("\n\nfilters ")?;
+    let entry = body.lines().find(|l| {
+        let Some(spec) = l.strip_prefix("  ") else {
+            return false;
+        };
+        let names = spec.split("  ").next().unwrap_or("");
+        let parts: Vec<&str> = names.split(" | ").collect();
+        if parts.iter().all(|p| !p.contains(' ')) {
+            parts.contains(&cmd)
+        } else {
+            names.split(' ').next() == Some(cmd)
+        }
+    })?;
+    let mut out = format!("usage: 5w {}", entry.trim());
+    for f in format!("filters {footer}").lines() {
+        let key = f.split(' ').next().unwrap_or("");
+        let wanted = match key {
+            "filters" => entry.contains("[filters]"),
+            "out" => entry.contains("[out]"),
+            "ids" => entry.contains("<id>"),
+            _ => false,
+        };
+        if wanted {
+            out.push('\n');
+            out.push_str(f);
+        }
+    }
+    Some(out)
+}
+
 // --- options ---------------------------------------------------------------------------
 
 #[derive(Default)]

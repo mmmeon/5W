@@ -458,6 +458,44 @@ fn duplicate_ids_stop_every_command() {
 }
 
 #[test]
+fn a_subcommand_help_prints_only_that_command() {
+    let r = Repo::new("subhelp");
+    let full = r.ok(&r.main, &["--help"]);
+    for (cmd, want) in [
+        ("add", "usage: 5w add <text> [fields]"),
+        ("submit", "usage: 5w submit <id> [branch]"),
+        ("accept", "usage: 5w accept <id> [--at <rev>] [--force]"),
+        ("reject", "usage: 5w reject <id> <reason>"),
+        ("show", "usage: 5w show <id> [--json]"),
+        ("ready", "usage: 5w ready [filters] [out]"),
+        ("levels", "usage: 5w blocked | levels | all"),
+        ("reopen", "usage: 5w open <id>"),
+        ("hook", "usage: 5w hook install | uninstall"),
+        ("doctor", "usage: 5w doctor"),
+    ] {
+        let o = r.cli(&r.main, &[cmd, "--help"]);
+        assert!(o.status.success(), "{cmd} --help failed");
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert!(out.starts_with(want), "{cmd} -h:\n{out}");
+        assert!(
+            out.lines().count() <= 3,
+            "{cmd} -h is the whole listing:\n{out}"
+        );
+        assert!(o.stderr.is_empty());
+    }
+    let ready = r.ok(&r.main, &["ready", "-h"]);
+    assert!(ready.contains("\nfilters ") && ready.contains("\nout "));
+    assert!(r.ok(&r.main, &["show", "-h"]).contains("\nids "));
+    // Commands with their own usage keep it; one USAGE does not list, the full listing.
+    assert!(
+        r.ok(&r.main, &["ship", "--help"])
+            .contains("usage: 5w ship")
+    );
+    assert!(r.ok(&r.main, &["wt", "--help"]).contains("wt"));
+    assert_eq!(r.ok(&r.main, &["branch", "--help"]), full);
+}
+
+#[test]
 fn symlinked_as_tasks_wt_ship() {
     let r = Repo::new("argv0");
     let bin = r.root.join("bin");

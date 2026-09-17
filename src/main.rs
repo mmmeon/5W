@@ -88,9 +88,9 @@ fn dispatch(args: Vec<String>) -> Res<()> {
         println!(
             "{}",
             if cmd == "ship" {
-                ship::USAGE
+                ship::USAGE.to_string()
             } else {
-                tasks::USAGE
+                tasks::command_usage(&cmd).unwrap_or_else(|| tasks::USAGE.to_string())
             }
         );
         return Ok(());
