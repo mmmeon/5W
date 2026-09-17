@@ -52,8 +52,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. clig: link to web docs in help text.
 - [ ] #31 README: one-line uninstall note (cargo uninstall 5w) next to the install line @output !1 needs:#13
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning.
-- [~] #32 review --json prints the same text as review: give it JSON output or refuse the flag @output !1 branch:output/task-32 submitted:899619cb8312
-  Found by the #14 benchmark: review --json output is byte-identical to review at every queue size.
 - [ ] #33 wt: resolve .. in the worktree root once, so refusals and the --install line print clean paths too @wt !1 needs:#6
   #6 canonicalizes only the printed 'cd' line. The 'already exists' refusals in wt new/add and 'wt: <cmd> (in <dir>)' still show '..'. Normalize lexically in Repo::wt_root() instead; fs::canonicalize also follows symlinks (/tmp to /private/tmp on macOS).
 - [ ] #34 USAGE: one example invocation under the usage line, e.g. 5w ready area:output @output !1 needs:#13
@@ -86,3 +84,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Compact by default, --json, --since <rev|date>. Refusal-free on a repo with no history. Design the report sections in the README before building.
 - [x] #30 wt rm: find --force anywhere in the arguments, not only at position 2 @wt !1 needs:#13 branch:wt/task-30 submitted:532ba21d60cd via:review reviewed:532ba21d60cd
   From the AXI/clig.dev evaluation in docs/agent-output.md (#12, #13); see that section for the reasoning. wt rm reads rest.get(1); scan args like tasks::opts() does.
+- [x] #32 review --json prints the same text as review: give it JSON output or refuse the flag @output !1 branch:output/task-32 submitted:899619cb8312 via:review reviewed:899619cb8312
+  Found by the #14 benchmark: review --json output is byte-identical to review at every queue size.
