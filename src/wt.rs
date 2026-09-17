@@ -48,12 +48,17 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
             }
         }
         "rm" | "remove" => {
-            let b = rest.first().ok_or("usage: 5w wt rm <branch> [--force]")?;
-            remove(
-                repo,
-                b,
-                rest.get(1).map(|s| s == "--force").unwrap_or(false),
-            )
+            let usage = "usage: 5w wt rm <branch> [--force]";
+            let (mut branch, mut force) = (None, false);
+            for a in rest {
+                match a.as_str() {
+                    "--force" => force = true,
+                    f if f.starts_with("--") => bail!("unknown flag {f} ({usage})"),
+                    b if branch.is_none() => branch = Some(b),
+                    _ => bail!("{usage}"),
+                }
+            }
+            remove(repo, branch.ok_or(usage)?, force)
         }
         "link" => link(repo, &target(repo, rest)?).map(|_| ()),
         "install" => install(repo, &target(repo, rest)?),

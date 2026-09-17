@@ -1380,6 +1380,21 @@ fn worktree_paths_are_normalized() {
     );
 }
 
+#[test]
+fn wt_rm_finds_force_anywhere_in_the_arguments() {
+    let r = Repo::new("wt-rm-force");
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    std::fs::write(wt.join("scratch"), "dirty").unwrap();
+    assert!(r.fails(&r.main, &["wt", "rm", "a/x"]).contains("--force"));
+    r.ok(&r.main, &["wt", "rm", "--force", "a/x"]);
+    assert!(!wt.exists());
+    assert!(
+        r.fails(&r.main, &["wt", "rm", "--forse", "a/x"])
+            .contains("unknown flag")
+    );
+}
+
 // --- audit: how a repository has used 5W ------------------------------------------------
 
 impl Repo {
