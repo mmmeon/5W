@@ -1738,10 +1738,14 @@ fn reject(repo: &Repo, args: &[String]) -> Res<()> {
 fn done(repo: &Repo, args: &[String]) -> Res<()> {
     let id = parse_id(args.first().ok_or("usage: 5w done <id> --<close>")?)?;
     let flag = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    // A close is judged by the lanes the trunk commits, as the hook and ci judge
+    // it: an uncommitted edit to the trunk checkout's config closes nothing.
+    let trunk_cfg = crate::lint::committed_rules(repo);
+    let rules = trunk_cfg.as_ref().unwrap_or(&repo.cfg);
     // The flags `done` takes are the lanes' close words, from the config.
     if let Some(extra) = args.get(2)
         && extra.starts_with("--")
-        && !repo.cfg.lanes.iter().any(|l| extra[2..] == l.close)
+        && !rules.lanes.iter().any(|l| extra[2..] == l.close)
     {
         return Err(unknown_flag(repo, "done", extra));
     }
@@ -1750,8 +1754,8 @@ fn done(repo: &Repo, args: &[String]) -> Res<()> {
     if t.state == State::Done {
         bail!("#{id} is already closed");
     }
-    let lane_name = q.lane(t).to_string();
-    let Some(lane) = repo.cfg.lane(&lane_name) else {
+    let lane_name = t.lane.clone().unwrap_or(rules.default_lane.clone());
+    let Some(lane) = rules.lane(&lane_name) else {
         bail!("#{id} is on unknown lane >{lane_name}")
     };
     let want = format!("--{}", lane.close);
@@ -1783,7 +1787,7 @@ fn done(repo: &Repo, args: &[String]) -> Res<()> {
     let msg = format!("{}: close #{id} via:{close}", repo.cfg.commit_prefix);
     let done = repo.cfg.done_section.clone();
     let tasks_cmd = repo.cfg.cmd_tasks.clone();
-    let default_lane = repo.cfg.default_lane.clone();
+    let default_lane = rules.default_lane.clone();
     store::transact(
         repo,
         |_| msg.clone(),

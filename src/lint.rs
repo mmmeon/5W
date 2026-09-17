@@ -186,6 +186,14 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                 }
                 None => vec![commit(range)?],
             };
+            let judged;
+            let repo = match committed_rules(repo) {
+                Some(cfg) => {
+                    judged = with_config(repo, cfg);
+                    &judged
+                }
+                None => repo,
+            };
             let trunk = repo.trunk.clone();
             commits_on(
                 repo,
@@ -681,6 +689,17 @@ fn committed_config(repo: &Repo) -> Option<Result<Config, (String, Config)>> {
             ..d
         },
     )))
+}
+
+/// The config queue rules are judged under in a checkout: the one its trunk
+/// commits, as the hook and `ci` read it, not the trunk checkout's working copy.
+/// None: judge under `repo`'s own — the trunk commits no config (adoption), or
+/// one that does not parse (the repair `Repo::open_for_repair` reads by).
+pub fn committed_rules(repo: &Repo) -> Option<Config> {
+    if repo.broken.is_some() {
+        return None;
+    }
+    committed_config(repo)?.ok()
 }
 
 /// `repo` judged under `cfg`.

@@ -6378,6 +6378,49 @@ fn the_pre_commit_hook_judges_a_queue_commit_under_the_committed_trunk_config() 
 }
 
 #[test]
+fn queue_writes_and_lint_ranges_judge_under_the_committed_trunk_config() {
+    let r = Repo::new("writes-committed-config");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let reviewed = cfg.replace("[lanes.agent]\n", "[lanes.agent]\nclose = \"review\"\n");
+    assert_ne!(reviewed, cfg);
+    r.commit_in(&r.main, ".5w.toml", &reviewed);
+    r.ok(&r.main, &["add", "do it"]);
+    r.ok(&r.main, &["add", "and this"]);
+    // The review dropped only in the trunk checkout's copy.
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+
+    // `done` closes by the lane the trunk commits,
+    let err = r.refuses(&r.main, &["done", "1", "--self"]);
+    assert!(err.contains("close with `5w done 1 --review`"), "{err}");
+    assert!(r.line(1).starts_with("- [ ] #1"), "{}", r.line(1));
+
+    // and a lint of commits judges them as the hook and ci do.
+    let closed = r
+        .tasks()
+        .replace("- [ ] #2 and this", "- [x] #2 and this via:self");
+    std::fs::write(r.main.join("TASKS.md"), &closed).unwrap();
+    r.git(
+        &r.main,
+        &["commit", "-qm", "close #2", "--no-verify", "--", "TASKS.md"],
+    );
+    let out = r.fails(&r.main, &["lint", "HEAD"]);
+    assert!(out.contains("closes via:review"), "{out}");
+    let root = r.git(&r.main, &["rev-list", "--max-parents=0", "main"]);
+    let out = r.fails(&r.main, &["lint", &format!("{root}..main")]);
+    assert!(out.contains("closes via:review"), "{out}");
+    r.git(&r.main, &["reset", "-q", "--keep", "HEAD~1"]);
+
+    // Committed, the edit is the trunk's: the close is its to make.
+    r.git(
+        &r.main,
+        &["commit", "-qm", "closes via:self", "--", ".5w.toml"],
+    );
+    r.ok(&r.main, &["done", "1", "--self"]);
+    assert!(r.line(1).contains("via:self"), "{}", r.line(1));
+    r.lint_history();
+}
+
+#[test]
 fn a_trunk_config_broken_past_parsing_is_read_as_the_last_one_that_parsed() {
     let r = Repo::new("config-syntax");
     let server = server_of(&r);
