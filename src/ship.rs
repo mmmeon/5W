@@ -19,6 +19,7 @@ use crate::queue::{self, State};
 use crate::store::Repo;
 use crate::util::{Res, short};
 use crate::wt;
+use std::collections::HashSet;
 
 pub const USAGE: &str = "\
 usage: 5w ship [<branch> | --accepted] [--sync] [--squash] [-m <message>] [--discard-ignored] [--force]
@@ -587,17 +588,17 @@ fn landed_under(
         let Some(mb) = git::opt(p, &["merge-base", trunk, &base]) else {
             continue;
         };
-        let paths = git::git(p, &["diff", "--name-only", "--no-renames", &mb, &base])?;
-        let mut args = vec![
-            "diff",
-            "--quiet",
-            "--no-renames",
-            &base,
-            trunk.as_str(),
-            "--",
-        ];
-        args.extend(paths.lines());
-        if !git::ok(p, &args) {
+        // Names are compared here, never handed back to git: as pathspecs a
+        // quoted non-ASCII name or a `:`-magic name would match nothing and pass.
+        let names = |from: &str, to: &str| -> Res<HashSet<String>> {
+            let o = git::git(p, &["diff", "--name-only", "-z", "--no-renames", from, to])?;
+            Ok(o.split('\0')
+                .filter(|n| !n.is_empty())
+                .map(String::from)
+                .collect())
+        };
+        let changed = names(&mb, &base)?;
+        if !changed.is_empty() && !names(&base, trunk)?.is_disjoint(&changed) {
             continue;
         }
         if git::change_id(p, &base, reviewed)? == now {

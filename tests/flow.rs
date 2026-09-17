@@ -793,6 +793,51 @@ fn ship_accepted_lands_every_accepted_branch_bottom_of_stack_first() {
     );
 }
 
+/// An accepted parent whose branch was deleted without shipping: the child,
+/// rebased onto main without it, must not pass as "on the parent, which landed"
+/// — whatever the parent's file is called.
+fn a_parent_that_never_landed_does_not_authorise_its_child(name: &str) {
+    let r = Repo::new("unlanded");
+    r.ok(&r.main, &["add", "bottom"]);
+    r.ok(&r.main, &["add", "top"]);
+    r.ok(&r.main, &["wt", "new", "s/a"]);
+    let a = r.wt("s/a");
+    std::fs::write(a.join(name), "a\n").unwrap();
+    r.git(&a, &["add", "-A"]);
+    r.git(&a, &["commit", "-qm", "parent"]);
+    r.ok(&a, &["submit", "1"]);
+    r.ok(&r.main, &["wt", "new", "s/b", "--from", "s/a"]);
+    let b = r.wt("s/b");
+    r.commit_in(&b, "b", "b\n");
+    r.ok(&b, &["submit", "2"]);
+    r.ok(&r.main, &["accept", "1", "2"]);
+    let a_tip = r.git(&r.main, &["rev-parse", "s/a"]);
+    r.ok(&r.main, &["wt", "rm", "s/a"]);
+    r.git(&r.main, &["branch", "-D", "s/a"]);
+    r.git(&b, &["rebase", "-q", "--onto", "main", &a_tip]);
+    let out = r.fails(&r.main, &["ship", "s/b"]);
+    assert!(
+        out.contains("is not the change #2 accepted"),
+        "{name}: {out}"
+    );
+    assert!(!r.main.join("b").exists());
+}
+
+#[test]
+fn a_parent_that_never_landed_does_not_authorise_its_child_plain_name() {
+    a_parent_that_never_landed_does_not_authorise_its_child("parent.txt");
+}
+
+#[test]
+fn a_parent_that_never_landed_does_not_authorise_its_child_non_ascii_name() {
+    a_parent_that_never_landed_does_not_authorise_its_child("é");
+}
+
+#[test]
+fn a_parent_that_never_landed_does_not_authorise_its_child_pathspec_magic_name() {
+    a_parent_that_never_landed_does_not_authorise_its_child(":!*");
+}
+
 #[test]
 fn a_stacked_branch_changed_after_review_is_refused_once_its_parent_landed() {
     let r = Repo::new("stackdrift");
