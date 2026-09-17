@@ -41,6 +41,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #60 (pre-existing): with archive = docs/CLOSED.md and no docs/, a checkout archive rewrites the working TASKS.md and then fails 'cannot write docs/CLOSED.md'; the moved row is in no working file. Create the parent directory, or validate every write target before writing anything (write both files, or neither); test it.
 - [ ] #63 reopen accepts an id that is also in the archive, and lint on a commit misses the same id in TASKS.md and DONE.md @queue !1
   Found reviewing #60: with #1 open in the working TASKS.md and closed in main's DONE.md, 5w reopen 1 succeeds and main ends with #1 in both files; every command then refuses 'duplicate ids', yet 5w lint (without --staged) exits 0. reopen must refuse when the id is in the archive (name moving the block back); lint on a commit/range must flag an id present in both files. Test both.
+- [ ] #64 archive with a row deleted by hand leaves ' D DONE.md' when the commit creates DONE.md on main @queue !1
+  Found reviewing #60: a row closed on main but deleted by hand from the checkout, DONE.md not yet on main — archive commits the move but the checkout never gets DONE.md (' D DONE.md'); a git commit -a would delete the archive from main. When the commit creates the archive file and the working plan's copy is empty, write main's copy into the checkout (and index if tracked). Test it.
 
 ## Done
 
