@@ -1588,7 +1588,7 @@ fn wt_prune_lists_then_removes_only_empty_clean_unnamed_branches() {
     std::fs::write(r.main.join(".gitignore"), ".env\ntarget\n").unwrap();
     r.git(&r.main, &["add", ".gitignore"]);
     r.git(&r.main, &["commit", "-qm", "ignore"]);
-    // Empty and clean: removable, worktree or not, stacked or not.
+    // Empty, clean, and no open task suggests the name: removable, worktree or not, stacked or not.
     r.ok(&r.main, &["wt", "new", "t/empty"]);
     r.ok(&r.main, &["wt", "new", "t/stacked", "--from", "t/empty"]);
     r.git(&r.main, &["branch", "t/bare"]);
@@ -1662,6 +1662,67 @@ fn wt_prune_lists_then_removes_only_empty_clean_unnamed_branches() {
     }
     assert!(r.wt("t/ignored").join(".env").exists());
     assert!(r.main.join(".gitignore").exists());
+}
+
+#[test]
+fn wt_prune_keeps_the_suggested_branch_of_a_task_not_closed() {
+    let r = Repo::new("wt-prune-open");
+    r.ok(&r.main, &["add", "open work", "area:t"]);
+    // Before the first commit and before submit: nothing names the branch yet.
+    r.ok(&r.main, &["wt", "new", "t/task-1"]);
+    let wt = r.wt("t/task-1");
+    let out = r.ok(&r.main, &["wt", "prune", "--yes"]);
+    assert!(!out.contains("t/task-1"), "{out}");
+    assert!(wt.exists());
+    r.git(&r.main, &["rev-parse", "--verify", "t/task-1"]);
+}
+
+#[test]
+fn wt_prune_keeps_a_worktree_outside_the_worktree_root() {
+    let r = Repo::new("wt-prune-outside");
+    let manual = r.root.join("manual");
+    r.git(
+        &r.main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &manual.to_string_lossy(),
+            "-b",
+            "manual/keep",
+        ],
+    );
+    let out = r.ok(&r.main, &["wt", "prune", "--yes"]);
+    assert!(
+        out.contains("kept manual/keep — worktree outside worktrees.root"),
+        "{out}"
+    );
+    assert!(manual.exists());
+    r.git(&r.main, &["rev-parse", "--verify", "manual/keep"]);
+}
+
+#[test]
+fn wt_prune_keeps_a_branch_under_a_rebase_or_bisect() {
+    let r = Repo::new("wt-prune-rebase");
+    r.ok(&r.main, &["wt", "new", "t/rebasing"]);
+    r.ok(&r.main, &["wt", "new", "t/bisecting"]);
+    r.commit_in(&r.main, "later", "later\n");
+    let wt = r.wt("t/rebasing");
+    let mut c = Command::new("git");
+    c.args(["rebase", "-i", "main"]).current_dir(&wt);
+    env(&mut c, &r.root);
+    c.env("GIT_SEQUENCE_EDITOR", "sed -i 1ibreak");
+    assert!(c.output().unwrap().status.success());
+    r.git(&r.wt("t/bisecting"), &["bisect", "start"]);
+    let out = r.ok(&r.main, &["wt", "prune", "--yes"]);
+    for b in ["t/rebasing", "t/bisecting"] {
+        assert!(
+            out.contains(&format!("kept {b} — a rebase or bisect")),
+            "{out}"
+        );
+        r.git(&r.main, &["rev-parse", "--verify", b]);
+    }
+    assert!(wt.exists());
 }
 
 #[test]

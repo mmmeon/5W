@@ -707,7 +707,7 @@ fn show(repo: &Repo, args: &[String]) -> Res<()> {
     Ok(())
 }
 
-fn suggested_branch(t: &Task) -> String {
+pub fn suggested_branch(t: &Task) -> String {
     format!("{}/task-{}", t.area.as_deref().unwrap_or("work"), t.id)
 }
 

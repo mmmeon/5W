@@ -249,12 +249,17 @@ fn prune(repo: &Repo, yes: bool) -> Res<()> {
         repo.load_archive()?,
         repo.committed_file(&repo.cfg.archive)?.unwrap_or_default(),
     ] {
-        named.extend(
-            crate::queue::parse(&text)
-                .into_iter()
-                .filter_map(|t| t.branch),
-        );
+        for t in crate::queue::parse(&text) {
+            // A worker's branch exists from `wt new`, but the task names it only at
+            // submit: keep the branch the brief suggests for every task not closed.
+            if t.state != crate::queue::State::Done {
+                named.insert(crate::tasks::suggested_branch(&t));
+            }
+            named.extend(t.branch);
+        }
     }
+    let busy = busy_branches(repo)?;
+    let root = fs::canonicalize(repo.wt_root()).unwrap_or(repo.wt_root());
     let wts = git::worktrees(p)?;
     let primary = fs::canonicalize(p).unwrap_or(p.clone());
     let cwd = fs::canonicalize(&repo.cwd).unwrap_or(repo.cwd.clone());
@@ -294,6 +299,10 @@ fn prune(repo: &Repo, yes: bool) -> Res<()> {
         if git::opt(p, &["rev-list", "--count", &range]).as_deref() != Some("0") {
             continue;
         }
+        if busy.contains(b) {
+            kept.push((b.clone(), "a rebase or bisect is in progress on it".into()));
+            continue;
+        }
         let Some(w) = wts.iter().find(|w| w.branch.as_deref() == Some(b)) else {
             go.push((b.clone(), tip, None));
             continue;
@@ -302,26 +311,14 @@ fn prune(repo: &Repo, yes: bool) -> Res<()> {
         if dir == primary {
             continue;
         }
-        let why = if w.held {
+        let why = if !dir.starts_with(&root) {
+            "worktree outside worktrees.root".to_string()
+        } else if w.held {
             "worktree is locked or missing — `git worktree list`".to_string()
         } else if cwd.starts_with(&dir) {
             "you are in its worktree — run from elsewhere".to_string()
-        } else if git::dirty(&w.path).unwrap_or(true) {
-            format!("uncommitted or untracked files in {}", tilde(&w.path))
         } else {
-            match crate::ship::ignored_files(repo, &w.path) {
-                Err(e) => e,
-                Ok(f) if f.is_empty() => String::new(),
-                Ok(f) => format!(
-                    "ignored files: {}{} — move them or add to worktrees.disposable",
-                    f.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
-                    if f.len() > 5 {
-                        format!(" (+{} more)", f.len() - 5)
-                    } else {
-                        String::new()
-                    }
-                ),
-            }
+            worktree_blocker(repo, &w.path).unwrap_or_default()
         };
         if why.is_empty() {
             go.push((b.clone(), tip, Some(w.path.clone())));
@@ -378,14 +375,20 @@ fn prune(repo: &Repo, yes: bool) -> Res<()> {
         return Ok(());
     }
     for (b, tip, w) in &go {
+        // Checked again at the moment of removal: anything that changed since the
+        // scan stops the run, and children went first, so no parent is left dangling.
+        let moved = git::rev(p, &format!("refs/heads/{b}")).as_deref() != Some(tip.as_str());
+        let why = if moved {
+            Some("its branch moved".to_string())
+        } else if busy_branches(repo)?.contains(b) {
+            Some("a rebase or bisect started on it".to_string())
+        } else {
+            w.as_deref().and_then(|d| worktree_blocker(repo, d))
+        };
+        if let Some(why) = why {
+            bail!("{b} changed since it was checked ({why}); stopped, nothing more removed");
+        }
         if let Some(dir) = w {
-            // Checked again at the moment of removal: git refuses a dirty worktree.
-            if git::dirty(dir)? {
-                bail!(
-                    "{} changed since it was checked; stopped before {b}",
-                    dir.display()
-                );
-            }
             unlink(repo, dir)?;
             git::git(p, &["worktree", "remove", &dir.to_string_lossy()])?;
         }
@@ -405,6 +408,54 @@ fn prune(repo: &Repo, yes: bool) -> Res<()> {
     }
     println!("wt prune: removed {} branch(es)", go.len());
     Ok(())
+}
+
+/// Why a worktree may not be removed: changes git lists, or ignored files ship would
+/// refuse to delete.
+fn worktree_blocker(repo: &Repo, dir: &Path) -> Option<String> {
+    if git::dirty(dir).unwrap_or(true) {
+        return Some(format!("uncommitted or untracked files in {}", tilde(dir)));
+    }
+    match crate::ship::ignored_files(repo, dir) {
+        Err(e) => Some(e),
+        Ok(f) if f.is_empty() => None,
+        Ok(f) => Some(format!(
+            "ignored files: {}{} — move them or add to worktrees.disposable",
+            f.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
+            if f.len() > 5 {
+                format!(" (+{} more)", f.len() - 5)
+            } else {
+                String::new()
+            }
+        )),
+    }
+}
+
+/// Branches a rebase or bisect in any worktree is working on. Their worktree shows
+/// detached meanwhile, so the branch would otherwise look free.
+fn busy_branches(repo: &Repo) -> Res<std::collections::BTreeSet<String>> {
+    let common = PathBuf::from(git::git(
+        &repo.primary,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?);
+    let mut dirs = vec![common.clone()];
+    if let Ok(rd) = fs::read_dir(common.join("worktrees")) {
+        dirs.extend(rd.flatten().map(|e| e.path()));
+    }
+    let mut v = std::collections::BTreeSet::new();
+    for d in dirs {
+        for f in [
+            "rebase-merge/head-name",
+            "rebase-apply/head-name",
+            "BISECT_START",
+        ] {
+            if let Ok(s) = fs::read_to_string(d.join(f)) {
+                let s = s.trim();
+                v.insert(s.strip_prefix("refs/heads/").unwrap_or(s).to_string());
+            }
+        }
+    }
+    Ok(v)
 }
 
 // --- links ------------------------------------------------------------------------------

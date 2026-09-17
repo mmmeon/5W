@@ -352,12 +352,16 @@ these branches when git-town is installed, and nothing requires it when it is no
 configures both.
 
 `5w wt prune` lists the branches safe to drop, with their worktrees: no commits past the recorded
-parent (the trunk when none is recorded), no task in the queue or archive naming the branch, and a
-worktree — if there is one — that is clean, unlocked and holds no gitignored files ship would refuse
-to delete (`worktrees.disposable` exempt). The trunk, perennial branches and the primary checkout are
-never touched, nor the worktree you stand in, nor a branch another kept branch is stacked on. A
-branch that qualifies but for its worktree is listed as kept, with the reason. `--yes` removes them —
-all checked before the first goes, children before parents — with their git-town config keys.
+parent (the trunk when none is recorded), no task in the queue or archive naming the branch — nor
+suggesting it: a task not closed keeps `<area>/task-<id>`, which a worker creates long before submit
+records it — and a worktree, if there is one, under `worktrees.root` that is clean, unlocked and
+holds no gitignored files ship would refuse to delete (`worktrees.disposable` exempt). The trunk,
+perennial branches and the primary checkout are never touched, nor the worktree you stand in, a
+branch a rebase or bisect is working on, or a branch another kept branch is stacked on. A branch
+that qualifies but for one of these is listed as kept, with the reason. `--yes` removes them — all
+checked before the first goes, each checked again just before it goes (its tip, a rebase or bisect,
+changes and ignored files; any difference stops the run), children before parents — with their
+git-town config keys.
 
 A branch's change copied into the trunk checkout and left uncommitted — a worker that edited the
 wrong directory, a patch applied to try it — blocks shipping that branch. `5w doctor` names each
