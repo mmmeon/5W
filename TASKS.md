@@ -33,6 +33,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   wt new and wt rm still read worktrees.root (and related worktrees settings) from the checkout .5w.toml, while wt prune (#105) and queue commands read the committed trunk config. After an uncommitted root edit, new worktrees are reported by prune as "worktree outside worktrees.root". Make all wt commands read the committed config with the same note. Found in review of #105.
 - [ ] #108 The pre-commit hook blocks restoring a queue name a break renamed in place
   After a break that renames a queue name in place (#106), the pre-commit hook (lint --staged / staged_repair) refuses the only repair that lands — a staged .5w.toml restoring the trunk's last accepted file/archive/commit_prefix — with "a commit repairing main's .5w.toml keeps file = …", gated or not, forcing --no-verify. Accept such a restore when the trunk has no file under the broken config's name and has one under the last accepted name; then drop --no-verify from #106's refusal text. Found in review of #106.
+- [ ] #109 An archive renamed in place by a broken config is silently read as empty
+  load_archive reads a missing archive file as empty. When a broken trunk config renames the archive in place (the old archive file still exists under its last accepted name), accepted and closed tasks silently drop out of ship and audit. Refuse (or at least note) with the same unmoved-name message #106 gives for the queue file. Found in review of #106.
 
 ## Done
 
