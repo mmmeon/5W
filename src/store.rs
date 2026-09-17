@@ -690,7 +690,7 @@ fn write(
     let message = &plan.message;
     let subject = message.lines().next().unwrap_or_default();
     let (new_q, new_a, working, staged) = (&plan.new_q, &plan.new_a, &plan.working, &plan.staged);
-    let changes: Vec<(&Copies, &String, Option<&String>, Option<&String>)> = [
+    let changes: Vec<Change> = [
         (
             q,
             new_q,
@@ -755,37 +755,48 @@ fn write(
         })?;
 
         if let Some(w) = checkout {
-            for ((c, _, _, new_staged), blob) in changes.iter().zip(&blobs) {
-                let Some(blob) = blob else { continue };
-                // The index entry follows the commit — or, where something else was
-                // staged, becomes that staged text with this edit applied.
-                let entry = match (&c.staged, new_staged) {
-                    (Some(_), Some(ns)) => hash_blob(repo, ns)?,
-                    _ if c.staged_blob.is_some() || c.old_blob.is_none() => blob.clone(),
-                    _ => continue,
-                };
-                git::git(
-                    w,
-                    &[
-                        "update-index",
-                        "--add",
-                        "--cacheinfo",
-                        &format!("100644,{entry},{}", c.name),
-                    ],
-                )?;
-            }
+            mirror_index(repo, w, &changes, &blobs)?;
         }
         println!("  committed: {subject}");
-    } else if checkout.is_none() {
+    } else if let Some(w) = checkout {
+        // Nothing to commit, but the checkout's staged copy still takes the
+        // edit: left as it was, the next ordinary commit would commit it.
+        let blobs: Vec<Option<String>> = changes.iter().map(|(c, ..)| c.old_blob.clone()).collect();
+        let restaged = mirror_index(repo, w, &changes, &blobs)?;
+        let rewritten = changes.iter().any(|(c, _, nw, _)| {
+            nw.is_some_and(|nw| {
+                Some(nw) != c.working.as_ref() && !(c.working.is_none() && nw.is_empty())
+            })
+        });
+        if restaged || rewritten {
+            let mut ids = Vec::new();
+            let before = [(&q.working, &a.working), (&q.staged, &a.staged)];
+            for (copy, (bq, ba)) in [&plan.working, &plan.staged].into_iter().zip(before) {
+                let Some((nq, na)) = copy else { continue };
+                let (bq, ba) = (
+                    bq.as_ref().unwrap_or(&q.committed),
+                    ba.as_ref().unwrap_or(&a.committed),
+                );
+                ids.extend(rows_changed([bq, ba], [nq, na]));
+            }
+            ids.sort_unstable();
+            ids.dedup();
+            let rows: Vec<String> = ids.iter().map(|id| format!("#{id}")).collect();
+            match rows.len() {
+                0 => println!("  checkout fixed: {} matches {}", q.name, repo.trunk),
+                1 => println!("  checkout fixed: {} matches {}", rows[0], repo.trunk),
+                _ => println!("  checkout fixed: {} match {}", rows.join(", "), repo.trunk),
+            }
+        }
+    } else {
         return Ok(());
     }
     if let Some(w) = checkout {
-        for (c, new, new_working, _) in &changes {
+        for (c, _, new_working, _) in &changes {
             if let Some(nw) = new_working
                 && Some(*nw) != c.working.as_ref()
                 && !(c.working.is_none() && nw.is_empty())
             {
-                let _ = new;
                 fs::write(w.join(&c.name), nw)
                     .map_err(|e| format!("cannot write {}: {e}", c.name))?;
             }
@@ -797,6 +808,42 @@ fn write(
         );
     }
     Ok(())
+}
+
+type Change<'a> = (
+    &'a Copies,
+    &'a String,
+    Option<&'a String>,
+    Option<&'a String>,
+);
+
+/// Carry a plan into the trunk checkout's index: each file's entry follows its
+/// new committed blob — or, where something else was staged, becomes that staged
+/// text with the edit applied. Only entries that differ are touched; returns
+/// whether any was.
+fn mirror_index(repo: &Repo, w: &Path, changes: &[Change], blobs: &[Option<String>]) -> Res<bool> {
+    let mut touched = false;
+    for ((c, _, _, new_staged), blob) in changes.iter().zip(blobs) {
+        let entry = match (&c.staged, new_staged, blob) {
+            (Some(_), Some(ns), _) => hash_blob(repo, ns)?,
+            (.., Some(b)) if c.staged_blob.is_some() || c.old_blob.is_none() => b.clone(),
+            _ => continue,
+        };
+        if c.staged_blob.as_ref() == Some(&entry) {
+            continue;
+        }
+        git::git(
+            w,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("100644,{entry},{}", c.name),
+            ],
+        )?;
+        touched = true;
+    }
+    Ok(touched)
 }
 
 fn hash_blob(repo: &Repo, content: &str) -> Res<String> {

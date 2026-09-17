@@ -2220,6 +2220,48 @@ fn a_same_value_edit_still_fixes_the_checkout_and_the_rows_section() {
 }
 
 #[test]
+fn a_same_value_edit_fixes_a_stale_staged_row() {
+    let r = Repo::new("same-value-staged");
+    r.ok(&r.main, &["add", "first", "level:2"]);
+    r.ok(&r.main, &["add", "second"]);
+    let head = r.git(&r.main, &["rev-parse", "HEAD"]);
+    let staged = || r.git(&r.main, &["show", ":TASKS.md"]);
+
+    // The committed row reads !2 but the index holds !4: the edit commits
+    // nothing, yet the index takes it, so a plain commit cannot bring !4 back.
+    for batch in [false, true] {
+        let t = r.tasks().replace("#1 first !2", "#1 first !4");
+        std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+        r.git(&r.main, &["add", "TASKS.md"]);
+        let out = match batch {
+            false => r.ok(&r.main, &["set", "1", "level", "2"]),
+            true => r.batch("set 1 level 2\n").1,
+        };
+        assert!(out.contains("  checkout fixed: #1 matches main"), "{out}");
+        assert!(!out.contains("committed"), "{out}");
+        assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), head);
+        assert_eq!(staged(), r.git(&r.main, &["show", "HEAD:TASKS.md"]));
+        assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "");
+    }
+
+    // A peer's unrelated staged row stays staged; only #1 is fixed.
+    let t = r
+        .tasks()
+        .replace("#1 first !2", "#1 first !4")
+        .replace("#2 second", "#2 second, by a peer");
+    std::fs::write(r.main.join("TASKS.md"), t).unwrap();
+    r.git(&r.main, &["add", "TASKS.md"]);
+    let out = r.ok(&r.main, &["set", "1", "level", "2"]);
+    assert!(out.contains("  checkout fixed: #1 matches main"), "{out}");
+    let s = staged();
+    assert!(
+        s.contains("#1 first !2") && s.contains("#2 second, by a peer"),
+        "{s}"
+    );
+    assert_eq!(r.git(&r.main, &["status", "--porcelain"]), "M  TASKS.md");
+}
+
+#[test]
 fn a_closed_row_is_immutable_but_may_be_reflowed_or_archived() {
     let r = Repo::new("immutable");
     r.ok(&r.main, &["add", "One sentence here. And a second sentence that is long enough to push well past the title limit of the queue for sure."]);
