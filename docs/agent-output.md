@@ -620,7 +620,7 @@ explicit send).
 ## Proposed follow-up tasks (not added to the queue — for the reviewer)
 
 - `--json list rows: trim to id/state/level/area/title/branch by default, --full for the rest @output !2`
-- `opts(): refuse a flag a command doesn't understand instead of silently accepting it @output !2`
+- `opts(): refuse a flag a command doesn't understand instead of silently accepting it @output !2` — done, #23
 - `row(): append a size hint when a title is actually truncated, not just a bare … @output !1` — done, #24
 - `per-subcommand --help: print the one-line usage instead of the full global listing @output !1` — done, #25
 - `ready/review: append a → 5w delegate|accept next-step hint to the summary line, like next already does @output !1` — done, #26

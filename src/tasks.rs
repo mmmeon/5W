@@ -436,7 +436,40 @@ fn ids_str(v: &[u64]) -> String {
         .join(" ")
 }
 
+/// The out flags a list command takes.
+const OUT: &[&str] = &["--json", "--ids", "--limit", "--full"];
+
+/// The flags each command takes, for the commands whose arguments are never
+/// free text; `None` for those that check their own (`add`, `accept`, `done`)
+/// or take text that may start with `--` (`reject`, `set`, `submit`).
+fn flags_of(cmd: &str) -> Option<&'static [&'static str]> {
+    Some(match cmd {
+        "ready" | "next" | "ls" | "list" | "blocked" | "all" => OUT,
+        "show" => &["--json"],
+        "review" => &["--checklist", "--json", "--ids", "--full"],
+        "split" => &["--all"],
+        "delegate" | "branch" | "doctor" | "levels" | "archive" | "open" | "reopen" => &[],
+        _ => return None,
+    })
+}
+
+/// A refusal for a `--flag` the command does not take: a flag that did nothing
+/// must not look as if it worked.
+fn unknown_flag(repo: &Repo, cmd: &str, flag: &str) -> String {
+    format!(
+        "unknown flag {flag} for {cmd} ({} {cmd} --help)",
+        repo.cfg.cmd_tasks
+    )
+}
+
 pub fn run(repo: &Repo, cmd: &str, args: &[String]) -> Res<()> {
+    if let Some(takes) = flags_of(cmd)
+        && let Some(f) = args
+            .iter()
+            .find(|a| a.starts_with("--") && !takes.contains(&a.as_str()))
+    {
+        return Err(unknown_flag(repo, cmd, f));
+    }
     match cmd {
         "ready" => ready(repo, args),
         "next" => next(repo, args),
@@ -1087,6 +1120,9 @@ fn add(repo: &Repo, args: &[String]) -> Res<()> {
             i += 2;
             continue;
         }
+        if text.is_some() && a.starts_with("--") {
+            return Err(unknown_flag(repo, "add", a));
+        }
         if text.is_none() {
             if a.starts_with('-') {
                 bail!("text first, not a flag: {a}\n{usage}");
@@ -1383,6 +1419,7 @@ fn accept(repo: &Repo, args: &[String]) -> Res<()> {
                 i += 1;
             }
             "--force" => force = true,
+            a if a.starts_with("--") => return Err(unknown_flag(repo, "accept", a)),
             a if id.is_none() => id = Some(parse_id(a)?),
             a => bail!("unexpected {a:?}\n{usage}"),
         }
@@ -1524,6 +1561,13 @@ fn reject(repo: &Repo, args: &[String]) -> Res<()> {
 fn done(repo: &Repo, args: &[String]) -> Res<()> {
     let id = parse_id(args.first().ok_or("usage: 5w done <id> --<close>")?)?;
     let flag = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    // The flags `done` takes are the lanes' close words, from the config.
+    if let Some(extra) = args.get(2)
+        && extra.starts_with("--")
+        && !repo.cfg.lanes.iter().any(|l| extra[2..] == l.close)
+    {
+        return Err(unknown_flag(repo, "done", extra));
+    }
     let q = Q::load(repo)?;
     let t = q.get(id)?;
     if t.state == State::Done {
@@ -1544,6 +1588,12 @@ fn done(repo: &Repo, args: &[String]) -> Res<()> {
         bail!(
             "#{id} is >{lane_name}: close with `{tasks} done {id} {want}` (records via:{}){review}",
             lane.close
+        );
+    }
+    if args.len() > 2 {
+        bail!(
+            "done takes one close flag: `{} done {id} {want}`",
+            repo.cfg.cmd_tasks
         );
     }
     if t.state == State::Review {

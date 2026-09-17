@@ -379,6 +379,89 @@ fn closing_needs_the_flag_that_matches_the_lane() {
 }
 
 #[test]
+fn a_flag_a_command_does_not_take_is_refused() {
+    let r = Repo::new("flags");
+    // A lane's close word is configuration: the flag `done` takes comes from it.
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml"))
+        .unwrap()
+        .replace(
+            "[lanes.owner]\nkind = \"decision\"",
+            "[lanes.owner]\nkind = \"decision\"\nclose = \"signed-off\"",
+        );
+    std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
+    r.git(&r.main, &["commit", "-qam", "owner closes signed-off"]);
+    r.ok(&r.main, &["add", "x", "--body", "--x text"]);
+    r.ok(&r.main, &["add", "y", "lane:owner"]);
+    r.ok(&r.main, &["add", "z"]);
+    let before = r.git(&r.main, &["rev-parse", "HEAD"]);
+    for (args, cmd) in [
+        (&["ready", "--bogus"][..], "ready"),
+        (&["ready", "@x", "--jsn"], "ready"),
+        (&["next", "--bogus"], "next"),
+        (&["ls", "--bogus"], "ls"),
+        (&["blocked", "--bogus"], "blocked"),
+        (&["all", "--bogus"], "all"),
+        (&["show", "1", "--ids"], "show"),
+        (&["review", "--bogus"], "review"),
+        (&["delegate", "1", "--bogus"], "delegate"),
+        (&["branch", "1", "--bogus"], "branch"),
+        (&["doctor", "--bogus"], "doctor"),
+        (&["levels", "--bogus"], "levels"),
+        (&["archive", "--bogus"], "archive"),
+        (&["open", "1", "--bogus"], "open"),
+        (&["split", "--bogus"], "split"),
+        (&["add", "w", "--bogus"], "add"),
+        (&["accept", "1", "--bogus"], "accept"),
+        (&["done", "3", "--self", "--bogus"], "done"),
+        (&["done", "2", "--signed-off", "--bogus"], "done"),
+    ] {
+        let out = r.fails(&r.main, args);
+        let flag = args.iter().rev().find(|a| a.starts_with("--")).unwrap();
+        assert_eq!(
+            out,
+            format!("5w: unknown flag {flag} for {cmd} (5w {cmd} --help)\n"),
+            "{args:?}"
+        );
+    }
+    assert_eq!(r.git(&r.main, &["rev-parse", "HEAD"]), before);
+    // Every documented flag still works.
+    for args in [
+        &["ready", "--json", "--ids", "--limit", "1", "--full"][..],
+        &["next", "--json"],
+        &["ls", "--ids", "--limit", "1"],
+        &["list", "--full"],
+        &["blocked", "--json"],
+        &["all", "--ids", "--full"],
+        &["show", "1", "--json"],
+        &["review", "--checklist"],
+        &["review", "--json", "--full"],
+        &["review", "--ids"],
+        &["split", "--all"],
+    ] {
+        r.ok(&r.main, args);
+    }
+    assert!(r.tasks().contains("\n  --x text\n"), "{}", r.tasks());
+    r.ok(&r.main, &["done", "2", "--signed-off"]);
+    assert!(r.line(2).contains("via:signed-off"), "{}", r.line(2));
+    r.ok(&r.main, &["done", "3", "--self"]);
+    r.ok(&r.main, &["open", "3"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["reject", "1", "--x reason", "--and-more"]);
+    assert!(
+        r.line(1).contains("rework:\"--x reason --and-more\""),
+        "{}",
+        r.line(1)
+    );
+    r.ok(&r.main, &["accept", "1", "--force", "--at", "a/x"]);
+    r.ok(&r.main, &["archive"]);
+    r.ok(&r.main, &["levels"]);
+    r.ok(&r.main, &["doctor"]);
+}
+
+#[test]
 fn accept_refuses_work_that_was_never_submitted() {
     let r = Repo::new("unsubmitted");
     r.ok(&r.main, &["add", "x"]);
