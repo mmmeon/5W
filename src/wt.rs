@@ -50,7 +50,16 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
     {
         return Err(unknown_flag(repo, cmd, f));
     }
-    match cmd.as_str() {
+    // Worktrees settings and the queue names, as the trunk commits them (`wt path` reads neither).
+    if cmd == "path" {
+        return dispatch(repo, cmd, rest);
+    }
+    let (judged, note) = crate::lint::under_committed_rules(repo);
+    crate::lint::noted(note, dispatch(judged.as_ref().unwrap_or(repo), cmd, rest))
+}
+
+fn dispatch(repo: &Repo, cmd: &str, rest: &[String]) -> Res<()> {
+    match cmd {
         "new" => new(repo, rest),
         "add" => add(repo, rest),
         "ls" | "list" => ls(repo),
@@ -86,9 +95,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
                     None => bail!("usage: 5w wt prune [--yes]"),
                 },
             };
-            // The branches the queue names, by the queue names the trunk commits.
-            let (judged, note) = crate::lint::under_committed_rules(repo);
-            crate::lint::noted(note, prune(judged.as_ref().unwrap_or(repo), yes))
+            prune(repo, yes)
         }
         "link" => link(repo, &target(repo, rest)?).map(|_| ()),
         "install" => install(repo, &target(repo, rest)?),

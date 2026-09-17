@@ -6716,6 +6716,54 @@ fn ship_and_wt_prune_read_queue_names_and_gates_from_the_committed_trunk_config(
 }
 
 #[test]
+fn wt_commands_read_worktrees_settings_from_the_committed_trunk_config() {
+    let r = Repo::new("wt-committed-config");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let committed = cfg.replace(
+        "links_file = \".worktree-links\"",
+        "root = \"../wt-committed\"\nlinks_file = \".links-committed\"",
+    );
+    assert_ne!(committed, cfg);
+    r.commit_in(&r.main, ".gitignore", "artifact.txt\n");
+    r.commit_in(&r.main, ".links-committed", "artifact.txt\n");
+    r.commit_in(&r.main, ".5w.toml", &committed);
+    std::fs::write(r.main.join("artifact.txt"), "a\n").unwrap();
+    // The trunk checkout's copy moves the root and the links file, uncommitted.
+    let edited = committed
+        .replace("../wt-committed", "../wt-edited")
+        .replace(".links-committed", ".links-edited");
+    std::fs::write(r.main.join(".5w.toml"), &edited).unwrap();
+    let run = |args: &[&str]| {
+        let o = r.cli_with_relative_wt(&r.main, args);
+        let (out, err) = (
+            String::from_utf8_lossy(&o.stdout).to_string(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        );
+        assert!(o.status.success(), "{args:?}: {out}{err}");
+        assert!(err.contains("uncommitted edits"), "{args:?}: {err}");
+        out
+    };
+
+    // wt new puts the worktree under the committed root and links by the committed file,
+    let out = run(&["wt", "new", "a/x"]);
+    let dir = r.root.join("wt-committed/a-x");
+    assert!(dir.join("artifact.txt").symlink_metadata().is_ok(), "{out}");
+    assert!(!r.root.join("wt-edited").exists(), "{out}");
+    // wt ls and wt prune find it inside that root,
+    let out = run(&["wt", "ls"]);
+    assert!(out.contains("a/x"), "{out}");
+    let out = run(&["wt", "prune"]);
+    assert!(
+        out.contains("remove a/x") && !out.contains("outside worktrees.root"),
+        "{out}"
+    );
+    // and wt rm unlinks what the committed links file names.
+    let out = run(&["wt", "rm", "a/x"]);
+    assert!(out.contains("unlinked 1 artifact"), "{out}");
+    assert!(!dir.exists(), "{out}");
+}
+
+#[test]
 fn a_crlf_checkout_of_the_committed_config_is_no_uncommitted_edit() {
     let r = Repo::new("config-crlf");
     r.ok(&r.main, &["add", "do it"]);
@@ -8740,7 +8788,7 @@ fn worktree_paths_are_normalized() {
         "[worktrees]",
         "[worktrees]\nroot = \"../wt-rel\"\ninstall = \"true\"",
     );
-    std::fs::write(&config_path, config).unwrap();
+    r.commit_in(&r.main, ".5w.toml", &config);
 
     // Create a new worktree using the relative path configuration; --install prints its directory
     let output = r.ok_with_relative_wt(&r.main, &["wt", "new", "feature/test", "--install"]);
