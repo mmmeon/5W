@@ -53,8 +53,6 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #33 (pre-existing). A relative FIVEW_WT_ROOT is checked relative to the current directory, then handed to git worktree add run from the primary checkout, so the two can name different directories when 5w runs from a subdirectory or another worktree. Resolve it once against one base (the primary checkout, as worktrees.root is) in Repo::wt_root(); test by running wt new from inside another worktree with a relative FIVEW_WT_ROOT.
 - [ ] #39 USAGE hook line omits [pre-commit | pre-receive], so hook --help under-describes it @output !1
   Found reviewing #25: tasks::USAGE has 'hook install | uninstall' while src/lint.rs refusals accept 'install | uninstall [pre-commit | pre-receive]'. Make USAGE match; command_usage() then prints it for 5w hook --help.
-- [~] #40 lint: flag a row that gains rework: without going [~] to [ ] (hand-made reject of unsubmitted work) @queue !1 needs:#38 rework:"the rule fails history 5w <=0.1.3 itself wrote (reject of an open task), so a first push to a pre-receive hook or a full ci run is refused: enforce it only on new edits (--staged / commits made after this version), not on old ranges; also cover a new row added already carrying rework:" branch:queue/task-40 submitted:71719793b876
-  Found reviewing #38: src/lint.rs flags a missing rework: only on [~] to [ ]. An open row that stays [ ] and gains rework:, or a closed row reopened with rework: added, passes lint and pre-receive though 5w reject refuses it after #38. Flag only no-rework to rework outside [~] to [ ], so fixing a typo in an existing reason still passes.
 
 ## Done
 
@@ -94,3 +92,5 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
 - [x] #18 doctor: name a trunk checkout holding an exact copy of a branch's diff @doctor !1 branch:doctor/task-18 submitted:1ac01d00671a via:review reviewed:1ac01d00671a
   with a command that restores those files only on an exact match
   Found 2026-09-16: main held uncommitted src/wt.rs and tests/flow.rs identical to wt/task-6's diff, which blocks ship. Restoring must refuse unless the working changes equal the branch diff byte for byte.
+- [x] #40 lint: flag a row that gains rework: without going [~] to [ ] (hand-made reject of unsubmitted work) @queue !1 needs:#38 branch:queue/task-40 submitted:71719793b876 via:review reviewed:71719793b876
+  Found reviewing #38: src/lint.rs flags a missing rework: only on [~] to [ ]. An open row that stays [ ] and gains rework:, or a closed row reopened with rework: added, passes lint and pre-receive though 5w reject refuses it after #38. Flag only no-rework to rework outside [~] to [ ], so fixing a typo in an existing reason still passes.
