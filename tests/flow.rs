@@ -804,6 +804,26 @@ fn stacks_ship_bottom_first_and_children_reparent() {
 }
 
 #[test]
+fn an_unreviewed_ship_says_so_only_once_it_lands() {
+    let r = Repo::new("unreviewed");
+    r.ok(&r.main, &["wt", "new", "u/x"]);
+    r.commit_in(&r.wt("u/x"), "x", "x\n");
+    // Main moves, so u/x is behind: the refusal is the only line, not a notice first.
+    r.ok(&r.main, &["add", "moves main"]);
+    let out = r.refuses(&r.main, &["ship", "u/x"]);
+    assert!(
+        out.contains("behind main") && !out.contains("shipping unreviewed"),
+        "{out}"
+    );
+    let out = r.ok(&r.main, &["ship", "u/x", "--sync"]);
+    assert!(
+        out.contains("ship: no task references u/x — shipping unreviewed"),
+        "{out}"
+    );
+    assert!(r.main.join("x").exists());
+}
+
+#[test]
 fn ship_accepted_lands_every_accepted_branch_bottom_of_stack_first() {
     let r = Repo::new("shipaccepted");
     r.ok(&r.main, &["add", "bottom"]);

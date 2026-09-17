@@ -210,13 +210,17 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
         .filter(|t| t.branch.as_deref() == Some(branch.as_str()))
         .cloned()
         .collect();
+    let mut notices = Vec::new();
     if rows.is_empty() {
         if repo.cfg.require_task && !force {
             bail!(
                 "no task names branch:{branch} and require_task is on (--force ships unreviewed)"
             );
         }
-        eprintln!("ship: no task references {branch} — shipping unreviewed");
+        // Said once every check has passed: a refusal below must stand alone.
+        notices.push(format!(
+            "ship: no task references {branch} — shipping unreviewed"
+        ));
     }
     let unaccepted: Vec<_> = rows.iter().filter(|t| t.state != State::Done).collect();
     if !unaccepted.is_empty() {
@@ -230,10 +234,10 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
                 list.join("; ")
             );
         }
-        eprintln!(
+        notices.push(format!(
             "ship: --force — shipping {} unaccepted task(s)",
             unaccepted.len()
-        );
+        ));
     }
 
     // --- preflight ------------------------------------------------------------------
@@ -364,6 +368,10 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
                 ],
             )?;
         }
+    }
+
+    for n in &notices {
+        eprintln!("{n}");
     }
 
     // --- fast-forward first: until it succeeds nothing has changed ------------------------
