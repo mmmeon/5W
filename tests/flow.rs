@@ -7252,6 +7252,87 @@ fn a_break_that_renames_the_queue_in_place_names_the_config_and_its_repair() {
 }
 
 #[test]
+fn a_break_that_renames_the_archive_in_place_refuses_rather_than_reading_it_empty() {
+    let r = Repo::new("config-archive-in-place");
+    r.ok(&r.main, &["add", "first"]);
+    r.ok(&r.main, &["wt", "new", "a/x"]);
+    let wt = r.wt("a/x");
+    r.commit_in(&wt, "f", "1\n");
+    r.ok(&wt, &["submit", "1"]);
+    r.ok(&r.main, &["accept", "1"]);
+    r.ok(&r.main, &["archive"]);
+    r.ok(&r.main, &["hook", "install", "pre-commit"]);
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    // One break renames the archive, and the archive file stays where it was.
+    let broken = cfg
+        .replace("archive = \"DONE.md\"", "archive = \"DONE2.md\"")
+        .replace("[sections]\n", "[sections]\ntrunk = \"main\"\n");
+    assert!(broken.contains("DONE2.md") && broken.contains("[sections]\ntrunk"));
+    std::fs::write(r.main.join(".5w.toml"), &broken).unwrap();
+    r.git(
+        &r.main,
+        &[
+            "commit",
+            "--no-verify",
+            "-qam",
+            "break the config, rename the archive",
+        ],
+    );
+
+    // Read as empty, #1 would drop out of every read, its id would be reused and
+    // its accepted row would no longer authorise the branch.
+    for cmd in [
+        &["add", "second"][..],
+        &["ready"],
+        &["show", "1"],
+        &["ship", "--accepted"],
+    ] {
+        let err = r.refuses(&r.main, cmd);
+        assert!(
+            err.contains(".5w.toml on main is broken")
+                && err.contains("names the archive DONE2.md, not DONE.md")
+                && err.contains("archive = \"DONE.md\"")
+                && !err.contains("--no-verify"),
+            "{cmd:?}: {err}"
+        );
+    }
+    assert!(!r.tasks().contains("second"));
+    // Ship's gate reads the archive too: a repair of the config that keeps the
+    // broken names is refused before the gate reads it as empty.
+    let good = broken.replace("[sections]\ntrunk = \"main\"\n", "[sections]\n");
+    r.ok(&r.main, &["wt", "new", "r/fix"]);
+    // The broken-config note goes to stderr: the path is stdout.
+    let o = r.cli(&r.main, &["wt", "path", "r/fix"]);
+    let fix = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+    r.commit_in(&fix, ".5w.toml", &good);
+    let err = r.refuses(&r.main, &["ship", "r/fix"]);
+    assert!(
+        err.contains("names the archive DONE2.md, not DONE.md"),
+        "{err}"
+    );
+
+    // The pre-commit hook takes the repair it names — the trunk's last accepted
+    // names, the archive the broken config names being absent — and no other name.
+    let commit = |msg: &str| r.git_path(&r.main, &path_with_5w(), &["commit", "-qam", msg]);
+    let elsewhere = cfg.replace("archive = \"DONE.md\"", "archive = \"ELSE.md\"");
+    std::fs::write(r.main.join(".5w.toml"), &elsewhere).unwrap();
+    let o = commit("rename the archive elsewhere");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("keeps archive"),
+        "{err}"
+    );
+    std::fs::write(r.main.join(".5w.toml"), &cfg).unwrap();
+    let o = commit("repair the config");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    // The repair opens the queue again, and ids stay taken.
+    r.ok(&r.main, &["add", "second"]);
+    assert!(r.tasks().contains("#2 second"));
+    assert!(r.ok(&r.main, &["show", "1"]).contains("archived"));
+}
+
+#[test]
 fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
     let r = Repo::new("config-bricked-x");
     let server = server_of(&r);

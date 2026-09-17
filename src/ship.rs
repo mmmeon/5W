@@ -118,7 +118,7 @@ pub fn run(repo: &Repo, args: &[String]) -> Res<()> {
 fn ship_accepted(repo: &Repo, mut o: Opts) -> Res<()> {
     let p = &repo.primary;
     let committed = repo.committed()?.unwrap_or_default();
-    let archived = repo.committed_file(&repo.cfg.archive)?.unwrap_or_default();
+    let archived = repo.committed_archive()?;
     let mut branches: Vec<String> = Vec::new();
     for t in queue::parse(&committed)
         .into_iter()
@@ -281,7 +281,7 @@ fn ship(repo: &Repo, branch: &str, o: &Opts) -> Res<()> {
     })?;
     // Archived rows count: an accepted task moved out by `archive` still
     // authorises its branch, and still records what was reviewed.
-    let archived = repo.committed_file(&repo.cfg.archive)?.unwrap_or_default();
+    let archived = repo.committed_archive()?;
     let all: Vec<_> = queue::parse(&committed)
         .into_iter()
         .chain(queue::parse(&archived))

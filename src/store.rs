@@ -558,8 +558,8 @@ impl Repo {
     /// name the server reads: the break renamed or dropped `file` and left the queue
     /// where the trunk's last accepted config keeps it. No queue commit lands the
     /// repair then — the server wants its landing record in a file the trunk lacks
-    /// — so the fix is that name back, committed past the pre-commit hook (which
-    /// holds a repair to the broken names) and pushed past a gated server's hook.
+    /// — so the fix is that name back, which the pre-commit hook takes
+    /// (`lint::restores_accepted_names`), pushed past a gated server's hook.
     fn unmoved_queue(&self, e: &str) -> String {
         let (t, new) = (&self.trunk, &self.cfg.file);
         let old = git::rev(&self.primary, &format!("refs/heads/{t}"))
@@ -584,7 +584,48 @@ impl Repo {
 
     /// Closed tasks moved out of the queue by `archive`. Empty when there is none.
     pub fn load_archive(&self) -> Res<String> {
-        Ok(self.load_file(&self.cfg.archive)?.unwrap_or_default())
+        match self.load_file(&self.cfg.archive)? {
+            Some(s) => Ok(s),
+            None => self.no_archive(),
+        }
+    }
+
+    /// The archive as the trunk's tip commits it, read as `load_archive` reads a
+    /// missing one: what ship's gate counts.
+    pub fn committed_archive(&self) -> Res<String> {
+        match self.committed_file(&self.cfg.archive)? {
+            Some(s) => Ok(s),
+            None => self.no_archive(),
+        }
+    }
+
+    /// A trunk without the archive has none yet — unless its committed config is
+    /// broken and renamed the archive in place, leaving the closed tasks under the
+    /// name the trunk's last accepted config keeps. Read as empty, they would drop
+    /// out of every read, their ids would be reused and their rows stop authorising
+    /// a ship: refuse with the name back as the fix, which the pre-commit hook takes
+    /// (`lint::restores_accepted_names`), pushed past a gated server's hook.
+    fn no_archive(&self) -> Res<String> {
+        let Some(e) = &self.broken else {
+            return Ok(String::new());
+        };
+        let (t, new) = (&self.trunk, &self.cfg.archive);
+        let old = git::rev(&self.primary, &format!("refs/heads/{t}"))
+            .and_then(|tip| last_accepted_config(&self.primary, &tip))
+            .map(|c| c.archive)
+            .filter(|old| old != new && matches!(self.load_file(old), Ok(Some(_))));
+        let Some(old) = old else {
+            return Ok(String::new());
+        };
+        let fix = match self.cfg.gate_trunk {
+            true => format!(
+                "an admin commits a {CONFIG_FILE} that parses with archive = \"{old}\" on {t} and pushes it past the server's hook"
+            ),
+            false => format!(
+                "commit a {CONFIG_FILE} that parses with archive = \"{old}\" on {t} and push it"
+            ),
+        };
+        bail!("{CONFIG_FILE} on {t} is broken ({e}) and names the archive {new}, not {old} — {fix}")
     }
 
     /// Worktree root for new branches, with `.` and `..` resolved lexically so every path

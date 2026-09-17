@@ -779,7 +779,7 @@ fn with_config(repo: &Repo, cfg: Config) -> Repo {
 /// A checkout whose trunk config does not parse commits only its repair: an
 /// index whose `.5w.toml` parses (or has none), judged under that config with
 /// the queue names the broken one gives (`Repo::open_lenient`), which it must keep
-/// unless it restores a queue renamed in place (`restores_accepted_names`).
+/// unless it restores a queue or archive renamed in place (`restores_accepted_names`).
 fn staged_repair(repo: &Repo, err: &str, env: &[(&str, &str)]) -> Res<Repo> {
     let file = crate::store::CONFIG_FILE;
     if err.contains("requires 5w") {
@@ -815,10 +815,11 @@ fn staged_repair(repo: &Repo, err: &str, env: &[(&str, &str)]) -> Res<Repo> {
     Ok(with_config(repo, cfg))
 }
 
-/// A break that renamed the queue in place — the trunk has no file under the name
-/// its broken config gives, and has one under the name its last accepted config
-/// gave — is repaired by a config restoring that one's file, archive and commit
-/// prefix. Anything this cannot read keeps the broken names.
+/// A break that renamed the queue or its archive in place — the trunk has no file
+/// under the name its broken config gives, and has one under the name its last
+/// accepted config gave — is repaired by a config restoring that one's file,
+/// archive and commit prefix, so long as the trunk has no file under either broken
+/// name the restore drops. Anything this cannot read keeps the broken names.
 fn restores_accepted_names(repo: &Repo, cfg: &Config) -> bool {
     let t = &repo.trunk;
     let Some(tip) = [
@@ -834,10 +835,13 @@ fn restores_accepted_names(repo: &Repo, cfg: &Config) -> bool {
     };
     let names = |c: &Config| (c.file.clone(), c.archive.clone(), c.commit_prefix.clone());
     let has = |name: &str| git::ok(&repo.primary, &["cat-file", "-e", &format!("{tip}:{name}")]);
+    let pairs = [
+        (&last.file, &repo.cfg.file),
+        (&last.archive, &repo.cfg.archive),
+    ];
     names(cfg) == names(&last)
-        && last.file != repo.cfg.file
-        && !has(&repo.cfg.file)
-        && has(&last.file)
+        && pairs.iter().all(|(old, new)| old == new || !has(new))
+        && pairs.iter().any(|(old, new)| old != new && has(old))
 }
 
 /// A file as the index `env` names (the caller's, see `git::caller_index`) holds it.
