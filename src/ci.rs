@@ -545,10 +545,12 @@ fn gate_settings(repo: &Repo, commits: &[String]) -> Res<HashMap<String, bool>> 
     // None: the text does not parse.
     let read = |text: &str| -> Option<bool> {
         let kv = crate::config::parse_toml(text).ok()?;
+        // The last `gate_trunk`, as the config reads a key given twice.
         let says = |b: bool| {
-            kv.iter().any(|(k, v)| {
-                k == "gate_trunk" && matches!(v, crate::config::Val::Bool(x) if *x == b)
-            })
+            kv.iter()
+                .rev()
+                .find(|(k, _)| k == "gate_trunk")
+                .is_some_and(|(_, v)| matches!(v, crate::config::Val::Bool(x) if *x == b))
         };
         Some(if crate::config::Config::from_toml(text).is_ok() {
             says(true)

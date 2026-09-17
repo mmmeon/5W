@@ -160,19 +160,19 @@ pub fn update_files(repo: &Repo, args: &[String]) -> Res<()> {
         let text = fs::read_to_string(&cfg)
             .map_err(|_| format!("no {} in this worktree", crate::store::CONFIG_FILE))?;
         let line = format!("requires = \"{VERSION}\"");
-        let mut found = false;
+        // The pin is the last `requires`; the one rewritten, the others dropped.
+        let at = crate::config::requires_lines(&text);
+        let last = at.last().map(|(n, _)| *n);
         let mut lines: Vec<String> = text
             .lines()
-            .map(|l| {
-                if l.trim_start().starts_with("requires") && l.contains('=') && !found {
-                    found = true;
-                    line.clone()
-                } else {
-                    l.to_string()
-                }
+            .enumerate()
+            .filter_map(|(i, l)| match at.iter().any(|(n, _)| *n == i + 1) {
+                false => Some(l.to_string()),
+                true if last == Some(i + 1) => Some(line.clone()),
+                true => None,
             })
             .collect();
-        if !found {
+        if last.is_none() {
             // Before the first key, after any leading comments.
             let at = lines
                 .iter()
@@ -417,10 +417,8 @@ fn pinned() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let top = git::opt(&cwd, &["rev-parse", "--show-toplevel"])?;
     let text = fs::read_to_string(Path::new(&top).join(crate::store::CONFIG_FILE)).ok()?;
-    text.lines().find_map(|l| {
-        let (k, v) = l.split_once('=')?;
-        (k.trim() == "requires").then(|| v.trim().trim_matches('"').to_string())
-    })
+    // The last, as the config reads a key given twice.
+    crate::config::requires_lines(&text).pop().map(|(_, v)| v)
 }
 
 /// `5w self-update [--latest]`: install the version the project pins, or the

@@ -5871,6 +5871,52 @@ fn a_broken_config_naming_a_trunk_an_unpinned_server_lacks_names_the_pin() {
 }
 
 #[test]
+fn gate_trunk_given_twice_reads_as_the_last() {
+    let r = Repo::new("gate-twice");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let gate = |r: &Repo, cfg: &str| {
+        std::fs::write(r.main.join(".5w.toml"), cfg).unwrap();
+        r.git(&r.main, &["commit", "-qam", "gate twice"]);
+        let base = r.git(&r.main, &["rev-parse", "HEAD"]);
+        r.commit_in(&r.main, "code.txt", "x\n");
+        let o = r.cli(
+            &r.main,
+            &[
+                "ci",
+                "--base",
+                &base,
+                "--head",
+                "main",
+                "--ref",
+                "refs/heads/main",
+            ],
+        );
+        r.git(&r.main, &["reset", "-q", "--hard", "HEAD~2"]);
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+    // On, then off: off, as `ship` and every other reader of the config sees it.
+    let (ok, out) = gate(
+        &r,
+        &cfg.replace(
+            "gate_trunk = false",
+            "gate_trunk = true\ngate_trunk = false",
+        ),
+    );
+    assert!(ok, "{out}");
+    let (ok, out) = gate(
+        &r,
+        &cfg.replace(
+            "gate_trunk = false",
+            "gate_trunk = false\ngate_trunk = true",
+        ),
+    );
+    assert!(!ok && out.contains("no landing record covers"), "{out}");
+}
+
+#[test]
 fn gate_trunk_refuses_a_landing_that_put_the_reviewed_hunk_in_an_identical_copy() {
     let r = Repo::new("gate-twins");
     let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
@@ -6648,6 +6694,40 @@ fn a_project_requiring_a_newer_5w_is_refused_clearly() {
 }
 
 #[test]
+fn a_requires_given_twice_reads_as_the_last_for_the_check_and_update_files_pin() {
+    let r = Repo::new("requires-twice");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let pin = |v: &str| format!("requires = \"{v}\"");
+    // init's pin first, a newer one last: the last is the pin, as the config stores it.
+    let init = pin(env!("CARGO_PKG_VERSION"));
+    let twice = |v: &str| {
+        cfg.replacen(
+            "gate_trunk = false",
+            &format!("gate_trunk = false\n{}", pin(v)),
+            1,
+        )
+    };
+    std::fs::write(r.main.join(".5w.toml"), twice("99.0.0")).unwrap();
+    r.git(&r.main, &["commit", "-qam", "pin twice"]);
+    assert!(r.fails(&r.main, &["ready"]).contains("requires 5w 99.0.0"));
+
+    // --pin rewrites the last and drops the other.
+    std::fs::write(r.main.join(".5w.toml"), twice("0.0.9")).unwrap();
+    r.git(&r.main, &["commit", "-qam", "older pin last"]);
+    assert!(r.ok(&r.main, &["doctor"]).contains(&pin("0.0.9")));
+    r.ok(&r.main, &["update-files", "--pin"]);
+    let now = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    let pins: Vec<&str> = now.lines().filter(|l| l.starts_with("requires")).collect();
+    assert_eq!(pins, [init.as_str()], "{now}");
+    assert_eq!(
+        now,
+        twice(env!("CARGO_PKG_VERSION")).replacen(&format!("{init}\n"), "", 1)
+    );
+    r.git(&r.main, &["commit", "-qam", "repin"]);
+    assert!(!r.ok(&r.main, &["doctor"]).contains("requires ="));
+}
+
+#[test]
 fn an_unknown_key_says_a_newer_5w_may_know_it() {
     let r = Repo::new("unknownkey");
     let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap() + "future_key = true\n";
@@ -7104,6 +7184,19 @@ fn self_update_installs_only_a_signed_matching_release() {
     assert!(!ok && out.contains("does not match SHA256SUMS"), "{out}");
     untouched(&out);
     std::fs::write(&asset, good).unwrap();
+
+    // A pin given twice is the last, as the config reads it.
+    let r = Repo::new("selfupdate-pin-twice");
+    let cfg = std::fs::read_to_string(r.main.join(".5w.toml")).unwrap();
+    std::fs::write(
+        r.main.join(".5w.toml"),
+        format!("requires = \"{FAKE}\"\n{cfg}"),
+    )
+    .unwrap();
+    r.git(&r.main, &["commit", "-qam", "pin twice"]);
+    let (ok, out) = rel.run(&r.main, &path, &["self-update"]);
+    assert!(ok && out.contains("satisfies requires"), "{out}");
+    untouched(&out);
 
     // By default, the version the project pins — even one this binary refuses.
     let r = Repo::new("selfupdate-pin");

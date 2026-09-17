@@ -14,7 +14,7 @@ REPO=${FIVEW_REPO:-mmmeon/5W}
 dest=${1:-"$HOME/.local/bin"}
 
 # FIVEW_VERSION pins it instead, for a job that must not read the checkout's .5w.toml.
-v=${FIVEW_VERSION:-$(sed -n 's/^requires *= *"\([0-9][0-9.]*\)".*/\1/p' .5w.toml 2>/dev/null | head -1)}
+v=${FIVEW_VERSION:-$(sed -n 's/^requires *= *"\([0-9][0-9.]*\)".*/\1/p' .5w.toml 2>/dev/null | tail -n 1)}
 [ -n "$v" ] || { echo "install-5w: no requires = \"x.y.z\" in ./.5w.toml" >&2; exit 1; }
 target="$(uname -m)-unknown-linux-musl"
 asset="5w-$v-$target"

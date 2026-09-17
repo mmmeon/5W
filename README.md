@@ -745,7 +745,9 @@ narrows hundreds of branches to the possible copies in one git call.
 `.5w.toml` at the repo root, read from the trunk. Every key is optional; see
 [templates/5w.toml](templates/5w.toml) for the defaults and
 [examples/ara.toml](examples/ara.toml) for a full configuration with an extra non-delegable lane
-that keeps its own section, a custom brief footer and a review checklist.
+that keeps its own section, a custom brief footer and a review checklist. A key given twice in the
+same table reads as its last, everywhere: the config, the version check, the gate, `self-update`
+and the CI install script; `update-files --pin` rewrites that last `requires` and drops the others.
 
 | Key                                         |                                                                                       |
 | ------------------------------------------- | ------------------------------------------------------------------------------------- |

@@ -267,15 +267,44 @@ fn literal(b: &[u8], i: &mut usize) -> Res<String> {
 
 /// The version a `.5w.toml` requires when this 5w is older than that.
 pub fn requires_newer(src: &str) -> Option<String> {
-    // The one `from_toml` checks.
+    // The one `from_toml` checks: a key given twice reads as its last.
     match parse_toml(src)
         .ok()?
         .into_iter()
+        .rev()
         .find(|(k, _)| k == "requires")?
     {
         (_, Val::Str(r)) if crate::upkeep::newer_than_this(&r) => Some(r),
         _ => None,
     }
+}
+
+/// Every top-level `requires` in a `.5w.toml`, in order, as (line, value): the
+/// last is the pin. Text the parser cannot read (a newer 5w's syntax) is read
+/// line by line, so `self-update` and `update-files --pin` still find it.
+pub fn requires_lines(src: &str) -> Vec<(usize, String)> {
+    if let Ok(kv) = parse_lines(src) {
+        return kv
+            .into_iter()
+            .filter(|(k, _, _)| k == "requires")
+            .map(|(_, v, n)| match v {
+                Val::Str(s) => (n, s),
+                _ => (n, String::new()),
+            })
+            .collect();
+    }
+    let mut out = Vec::new();
+    for (i, l) in src.lines().enumerate() {
+        if l.trim_start().starts_with('[') {
+            break;
+        }
+        if let Some((k, v)) = l.split_once('=')
+            && k.trim() == "requires"
+        {
+            out.push((i + 1, v.trim().trim_matches('"').to_string()));
+        }
+    }
+    out
 }
 
 // --- typed config ---------------------------------------------------------------
@@ -466,7 +495,8 @@ impl Config {
         };
         // The pin first: a project written for a newer 5w may use keys this one
         // does not know, and "unknown key" would hide the real problem.
-        if let Some((_, v, n)) = kv.iter().find(|(k, _, _)| k == "requires") {
+        // A key given twice reads as its last, here as everywhere.
+        if let Some((_, v, n)) = kv.iter().rev().find(|(k, _, _)| k == "requires") {
             match v {
                 Val::Str(r) => crate::upkeep::check_requires(r).map_err(at(*n))?,
                 _ => return Err(at(*n)("config: requires must be a version string".into())),
