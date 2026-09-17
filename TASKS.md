@@ -56,6 +56,8 @@ Ids are permanent — never renumber, never reuse. Edit this file through `5w`; 
   Found reviewing #33 (pre-existing). A relative FIVEW_WT_ROOT is checked relative to the current directory, then handed to git worktree add run from the primary checkout, so the two can name different directories when 5w runs from a subdirectory or another worktree. Resolve it once against one base (the primary checkout, as worktrees.root is) in Repo::wt_root(); test by running wt new from inside another worktree with a relative FIVEW_WT_ROOT.
 - [ ] #38 reject accepts a task that was never submitted: PROTOCOL.md allows reject only from [~] @queue !1
   Found reviewing #25: in a scratch repo, 5w reject 1 <reason> on an open [ ] task succeeded. PROTOCOL.md's transition table has Reject as [~] to [ ] only. Refuse in one line naming the state (e.g. '#1 is open, not submitted: nothing to reject'); check lint's transition rules agree; test it.
+- [ ] #39 USAGE hook line omits [pre-commit | pre-receive], so hook --help under-describes it @output !1
+  Found reviewing #25: tasks::USAGE has 'hook install | uninstall' while src/lint.rs refusals accept 'install | uninstall [pre-commit | pre-receive]'. Make USAGE match; command_usage() then prints it for 5w hook --help.
 
 ## Done
 
